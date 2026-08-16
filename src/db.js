@@ -186,7 +186,7 @@ function listComments(dealQuery, limit = 100) {
   return db
     .prepare(
       `SELECT c.id, c.body, c.created_at, u.id AS user_id,
-              COALESCE(NULLIF(u.pseudo, ''), u.email) AS author, u.avatar_url
+              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
        FROM comments c JOIN users u ON u.id = c.user_id
        WHERE c.deal_query = ? ORDER BY c.created_at ASC LIMIT ?`
     )
@@ -205,7 +205,7 @@ function listPublicMessages(afterId = 0, limit = 100) {
   return db
     .prepare(
       `SELECT m.id, m.body, m.created_at, u.id AS user_id,
-              COALESCE(NULLIF(u.pseudo, ''), u.email) AS author, u.avatar_url
+              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
        FROM messages m JOIN users u ON u.id = m.from_user_id
        WHERE m.to_user_id IS NULL AND m.id > ?
        ORDER BY m.id ASC LIMIT ?`
@@ -217,7 +217,7 @@ function listConversation(userId, otherUserId, limit = 200) {
   return db
     .prepare(
       `SELECT m.id, m.body, m.created_at, m.from_user_id,
-              COALESCE(NULLIF(u.pseudo, ''), u.email) AS author
+              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author
        FROM messages m JOIN users u ON u.id = m.from_user_id
        WHERE (m.from_user_id = ? AND m.to_user_id = ?)
           OR (m.from_user_id = ? AND m.to_user_id = ?)
@@ -232,7 +232,7 @@ function listConversationsFor(userId) {
     .prepare(
       `SELECT
          other.id AS user_id,
-         COALESCE(NULLIF(other.pseudo, ''), other.email) AS display_name,
+         COALESCE(NULLIF(other.pseudo, ''), 'Membre #' || other.id) AS display_name,
          other.avatar_url,
          last_msg.body AS last_body,
          last_msg.created_at AS last_at
