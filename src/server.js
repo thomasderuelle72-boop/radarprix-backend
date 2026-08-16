@@ -12,6 +12,8 @@ const {
   createUser,
   findUserByEmail,
   findUserById,
+  updateProfile,
+  listUsers,
   promoteToAdmin,
   countUsers,
   countScans,
@@ -21,6 +23,7 @@ const {
   getWatchlist,
 } = require("./db");
 const { randomProductFor } = require("./catalog");
+const { runCatalogBatch } = require("./scanBatch");
 const { hashPassword, verifyPassword, generateToken, requireAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
 
 const app = express();
@@ -168,6 +171,22 @@ app.get("/api/auth/me", requireAuth, (req, res) => {
   res.json({ user });
 });
 
+// PATCH /api/auth/me  { pseudo?, avatarUrl? } — modifie son propre profil.
+app.patch("/api/auth/me", requireAuth, (req, res) => {
+  const { pseudo, avatarUrl } = req.body || {};
+  if (pseudo !== undefined && (typeof pseudo !== "string" || pseudo.length > 30)) {
+    return res.status(400).json({ error: "Le pseudo doit faire 30 caractères maximum." });
+  }
+  if (avatarUrl !== undefined && avatarUrl && !/^https?:\/\//.test(avatarUrl)) {
+    return res.status(400).json({ error: "L'URL de la photo doit commencer par http:// ou https://" });
+  }
+  const user = updateProfile(req.user.sub, {
+    pseudo: pseudo !== undefined ? pseudo.trim().slice(0, 30) : undefined,
+    avatarUrl: avatarUrl !== undefined ? avatarUrl.trim() : undefined,
+  });
+  res.json({ user });
+});
+
 // ── Favoris / recherches suivies (nécessite un compte) ──────────
 
 app.get("/api/watchlist", requireAuth, (req, res) => {
@@ -196,6 +215,23 @@ app.get("/api/admin/stats", requireAuth, requireAdmin, (req, res) => {
     totalScans: countScans(),
     topProducts: topScannedProducts(10),
   });
+});
+
+app.get("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
+  res.json({ users: listUsers(200) });
+});
+
+// Lance immédiatement un lot de scans catalogue (au lieu d'attendre le
+// prochain passage du cron). Consomme du quota SerpApi à chaque appel :
+// bouton à utiliser avec modération, pas pour un rafraîchissement en boucle.
+app.post("/api/admin/trigger-scan", requireAuth, requireAdmin, async (req, res) => {
+  const size = Math.min(20, Math.max(1, parseInt(req.body?.size, 10) || 10));
+  try {
+    const results = await runCatalogBatch(size);
+    res.json({ scanned: results.length, results });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get("/api/health", (req, res) => res.json({ ok: true }));

@@ -48,10 +48,16 @@ db.exec(`
 // Migration sûre : si la base existe déjà depuis avant l'ajout des rôles,
 // on ajoute la colonne sans tout recréer. SQLite n'a pas de
 // "ADD COLUMN IF NOT EXISTS" : on tente et on ignore l'erreur si elle existe déjà.
-try {
-  db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
-} catch (e) {
-  if (!/duplicate column/i.test(e.message)) throw e;
+for (const stmt of [
+  "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
+  "ALTER TABLE users ADD COLUMN pseudo TEXT",
+  "ALTER TABLE users ADD COLUMN avatar_url TEXT",
+]) {
+  try {
+    db.exec(stmt);
+  } catch (e) {
+    if (!/duplicate column/i.test(e.message)) throw e;
+  }
 }
 
 /** Enregistre une liste d'offres observées lors d'un scan. */
@@ -117,7 +123,25 @@ function findUserByEmail(email) {
 }
 
 function findUserById(id) {
-  return db.prepare("SELECT id, email, role, created_at FROM users WHERE id = ?").get(id);
+  return db.prepare("SELECT id, email, role, pseudo, avatar_url, created_at FROM users WHERE id = ?").get(id);
+}
+
+/** Met à jour le pseudo et/ou l'avatar d'un utilisateur (champs optionnels). */
+function updateProfile(userId, { pseudo, avatarUrl }) {
+  if (pseudo !== undefined) {
+    db.prepare("UPDATE users SET pseudo = ? WHERE id = ?").run(pseudo, userId);
+  }
+  if (avatarUrl !== undefined) {
+    db.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").run(avatarUrl, userId);
+  }
+  return findUserById(userId);
+}
+
+/** Liste de tous les utilisateurs, pour le tableau de bord admin. */
+function listUsers(limit = 100) {
+  return db
+    .prepare("SELECT id, email, pseudo, role, created_at FROM users ORDER BY created_at DESC LIMIT ?")
+    .all(limit);
 }
 
 /** Promeut un utilisateur admin s'il ne l'est pas déjà (idempotent). */
@@ -191,6 +215,8 @@ module.exports = {
   createUser,
   findUserByEmail,
   findUserById,
+  updateProfile,
+  listUsers,
   promoteToAdmin,
   countUsers,
   countScans,
