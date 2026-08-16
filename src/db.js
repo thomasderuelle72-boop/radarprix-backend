@@ -26,6 +26,22 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_snapshots_query ON snapshots(query);
   CREATE INDEX IF NOT EXISTS idx_snapshots_name ON snapshots(name);
+
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS watchlist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    query TEXT NOT NULL,
+    category TEXT DEFAULT 'tout',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, query)
+  );
 `);
 
 /** Enregistre une liste d'offres observées lors d'un scan. */
@@ -78,4 +94,51 @@ function latestSnapshots(query, limit = 30) {
     .all(query, query, limit);
 }
 
-module.exports = { db, insertSnapshots, priceHistoryFor, latestSnapshots };
+// ── Comptes utilisateurs ──────────────────────────────────────
+function createUser(email, passwordHash) {
+  const info = db
+    .prepare("INSERT INTO users (email, password_hash) VALUES (?, ?)")
+    .run(email.toLowerCase().trim(), passwordHash);
+  return { id: info.lastInsertRowid, email: email.toLowerCase().trim() };
+}
+
+function findUserByEmail(email) {
+  return db.prepare("SELECT * FROM users WHERE email = ?").get(email.toLowerCase().trim());
+}
+
+function findUserById(id) {
+  return db.prepare("SELECT id, email, created_at FROM users WHERE id = ?").get(id);
+}
+
+// ── Favoris / recherches suivies ──────────────────────────────
+function addToWatchlist(userId, query, category) {
+  db.prepare(
+    "INSERT OR IGNORE INTO watchlist (user_id, query, category) VALUES (?, ?, ?)"
+  ).run(userId, query.toLowerCase().trim(), category || "tout");
+}
+
+function removeFromWatchlist(userId, query) {
+  db.prepare("DELETE FROM watchlist WHERE user_id = ? AND query = ?").run(
+    userId,
+    query.toLowerCase().trim()
+  );
+}
+
+function getWatchlist(userId) {
+  return db
+    .prepare("SELECT query, category, created_at FROM watchlist WHERE user_id = ? ORDER BY created_at DESC")
+    .all(userId);
+}
+
+module.exports = {
+  db,
+  insertSnapshots,
+  priceHistoryFor,
+  latestSnapshots,
+  createUser,
+  findUserByEmail,
+  findUserById,
+  addToWatchlist,
+  removeFromWatchlist,
+  getWatchlist,
+};
