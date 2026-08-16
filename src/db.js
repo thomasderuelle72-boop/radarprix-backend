@@ -141,6 +141,26 @@ function findUserByEmail(email) {
   return db.prepare("SELECT * FROM users WHERE email = ?").get(email.toLowerCase().trim());
 }
 
+/** Comme findUserByEmail mais par id — inclut le hash, réservé à un usage interne (vérif mot de passe). */
+function findUserByIdWithHash(id) {
+  return db.prepare("SELECT * FROM users WHERE id = ?").get(id);
+}
+
+function updatePassword(userId, newHash) {
+  db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(newHash, userId);
+}
+
+/** Supprime un compte et toutes ses données associées (favoris, commentaires, messages). */
+function deleteAccount(userId) {
+  const tx = db.transaction((id) => {
+    db.prepare("DELETE FROM watchlist WHERE user_id = ?").run(id);
+    db.prepare("DELETE FROM comments WHERE user_id = ?").run(id);
+    db.prepare("DELETE FROM messages WHERE from_user_id = ? OR to_user_id = ?").run(id, id);
+    db.prepare("DELETE FROM users WHERE id = ?").run(id);
+  });
+  tx(userId);
+}
+
 function findUserById(id) {
   return db.prepare("SELECT id, email, role, pseudo, avatar_url, created_at FROM users WHERE id = ?").get(id);
 }
@@ -335,6 +355,9 @@ module.exports = {
   latestSnapshots,
   createUser,
   findUserByEmail,
+  findUserByIdWithHash,
+  updatePassword,
+  deleteAccount,
   findUserById,
   updateProfile,
   listUsers,

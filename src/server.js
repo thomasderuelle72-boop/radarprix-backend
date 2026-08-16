@@ -12,6 +12,9 @@ const {
   priceHistoryByDay,
   createUser,
   findUserByEmail,
+  findUserByIdWithHash,
+  updatePassword,
+  deleteAccount,
   findUserById,
   updateProfile,
   listUsers,
@@ -193,6 +196,30 @@ app.patch("/api/auth/me", requireAuth, (req, res) => {
     avatarUrl: avatarUrl !== undefined ? avatarUrl.trim() : undefined,
   });
   res.json({ user });
+});
+
+// PATCH /api/auth/password  { currentPassword, newPassword } — nécessite le mot de passe actuel.
+app.patch("/api/auth/password", requireAuth, async (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  if (!newPassword || newPassword.length < 8) {
+    return res.status(400).json({ error: "Le nouveau mot de passe doit faire au moins 8 caractères." });
+  }
+  const row = findUserByIdWithHash(req.user.sub);
+  const ok = row && (await verifyPassword(currentPassword || "", row.password_hash));
+  if (!ok) return res.status(401).json({ error: "Mot de passe actuel incorrect." });
+  const newHash = await hashPassword(newPassword);
+  updatePassword(req.user.sub, newHash);
+  res.json({ ok: true });
+});
+
+// DELETE /api/auth/me  { password } — suppression définitive du compte, confirmée par le mot de passe.
+app.delete("/api/auth/me", requireAuth, async (req, res) => {
+  const { password } = req.body || {};
+  const row = findUserByIdWithHash(req.user.sub);
+  const ok = row && (await verifyPassword(password || "", row.password_hash));
+  if (!ok) return res.status(401).json({ error: "Mot de passe incorrect — suppression annulée." });
+  deleteAccount(req.user.sub);
+  res.json({ ok: true });
 });
 
 // ── Favoris / recherches suivies (nécessite un compte) ──────────
