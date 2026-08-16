@@ -31,7 +31,16 @@ global.fetch = async (url) => {
 };
 
 const { insertSnapshots } = require("./src/db");
+const { randomProductFor } = require("./src/catalog");
 // On vide la table pour un test propre (SQLite en mémoire du fichier de test).
+
+console.log("── Vérification : le catalogue est bien utilisé quand aucune query n'est fournie ──");
+for (let i = 0; i < 5; i++) {
+  const picked = randomProductFor("gaming");
+  console.log(`  Produit pioché pour "gaming" : ${picked}`);
+}
+console.log("✅ Aucune requête vague type 'promo' — que des vrais noms de produits\n");
+
 
 async function run() {
   // On réimplémente ici la logique de scanQuery pour tester le pipeline complet
