@@ -4,7 +4,7 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const { fetchShoppingResults, resolveDirectLink } = require("./serpapi");
-const { analyzeOffers } = require("./algorithm");
+const { analyzeOffers, filterRelevantOffers } = require("./algorithm");
 const { insertSnapshots, latestSnapshots } = require("./db");
 const { randomProductFor } = require("./catalog");
 
@@ -21,7 +21,10 @@ const MAX_DIRECT_LINKS = 6;
 
 /** Lance un scan réel (SerpApi) pour une requête, l'analyse, le stocke. */
 async function scanQuery(query, category = "tout") {
-  const offers = await fetchShoppingResults(query);
+  const rawOffers = await fetchShoppingResults(query);
+  // On écarte les accessoires et hors-sujet AVANT toute analyse de prix :
+  // sinon une coque à 15€ fausse la médiane de référence du vrai produit.
+  const offers = filterRelevantOffers(rawOffers, query);
   insertSnapshots(query.toLowerCase(), category, offers);
   const analyzed = analyzeOffers(offers)
     .filter((o) => o.verdict !== "normal")
