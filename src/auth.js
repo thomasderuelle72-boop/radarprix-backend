@@ -24,7 +24,7 @@ async function verifyPassword(plain, hash) {
 
 function generateToken(user) {
   assertSecretConfigured();
-  return jwt.sign({ sub: user.id, email: user.email }, JWT_SECRET, { expiresIn: TOKEN_EXPIRY });
+  return jwt.sign({ sub: user.id, email: user.email, role: user.role || "user" }, JWT_SECRET, { expiresIn: TOKEN_EXPIRY });
 }
 
 function verifyToken(token) {
@@ -45,9 +45,23 @@ function requireAuth(req, res, next) {
   }
 }
 
+/** Middleware Express : exige en plus que l'utilisateur soit administrateur. */
+function requireAdmin(req, res, next) {
+  if (req.user?.role !== "admin") {
+    return res.status(403).json({ error: "Accès réservé à l'administrateur." });
+  }
+  next();
+}
+
+/** Détermine si un email doit être promu admin (défini via la variable d'environnement ADMIN_EMAIL). */
+function isDesignatedAdminEmail(email) {
+  const adminEmail = (process.env.ADMIN_EMAIL || "").toLowerCase().trim();
+  return adminEmail && email.toLowerCase().trim() === adminEmail;
+}
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 function isValidEmail(email) {
   return typeof email === "string" && EMAIL_RE.test(email);
 }
 
-module.exports = { hashPassword, verifyPassword, generateToken, verifyToken, requireAuth, isValidEmail };
+module.exports = { hashPassword, verifyPassword, generateToken, verifyToken, requireAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail };

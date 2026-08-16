@@ -31,6 +31,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -43,6 +44,15 @@ db.exec(`
     UNIQUE(user_id, query)
   );
 `);
+
+// Migration sûre : si la base existe déjà depuis avant l'ajout des rôles,
+// on ajoute la colonne sans tout recréer. SQLite n'a pas de
+// "ADD COLUMN IF NOT EXISTS" : on tente et on ignore l'erreur si elle existe déjà.
+try {
+  db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
+} catch (e) {
+  if (!/duplicate column/i.test(e.message)) throw e;
+}
 
 /** Enregistre une liste d'offres observées lors d'un scan. */
 function insertSnapshots(query, category, offers) {
@@ -107,7 +117,50 @@ function findUserByEmail(email) {
 }
 
 function findUserById(id) {
-  return db.prepare("SELECT id, email, created_at FROM users WHERE id = ?").get(id);
+  return db.prepare("SELECT id, email, role, created_at FROM users WHERE id = ?").get(id);
+}
+
+/** Promeut un utilisateur admin s'il ne l'est pas déjà (idempotent). */
+function promoteToAdmin(userId) {
+  db.prepare("UPDATE users SET role = 'admin' WHERE id = ? AND role != 'admin'").run(userId);
+}
+
+function countUsers() {
+  return db.prepare("SELECT COUNT(*) AS n FROM users").get().n;
+}
+
+function countScans() {
+  return db.prepare("SELECT COUNT(DISTINCT query || '|' || scraped_at) AS n FROM snapshots").get().n;
+}
+
+function topScannedProducts(limit = 10) {
+  return db
+    .prepare(
+      `SELECT query, COUNT(*) AS times_seen, MAX(scraped_at) AS last_seen
+       FROM snapshots GROUP BY query ORDER BY times_seen DESC LIMIT ?`
+    )
+    .all(limit);
+}
+
+/**
+ * Liste, pour chaque produit déjà scanné (par le cron ou un scan précédent),
+ * le dernier lot d'offres observé. Un "produit" = une valeur de `query`.
+ * Optionnellement filtré par catégorie.
+ */
+function latestBatchPerProduct(category) {
+  const queries = db
+    .prepare(
+      category && category !== "tout"
+        ? "SELECT DISTINCT query FROM snapshots WHERE category = ?"
+        : "SELECT DISTINCT query FROM snapshots"
+    )
+    .all(...(category && category !== "tout" ? [category] : []))
+    .map((r) => r.query);
+
+  return queries.map((q) => ({
+    query: q,
+    offers: latestSnapshots(q, 50),
+  }));
 }
 
 // ── Favoris / recherches suivies ──────────────────────────────
@@ -138,6 +191,11 @@ module.exports = {
   createUser,
   findUserByEmail,
   findUserById,
+  promoteToAdmin,
+  countUsers,
+  countScans,
+  topScannedProducts,
+  latestBatchPerProduct,
   addToWatchlist,
   removeFromWatchlist,
   getWatchlist,

@@ -8,15 +8,20 @@ const { analyzeOffers, filterRelevantOffers } = require("./algorithm");
 const {
   insertSnapshots,
   latestSnapshots,
+  latestBatchPerProduct,
   createUser,
   findUserByEmail,
   findUserById,
+  promoteToAdmin,
+  countUsers,
+  countScans,
+  topScannedProducts,
   addToWatchlist,
   removeFromWatchlist,
   getWatchlist,
 } = require("./db");
 const { randomProductFor } = require("./catalog");
-const { hashPassword, verifyPassword, generateToken, requireAuth, isValidEmail } = require("./auth");
+const { hashPassword, verifyPassword, generateToken, requireAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
 
 const app = express();
 app.use(cors());
@@ -58,6 +63,39 @@ async function scanQuery(query, category = "tout") {
   return [...top, ...rest];
 }
 
+// GET /api/deals?category=gaming&page=1&pageSize=15
+// Lit tous les deals déjà repérés en base (par le cron ou des scans précédents),
+// groupés par produit, analysés, fusionnés, triés par score, puis paginés.
+// AUCUN appel SerpApi ici : réponse instantanée, gratuite, appelable sans limite.
+app.get("/api/deals", (req, res) => {
+  const category = req.query.category || "tout";
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize, 10) || 15));
+
+  const batches = latestBatchPerProduct(category);
+  const allFlagged = [];
+  for (const { offers } of batches) {
+    if (offers.length === 0) continue;
+    const relevant = filterRelevantOffers(offers, offers[0].name);
+    const analyzed = analyzeOffers(relevant).filter((o) => o.verdict !== "normal");
+    allFlagged.push(...analyzed);
+  }
+  allFlagged.sort((a, b) => b.score - a.score);
+
+  const total = allFlagged.length;
+  const start = (page - 1) * pageSize;
+  const pageItems = allFlagged.slice(start, start + pageSize).map(({ _token, ...clean }) => clean);
+
+  res.json({
+    category,
+    page,
+    pageSize,
+    total,
+    hasMore: start + pageSize < total,
+    items: pageItems,
+  });
+});
+
 // POST /api/scan  { query?: "PS5 slim", category?: "gaming" }
 // Si "query" est fourni, on scanne exactement ce produit.
 // Sinon, on tire un produit réel au hasard dans la catégorie demandée.
@@ -97,8 +135,10 @@ app.post("/api/auth/register", async (req, res) => {
   try {
     const passwordHash = await hashPassword(password);
     const user = createUser(email, passwordHash);
-    const token = generateToken(user);
-    res.status(201).json({ token, user: { id: user.id, email: user.email } });
+    if (isDesignatedAdminEmail(user.email)) promoteToAdmin(user.id);
+    const fullUser = findUserById(user.id);
+    const token = generateToken(fullUser);
+    res.status(201).json({ token, user: fullUser });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
@@ -112,8 +152,10 @@ app.post("/api/auth/login", async (req, res) => {
   const ok = row && (await verifyPassword(password || "", row.password_hash));
   if (!ok) return res.status(401).json({ error: "Email ou mot de passe incorrect." });
   try {
-    const token = generateToken({ id: row.id, email: row.email });
-    res.json({ token, user: { id: row.id, email: row.email } });
+    if (isDesignatedAdminEmail(row.email)) promoteToAdmin(row.id);
+    const fullUser = findUserById(row.id);
+    const token = generateToken(fullUser);
+    res.json({ token, user: fullUser });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -144,6 +186,16 @@ app.delete("/api/watchlist", requireAuth, (req, res) => {
   if (!query) return res.status(400).json({ error: "Paramètre 'query' requis." });
   removeFromWatchlist(req.user.sub, query);
   res.json({ items: getWatchlist(req.user.sub) });
+});
+
+// ── Administration (réservé au créateur du site) ────────────────
+
+app.get("/api/admin/stats", requireAuth, requireAdmin, (req, res) => {
+  res.json({
+    totalUsers: countUsers(),
+    totalScans: countScans(),
+    topProducts: topScannedProducts(10),
+  });
 });
 
 app.get("/api/health", (req, res) => res.json({ ok: true }));
