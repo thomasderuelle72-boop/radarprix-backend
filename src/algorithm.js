@@ -26,24 +26,53 @@ function isAccessoryTitle(title) {
 // Les mots vides ne comptent pas comme "mots significatifs" de la requête.
 const STOPWORDS = new Set(["de", "du", "des", "le", "la", "les", "un", "une", "et", "pour", "avec"]);
 
-function significantWords(text) {
+// Abréviations courantes à normaliser AVANT de découper en mots, pour que
+// "PS5" (vendeur) et "PlayStation 5" (notre catalogue) soient reconnus
+// comme le même produit malgré l'écriture différente.
+function normalizeAbbreviations(text) {
   return (text || "")
+    .replace(/\bps\s*([1-5])\b/gi, "playstation $1")
+    .replace(/\bxbox\s*one\b/gi, "xbox one");
+}
+
+function significantWords(text) {
+  const normalized = normalizeAbbreviations(text)
     .toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // enlève les accents
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // enlève les accents
+  return normalized
     .split(/[^a-z0-9]+/)
-    .filter((w) => w.length >= 3 && !STOPWORDS.has(w));
+    .filter((w) => {
+      if (!w) return false;
+      // Un token contenant un chiffre (15, 128, 4060, s24...) est presque
+      // toujours un identifiant de modèle/génération/capacité : on le garde
+      // TOUJOURS, même court — c'est justement ce qui distingue un iPhone 15
+      // d'un iPhone 11, ou une RTX 4060 d'une RTX 4070.
+      if (/\d/.test(w)) return true;
+      return w.length >= 3 && !STOPWORDS.has(w);
+    });
 }
 
 /**
- * Un titre est jugé pertinent s'il reprend au moins la moitié des mots
- * significatifs de la requête (arrondi au-dessus, minimum 1 mot).
+ * Un titre est jugé pertinent seulement si TOUS les identifiants numériques
+ * de la requête (modèle, génération, capacité — ex: "15", "128", "4060")
+ * s'y retrouvent, ET qu'au moins la moitié des mots textuels correspondent.
+ * Les nombres sont décisifs : sans eux, "iPhone 15" et "iPhone 11" étaient
+ * confondus, ce qui polluait complètement la pertinence des résultats.
  */
 function titleMatchesQuery(title, query) {
   const queryWords = significantWords(query);
   if (queryWords.length === 0) return true; // requête trop vague pour filtrer, on ne bloque rien
   const titleWords = new Set(significantWords(title));
-  const matches = queryWords.filter((w) => titleWords.has(w)).length;
-  return matches >= Math.ceil(queryWords.length / 2);
+
+  const numericWords = queryWords.filter((w) => /\d/.test(w));
+  const textWords = queryWords.filter((w) => !/\d/.test(w));
+
+  const allNumbersPresent = numericWords.every((w) => titleWords.has(w));
+  if (!allNumbersPresent) return false;
+
+  if (textWords.length === 0) return true;
+  const matches = textWords.filter((w) => titleWords.has(w)).length;
+  return matches >= Math.ceil(textWords.length / 2);
 }
 
 /**
@@ -94,6 +123,10 @@ function analyzeOffers(offers) {
     const history = priceHistoryFor(o.name, 0).filter((p) => p !== o.price);
     const histRef = history.length >= 3 ? mean(history) : null;
 
+    // "Prix le plus bas jamais vu" : vrai seulement s'il y a un historique
+    // pour comparer (sinon toute première observation serait trivialement "la plus basse").
+    const allTimeLow = history.length >= 3 && o.price < Math.min(...history);
+
     // On prend la référence la plus fiable disponible : l'historique
     // du produit s'il y en a assez, sinon la médiane rognée du scan du jour.
     const refPrice = histRef || peerRef;
@@ -111,7 +144,7 @@ function analyzeOffers(offers) {
     if (histRef) score += 5; // référence historique = plus fiable qu'une simple comparaison du jour
     score = Math.min(score, 100);
 
-    return { ...o, refPrice: Math.round(refPrice), pct, verdict, score };
+    return { ...o, refPrice: Math.round(refPrice), pct, verdict, score, allTimeLow };
   });
 }
 

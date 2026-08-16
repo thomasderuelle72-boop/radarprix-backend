@@ -43,4 +43,20 @@ const result3 = analyzeOffers(batch3);
 result3.forEach((o) => console.log(`  ${o.seller.padEnd(10)} ${o.price}€ → ${o.verdict}`));
 console.log(result3.every((o) => o.verdict === "normal") ? "  ✅ Pas de faux positif\n" : "  ❌ ÉCHEC : faux positif détecté\n");
 
+console.log("── Test 4 : badge 'prix le plus bas jamais vu' ──");
+for (let i = 0; i < 5; i++) {
+  insertSnapshots("clavier mecanique abc", "hightech", [
+    { name: "Clavier Mécanique ABC", price: 78 + Math.random() * 6, seller: "Fnac" },
+  ]);
+}
+const batch4 = [{ name: "Clavier Mécanique ABC", price: 65, seller: "Amazon" }];
+const result4 = analyzeOffers(batch4);
+console.log(`  Prix vu : 65€ (historique ~78-84€) → allTimeLow=${result4[0].allTimeLow} (attendu : true)`);
+console.log(result4[0].allTimeLow ? "  ✅ Badge correctement déclenché\n" : "  ❌ ÉCHEC\n");
+
+const batch5 = [{ name: "Clavier Mécanique ABC", price: 90, seller: "Amazon" }]; // plus cher que l'historique
+const result5 = analyzeOffers(batch5);
+console.log(`  Prix vu : 90€ (plus cher que l'historique) → allTimeLow=${result5[0].allTimeLow} (attendu : false)`);
+console.log(!result5[0].allTimeLow ? "  ✅ Pas de faux badge quand le prix est plus haut\n" : "  ❌ ÉCHEC\n");
+
 console.log("Tests terminés.");

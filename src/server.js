@@ -9,11 +9,13 @@ const {
   insertSnapshots,
   latestSnapshots,
   latestBatchPerProduct,
+  priceHistoryByDay,
   createUser,
   findUserByEmail,
   findUserById,
   updateProfile,
   listUsers,
+  listMembersPublic,
   promoteToAdmin,
   countUsers,
   countScans,
@@ -21,6 +23,12 @@ const {
   addToWatchlist,
   removeFromWatchlist,
   getWatchlist,
+  addComment,
+  listComments,
+  sendMessage,
+  listPublicMessages,
+  listConversation,
+  listConversationsFor,
 } = require("./db");
 const { randomProductFor } = require("./catalog");
 const { runCatalogBatch } = require("./scanBatch");
@@ -205,6 +213,72 @@ app.delete("/api/watchlist", requireAuth, (req, res) => {
   if (!query) return res.status(400).json({ error: "Paramètre 'query' requis." });
   removeFromWatchlist(req.user.sub, query);
   res.json({ items: getWatchlist(req.user.sub) });
+});
+
+// GET /api/history?query=... — historique de prix par jour, pour un mini-graphique.
+app.get("/api/history", (req, res) => {
+  const { query, days } = req.query;
+  if (!query) return res.status(400).json({ error: "Paramètre 'query' requis." });
+  res.json({ query, days: priceHistoryByDay(query, parseInt(days, 10) || 30) });
+});
+
+// ── Commentaires (sous un deal) ──────────────────────────────────
+
+app.get("/api/comments", (req, res) => {
+  const { query } = req.query;
+  if (!query) return res.status(400).json({ error: "Paramètre 'query' requis." });
+  res.json({ items: listComments(query) });
+});
+
+app.post("/api/comments", requireAuth, (req, res) => {
+  const { query, body } = req.body || {};
+  if (!query || !body || !body.trim()) return res.status(400).json({ error: "Paramètres 'query' et 'body' requis." });
+  if (body.length > 500) return res.status(400).json({ error: "Commentaire trop long (500 caractères max)." });
+  addComment(query, req.user.sub, body.trim());
+  res.status(201).json({ items: listComments(query) });
+});
+
+// ── Messagerie : salon général public + messages privés ─────────
+
+// GET /api/members — liste des membres (sans email), pour démarrer une conversation.
+app.get("/api/members", requireAuth, (req, res) => {
+  res.json({ items: listMembersPublic(req.user.sub) });
+});
+
+// GET /api/chat/public?afterId=0 — messages du salon général, à sonder régulièrement.
+app.get("/api/chat/public", (req, res) => {
+  const afterId = parseInt(req.query.afterId, 10) || 0;
+  res.json({ items: listPublicMessages(afterId) });
+});
+
+app.post("/api/chat/public", requireAuth, (req, res) => {
+  const { body } = req.body || {};
+  if (!body || !body.trim()) return res.status(400).json({ error: "Message vide." });
+  if (body.length > 500) return res.status(400).json({ error: "Message trop long (500 caractères max)." });
+  const id = sendMessage(req.user.sub, null, body.trim());
+  res.status(201).json({ id });
+});
+
+// GET /api/chat/conversations — mes conversations privées, avec dernier message.
+app.get("/api/chat/conversations", requireAuth, (req, res) => {
+  res.json({ items: listConversationsFor(req.user.sub) });
+});
+
+// GET /api/chat/with/:userId — historique d'une conversation privée avec un membre.
+app.get("/api/chat/with/:userId", requireAuth, (req, res) => {
+  const otherId = parseInt(req.params.userId, 10);
+  if (!otherId) return res.status(400).json({ error: "Identifiant invalide." });
+  res.json({ items: listConversation(req.user.sub, otherId) });
+});
+
+app.post("/api/chat/with/:userId", requireAuth, (req, res) => {
+  const otherId = parseInt(req.params.userId, 10);
+  const { body } = req.body || {};
+  if (!otherId) return res.status(400).json({ error: "Identifiant invalide." });
+  if (!body || !body.trim()) return res.status(400).json({ error: "Message vide." });
+  if (body.length > 500) return res.status(400).json({ error: "Message trop long (500 caractères max)." });
+  const id = sendMessage(req.user.sub, otherId, body.trim());
+  res.status(201).json({ id });
 });
 
 // ── Administration (réservé au créateur du site) ────────────────

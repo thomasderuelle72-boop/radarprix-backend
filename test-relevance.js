@@ -30,4 +30,21 @@ console.log("── Test titleMatchesQuery isolé ──");
 console.log("  'PS5 Slim' vs requête 'PlayStation 5 Slim' :", titleMatchesQuery("PS5 Slim édition limitée", "PlayStation 5 Slim"));
 console.log("  'iPhone 15 coque' vs requête 'PlayStation 5' :", titleMatchesQuery("Coque iPhone 15", "PlayStation 5 Slim"));
 
-console.log("\nTests terminés.");
+console.log("\n── Test du bug corrigé : confusion entre modèles différents ──");
+const wrongModel1 = titleMatchesQuery("iPhone 11 64 Go reconditionné", "iPhone 15 128 Go");
+console.log(`  iPhone 11 vs recherche "iPhone 15 128 Go" : ${wrongModel1} (attendu : false)`);
+console.log(!wrongModel1 ? "  ✅ Modèle différent bien rejeté\n" : "  ❌ ÉCHEC : confusion de modèle non détectée\n");
+
+const wrongStorage = titleMatchesQuery("iPhone 15 256 Go", "iPhone 15 128 Go");
+console.log(`  iPhone 15 256Go vs recherche "iPhone 15 128 Go" : ${wrongStorage} (attendu : false, capacité différente)`);
+console.log(!wrongStorage ? "  ✅ Capacité différente bien rejetée\n" : "  ❌ ÉCHEC\n");
+
+const rightMatch = titleMatchesQuery("Apple iPhone 15 (128 Go) Noir", "iPhone 15 128 Go");
+console.log(`  "Apple iPhone 15 (128 Go) Noir" vs recherche "iPhone 15 128 Go" : ${rightMatch} (attendu : true)`);
+console.log(rightMatch ? "  ✅ Même produit, formulation différente, bien accepté\n" : "  ❌ ÉCHEC\n");
+
+const wrongGpu = titleMatchesQuery("Carte graphique RTX 4070", "Carte graphique RTX 4060");
+console.log(`  RTX 4070 vs recherche "RTX 4060" : ${wrongGpu} (attendu : false)`);
+console.log(!wrongGpu ? "  ✅ Modèle de carte graphique différent bien rejeté\n" : "  ❌ ÉCHEC\n");
+
+console.log("Tests terminés.");

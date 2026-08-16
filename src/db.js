@@ -43,6 +43,25 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(user_id, query)
   );
+
+  CREATE TABLE IF NOT EXISTS comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_query TEXT NOT NULL,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_comments_deal ON comments(deal_query);
+
+  CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    to_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE, -- NULL = salon général public
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_messages_public ON messages(to_user_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_messages_dm ON messages(from_user_id, to_user_id);
 `);
 
 // Migration sûre : si la base existe déjà depuis avant l'ajout des rôles,
@@ -144,6 +163,107 @@ function listUsers(limit = 100) {
     .all(limit);
 }
 
+/** Liste "publique" des membres (sans email), pour démarrer une conversation privée. */
+function listMembersPublic(excludeUserId) {
+  return db
+    .prepare(
+      `SELECT id, COALESCE(NULLIF(pseudo, ''), 'Membre #' || id) AS display_name, avatar_url
+       FROM users WHERE id != ? ORDER BY created_at DESC LIMIT 200`
+    )
+    .all(excludeUserId);
+}
+
+// ── Commentaires (sous un deal) ─────────────────────────────────
+function addComment(dealQuery, userId, body) {
+  db.prepare("INSERT INTO comments (deal_query, user_id, body) VALUES (?, ?, ?)").run(
+    dealQuery.toLowerCase().trim(),
+    userId,
+    body
+  );
+}
+
+function listComments(dealQuery, limit = 100) {
+  return db
+    .prepare(
+      `SELECT c.id, c.body, c.created_at, u.id AS user_id,
+              COALESCE(NULLIF(u.pseudo, ''), u.email) AS author, u.avatar_url
+       FROM comments c JOIN users u ON u.id = c.user_id
+       WHERE c.deal_query = ? ORDER BY c.created_at ASC LIMIT ?`
+    )
+    .all(dealQuery.toLowerCase().trim(), limit);
+}
+
+// ── Messages : salon général public (to_user_id NULL) + messages privés ──
+function sendMessage(fromUserId, toUserId, body) {
+  const info = db
+    .prepare("INSERT INTO messages (from_user_id, to_user_id, body) VALUES (?, ?, ?)")
+    .run(fromUserId, toUserId || null, body);
+  return info.lastInsertRowid;
+}
+
+function listPublicMessages(afterId = 0, limit = 100) {
+  return db
+    .prepare(
+      `SELECT m.id, m.body, m.created_at, u.id AS user_id,
+              COALESCE(NULLIF(u.pseudo, ''), u.email) AS author, u.avatar_url
+       FROM messages m JOIN users u ON u.id = m.from_user_id
+       WHERE m.to_user_id IS NULL AND m.id > ?
+       ORDER BY m.id ASC LIMIT ?`
+    )
+    .all(afterId, limit);
+}
+
+function listConversation(userId, otherUserId, limit = 200) {
+  return db
+    .prepare(
+      `SELECT m.id, m.body, m.created_at, m.from_user_id,
+              COALESCE(NULLIF(u.pseudo, ''), u.email) AS author
+       FROM messages m JOIN users u ON u.id = m.from_user_id
+       WHERE (m.from_user_id = ? AND m.to_user_id = ?)
+          OR (m.from_user_id = ? AND m.to_user_id = ?)
+       ORDER BY m.id ASC LIMIT ?`
+    )
+    .all(userId, otherUserId, otherUserId, userId, limit);
+}
+
+/** Liste des conversations privées d'un utilisateur, avec le dernier message de chacune. */
+function listConversationsFor(userId) {
+  return db
+    .prepare(
+      `SELECT
+         other.id AS user_id,
+         COALESCE(NULLIF(other.pseudo, ''), other.email) AS display_name,
+         other.avatar_url,
+         last_msg.body AS last_body,
+         last_msg.created_at AS last_at
+       FROM (
+         SELECT DISTINCT CASE WHEN from_user_id = ? THEN to_user_id ELSE from_user_id END AS other_id
+         FROM messages
+         WHERE to_user_id IS NOT NULL AND (from_user_id = ? OR to_user_id = ?)
+       ) AS convo
+       JOIN users other ON other.id = convo.other_id
+       JOIN messages last_msg ON last_msg.id = (
+         SELECT id FROM messages
+         WHERE (from_user_id = ? AND to_user_id = other.id) OR (from_user_id = other.id AND to_user_id = ?)
+         ORDER BY id DESC LIMIT 1
+       )
+       ORDER BY last_msg.created_at DESC`
+    )
+    .all(userId, userId, userId, userId, userId);
+}
+
+// ── Historique de prix agrégé par jour (pour un mini-graphique) ──
+function priceHistoryByDay(query, days = 30) {
+  return db
+    .prepare(
+      `SELECT date(scraped_at) AS day, AVG(price) AS avg_price, MIN(price) AS min_price
+       FROM snapshots
+       WHERE query = ? AND scraped_at >= datetime('now', ?)
+       GROUP BY date(scraped_at) ORDER BY day ASC`
+    )
+    .all(query.toLowerCase().trim(), `-${days} days`);
+}
+
 /** Promeut un utilisateur admin s'il ne l'est pas déjà (idempotent). */
 function promoteToAdmin(userId) {
   db.prepare("UPDATE users SET role = 'admin' WHERE id = ? AND role != 'admin'").run(userId);
@@ -211,12 +331,14 @@ module.exports = {
   db,
   insertSnapshots,
   priceHistoryFor,
+  priceHistoryByDay,
   latestSnapshots,
   createUser,
   findUserByEmail,
   findUserById,
   updateProfile,
   listUsers,
+  listMembersPublic,
   promoteToAdmin,
   countUsers,
   countScans,
@@ -225,4 +347,10 @@ module.exports = {
   addToWatchlist,
   removeFromWatchlist,
   getWatchlist,
+  addComment,
+  listComments,
+  sendMessage,
+  listPublicMessages,
+  listConversation,
+  listConversationsFor,
 };
