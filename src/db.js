@@ -62,7 +62,72 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_messages_public ON messages(to_user_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_messages_dm ON messages(from_user_id, to_user_id);
+
+  -- ── Communauté : deals soumis par les membres + votes de pertinence ──
+  CREATE TABLE IF NOT EXISTS community_deals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT,
+    url TEXT,
+    price REAL,
+    image_url TEXT,
+    category TEXT DEFAULT 'tout',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_community_deals_created ON community_deals(created_at);
+
+  CREATE TABLE IF NOT EXISTS community_votes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id INTEGER NOT NULL REFERENCES community_deals(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    value INTEGER NOT NULL, -- 1 = pertinent, -1 = pas pertinent
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(deal_id, user_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_community_votes_deal ON community_votes(deal_id);
+
+  -- ── Forum : catégories, sujets, réponses ──
+  CREATE TABLE IF NOT EXISTS forum_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS forum_threads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category_id INTEGER NOT NULL REFERENCES forum_categories(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_forum_threads_category ON forum_threads(category_id);
+
+  CREATE TABLE IF NOT EXISTS forum_replies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id INTEGER NOT NULL REFERENCES forum_threads(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_forum_replies_thread ON forum_replies(thread_id);
 `);
+
+// Catégories de forum par défaut — insérées une seule fois (slug UNIQUE).
+const defaultForumCategories = [
+  { slug: "bons-plans", name: "Bons plans", description: "Partagez et discutez des meilleures affaires du moment.", sort_order: 1 },
+  { slug: "aide-astuces", name: "Aide & astuces", description: "Questions, conseils, arnaques à éviter.", sort_order: 2 },
+  { slug: "general", name: "Discussions générales", description: "Tout le reste : présentations, retours, suggestions.", sort_order: 3 },
+];
+{
+  const insertCat = db.prepare(
+    "INSERT OR IGNORE INTO forum_categories (slug, name, description, sort_order) VALUES (@slug, @name, @description, @sort_order)"
+  );
+  for (const cat of defaultForumCategories) insertCat.run(cat);
+}
 
 // Migration sûre : si la base existe déjà depuis avant l'ajout des rôles,
 // on ajoute la colonne sans tout recréer. SQLite n'a pas de
@@ -150,12 +215,16 @@ function updatePassword(userId, newHash) {
   db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(newHash, userId);
 }
 
-/** Supprime un compte et toutes ses données associées (favoris, commentaires, messages). */
+/** Supprime un compte et toutes ses données associées (favoris, commentaires, messages, deals communautaires, forum). */
 function deleteAccount(userId) {
   const tx = db.transaction((id) => {
     db.prepare("DELETE FROM watchlist WHERE user_id = ?").run(id);
     db.prepare("DELETE FROM comments WHERE user_id = ?").run(id);
     db.prepare("DELETE FROM messages WHERE from_user_id = ? OR to_user_id = ?").run(id, id);
+    db.prepare("DELETE FROM community_votes WHERE user_id = ?").run(id);
+    db.prepare("DELETE FROM community_deals WHERE user_id = ?").run(id);
+    db.prepare("DELETE FROM forum_replies WHERE user_id = ?").run(id);
+    db.prepare("DELETE FROM forum_threads WHERE user_id = ?").run(id);
     db.prepare("DELETE FROM users WHERE id = ?").run(id);
   });
   tx(userId);
@@ -347,6 +416,147 @@ function getWatchlist(userId) {
     .all(userId);
 }
 
+// ── Communauté : deals soumis par les membres + votes ───────────
+/** Enregistre un deal soumis par un membre de la communauté. */
+function submitCommunityDeal(userId, { title, description, url, price, imageUrl, category }) {
+  const info = db
+    .prepare(
+      `INSERT INTO community_deals (user_id, title, description, url, price, image_url, category)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(userId, title, description || null, url || null, price ?? null, imageUrl || null, category || "tout");
+  return getCommunityDeal(info.lastInsertRowid);
+}
+
+/** Un deal communautaire avec son décompte de votes et l'auteur. */
+function getCommunityDeal(id) {
+  return db
+    .prepare(
+      `SELECT d.*, COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author,
+              u.avatar_url,
+              COALESCE(SUM(CASE WHEN v.value = 1 THEN 1 ELSE 0 END), 0) AS upvotes,
+              COALESCE(SUM(CASE WHEN v.value = -1 THEN 1 ELSE 0 END), 0) AS downvotes
+       FROM community_deals d
+       JOIN users u ON u.id = d.user_id
+       LEFT JOIN community_votes v ON v.deal_id = d.id
+       WHERE d.id = ?
+       GROUP BY d.id`
+    )
+    .get(id);
+}
+
+/** Liste des deals communautaires, triés par catégorie, avec décompte de votes. */
+function listCommunityDeals(category, limit = 50, offset = 0) {
+  const rows = db
+    .prepare(
+      `SELECT d.*, COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author,
+              u.avatar_url,
+              COALESCE(SUM(CASE WHEN v.value = 1 THEN 1 ELSE 0 END), 0) AS upvotes,
+              COALESCE(SUM(CASE WHEN v.value = -1 THEN 1 ELSE 0 END), 0) AS downvotes
+       FROM community_deals d
+       JOIN users u ON u.id = d.user_id
+       LEFT JOIN community_votes v ON v.deal_id = d.id
+       WHERE (? = 'tout' OR d.category = ?)
+       GROUP BY d.id
+       ORDER BY d.created_at DESC
+       LIMIT ? OFFSET ?`
+    )
+    .all(category || "tout", category || "tout", limit, offset);
+  return rows;
+}
+
+/** Vote (ou change son vote) sur un deal communautaire. value = 1 (pertinent) ou -1 (pas pertinent). */
+function voteCommunityDeal(dealId, userId, value) {
+  if (value !== 1 && value !== -1) throw new Error("value doit être 1 ou -1");
+  db.prepare(
+    `INSERT INTO community_votes (deal_id, user_id, value) VALUES (?, ?, ?)
+     ON CONFLICT(deal_id, user_id) DO UPDATE SET value = excluded.value`
+  ).run(dealId, userId, value);
+  return getCommunityDeal(dealId);
+}
+
+/** Retire le vote d'un membre sur un deal (toggle off). */
+function removeCommunityVote(dealId, userId) {
+  db.prepare("DELETE FROM community_votes WHERE deal_id = ? AND user_id = ?").run(dealId, userId);
+  return getCommunityDeal(dealId);
+}
+
+/** Le vote actuel (1, -1) d'un membre sur un deal, ou null s'il n'a pas voté. */
+function getUserVote(dealId, userId) {
+  const row = db.prepare("SELECT value FROM community_votes WHERE deal_id = ? AND user_id = ?").get(dealId, userId);
+  return row ? row.value : null;
+}
+
+// ── Forum : catégories, sujets, réponses ─────────────────────────
+function listForumCategories() {
+  return db
+    .prepare(
+      `SELECT c.*,
+              (SELECT COUNT(*) FROM forum_threads t WHERE t.category_id = c.id) AS thread_count
+       FROM forum_categories c ORDER BY c.sort_order ASC`
+    )
+    .all();
+}
+
+function getForumCategoryBySlug(slug) {
+  return db.prepare("SELECT * FROM forum_categories WHERE slug = ?").get(slug);
+}
+
+/** Sujets d'une catégorie, avec auteur, nombre de réponses et date de dernière activité. */
+function listForumThreads(categoryId, limit = 50) {
+  return db
+    .prepare(
+      `SELECT t.id, t.title, t.created_at, t.user_id,
+              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url,
+              (SELECT COUNT(*) FROM forum_replies r WHERE r.thread_id = t.id) AS reply_count,
+              COALESCE(
+                (SELECT MAX(r.created_at) FROM forum_replies r WHERE r.thread_id = t.id),
+                t.created_at
+              ) AS last_activity_at
+       FROM forum_threads t JOIN users u ON u.id = t.user_id
+       WHERE t.category_id = ?
+       ORDER BY last_activity_at DESC
+       LIMIT ?`
+    )
+    .all(categoryId, limit);
+}
+
+function getForumThread(threadId) {
+  return db
+    .prepare(
+      `SELECT t.*, c.slug AS category_slug, c.name AS category_name,
+              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
+       FROM forum_threads t
+       JOIN users u ON u.id = t.user_id
+       JOIN forum_categories c ON c.id = t.category_id
+       WHERE t.id = ?`
+    )
+    .get(threadId);
+}
+
+function createForumThread(categoryId, userId, title, body) {
+  const info = db
+    .prepare("INSERT INTO forum_threads (category_id, user_id, title, body) VALUES (?, ?, ?, ?)")
+    .run(categoryId, userId, title, body);
+  return getForumThread(info.lastInsertRowid);
+}
+
+function listForumReplies(threadId) {
+  return db
+    .prepare(
+      `SELECT r.id, r.body, r.created_at, r.user_id,
+              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
+       FROM forum_replies r JOIN users u ON u.id = r.user_id
+       WHERE r.thread_id = ? ORDER BY r.created_at ASC`
+    )
+    .all(threadId);
+}
+
+function addForumReply(threadId, userId, body) {
+  db.prepare("INSERT INTO forum_replies (thread_id, user_id, body) VALUES (?, ?, ?)").run(threadId, userId, body);
+  return listForumReplies(threadId);
+}
+
 module.exports = {
   db,
   insertSnapshots,
@@ -376,4 +586,17 @@ module.exports = {
   listPublicMessages,
   listConversation,
   listConversationsFor,
+  submitCommunityDeal,
+  getCommunityDeal,
+  listCommunityDeals,
+  voteCommunityDeal,
+  removeCommunityVote,
+  getUserVote,
+  listForumCategories,
+  getForumCategoryBySlug,
+  listForumThreads,
+  getForumThread,
+  createForumThread,
+  listForumReplies,
+  addForumReply,
 };

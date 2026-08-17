@@ -45,6 +45,22 @@ function requireAuth(req, res, next) {
   }
 }
 
+/** Middleware Express : lit le jeton s'il est présent (req.user rempli), mais n'exige rien.
+ * Utile pour des routes publiques qui personnalisent la réponse pour un membre connecté
+ * (ex : indiquer son propre vote sur un deal communautaire) sans bloquer les visiteurs. */
+function optionalAuth(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  if (token) {
+    try {
+      req.user = verifyToken(token);
+    } catch {
+      // Jeton invalide/expiré : on continue simplement sans utilisateur connecté.
+    }
+  }
+  next();
+}
+
 /** Middleware Express : exige en plus que l'utilisateur soit administrateur. */
 function requireAdmin(req, res, next) {
   if (req.user?.role !== "admin") {
@@ -64,4 +80,4 @@ function isValidEmail(email) {
   return typeof email === "string" && EMAIL_RE.test(email);
 }
 
-module.exports = { hashPassword, verifyPassword, generateToken, verifyToken, requireAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail };
+module.exports = { hashPassword, verifyPassword, generateToken, verifyToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail };

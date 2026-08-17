@@ -32,10 +32,24 @@ const {
   listPublicMessages,
   listConversation,
   listConversationsFor,
+  submitCommunityDeal,
+  getCommunityDeal,
+  listCommunityDeals,
+  voteCommunityDeal,
+  removeCommunityVote,
+  getUserVote,
+  listForumCategories,
+  getForumCategoryBySlug,
+  listForumThreads,
+  getForumThread,
+  createForumThread,
+  listForumReplies,
+  addForumReply,
 } = require("./db");
 const { randomProductFor } = require("./catalog");
 const { runCatalogBatch } = require("./scanBatch");
-const { hashPassword, verifyPassword, generateToken, requireAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
+const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
+const { hotScore } = require("./ranking");
 
 const app = express();
 app.use(cors());
@@ -306,6 +320,118 @@ app.post("/api/chat/with/:userId", requireAuth, (req, res) => {
   if (body.length > 500) return res.status(400).json({ error: "Message trop long (500 caractères max)." });
   const id = sendMessage(req.user.sub, otherId, body.trim());
   res.status(201).json({ id });
+});
+
+// ── Communauté : deals soumis par les membres + votes de pertinence ──
+
+// GET /api/community/deals?category=tout&sort=hot&page=1&pageSize=20
+// "hot" = classé par l'indicateur de pertinence (votes + fraîcheur), "new" = plus récents d'abord.
+app.get("/api/community/deals", optionalAuth, (req, res) => {
+  const category = req.query.category || "tout";
+  const sort = req.query.sort === "new" ? "new" : "hot";
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize, 10) || 20));
+
+  // On relit une fenêtre large avant de trier par score, car le score dépend
+  // du temps écoulé et ne peut pas être calculé directement en SQL simple.
+  const rows = listCommunityDeals(category, 500, 0);
+  if (sort === "hot") {
+    rows.sort((a, b) => hotScore(b.upvotes, b.downvotes, b.created_at) - hotScore(a.upvotes, a.downvotes, a.created_at));
+  }
+  const total = rows.length;
+  const start = (page - 1) * pageSize;
+  const items = rows.slice(start, start + pageSize).map((d) => ({
+    ...d,
+    score: hotScore(d.upvotes, d.downvotes, d.created_at),
+    myVote: req.user ? getUserVote(d.id, req.user.sub) : null,
+  }));
+  res.json({ category, sort, page, pageSize, total, hasMore: start + pageSize < total, items });
+});
+
+// POST /api/community/deals  { title, description?, url?, price?, imageUrl?, category? }
+app.post("/api/community/deals", requireAuth, (req, res) => {
+  const { title, description, url, price, imageUrl, category } = req.body || {};
+  if (!title || !title.trim()) return res.status(400).json({ error: "Le titre du deal est requis." });
+  if (title.length > 150) return res.status(400).json({ error: "Titre trop long (150 caractères max)." });
+  if (description && description.length > 1000) {
+    return res.status(400).json({ error: "Description trop longue (1000 caractères max)." });
+  }
+  if (url && !/^https?:\/\//.test(url)) return res.status(400).json({ error: "L'URL doit commencer par http:// ou https://" });
+  const deal = submitCommunityDeal(req.user.sub, {
+    title: title.trim(),
+    description: description ? description.trim() : null,
+    url: url ? url.trim() : null,
+    price: price !== undefined && price !== null && price !== "" ? Number(price) : null,
+    imageUrl: imageUrl ? imageUrl.trim() : null,
+    category: category || "tout",
+  });
+  res.status(201).json({ deal: { ...deal, score: hotScore(deal.upvotes, deal.downvotes, deal.created_at) } });
+});
+
+// POST /api/community/deals/:id/vote  { value: 1 | -1 }
+app.post("/api/community/deals/:id/vote", requireAuth, (req, res) => {
+  const dealId = parseInt(req.params.id, 10);
+  const { value } = req.body || {};
+  if (!dealId) return res.status(400).json({ error: "Identifiant invalide." });
+  if (value !== 1 && value !== -1) return res.status(400).json({ error: "value doit être 1 ou -1." });
+  if (!getCommunityDeal(dealId)) return res.status(404).json({ error: "Deal introuvable." });
+  const deal = voteCommunityDeal(dealId, req.user.sub, value);
+  res.json({ deal: { ...deal, score: hotScore(deal.upvotes, deal.downvotes, deal.created_at), myVote: value } });
+});
+
+// DELETE /api/community/deals/:id/vote — retire son vote.
+app.delete("/api/community/deals/:id/vote", requireAuth, (req, res) => {
+  const dealId = parseInt(req.params.id, 10);
+  if (!dealId) return res.status(400).json({ error: "Identifiant invalide." });
+  if (!getCommunityDeal(dealId)) return res.status(404).json({ error: "Deal introuvable." });
+  const deal = removeCommunityVote(dealId, req.user.sub);
+  res.json({ deal: { ...deal, score: hotScore(deal.upvotes, deal.downvotes, deal.created_at), myVote: null } });
+});
+
+// ── Forum : catégories, sujets, réponses ─────────────────────────
+
+app.get("/api/forum/categories", (req, res) => {
+  res.json({ items: listForumCategories() });
+});
+
+// GET /api/forum/categories/:slug/threads
+app.get("/api/forum/categories/:slug/threads", (req, res) => {
+  const cat = getForumCategoryBySlug(req.params.slug);
+  if (!cat) return res.status(404).json({ error: "Catégorie introuvable." });
+  res.json({ category: cat, items: listForumThreads(cat.id, 100) });
+});
+
+// POST /api/forum/categories/:slug/threads  { title, body }
+app.post("/api/forum/categories/:slug/threads", requireAuth, (req, res) => {
+  const cat = getForumCategoryBySlug(req.params.slug);
+  if (!cat) return res.status(404).json({ error: "Catégorie introuvable." });
+  const { title, body } = req.body || {};
+  if (!title || !title.trim()) return res.status(400).json({ error: "Le titre du sujet est requis." });
+  if (title.length > 150) return res.status(400).json({ error: "Titre trop long (150 caractères max)." });
+  if (!body || !body.trim()) return res.status(400).json({ error: "Le message est requis." });
+  if (body.length > 5000) return res.status(400).json({ error: "Message trop long (5000 caractères max)." });
+  const thread = createForumThread(cat.id, req.user.sub, title.trim(), body.trim());
+  res.status(201).json({ thread });
+});
+
+// GET /api/forum/threads/:id — sujet + toutes ses réponses.
+app.get("/api/forum/threads/:id", (req, res) => {
+  const threadId = parseInt(req.params.id, 10);
+  const thread = threadId && getForumThread(threadId);
+  if (!thread) return res.status(404).json({ error: "Sujet introuvable." });
+  res.json({ thread, replies: listForumReplies(threadId) });
+});
+
+// POST /api/forum/threads/:id/replies  { body }
+app.post("/api/forum/threads/:id/replies", requireAuth, (req, res) => {
+  const threadId = parseInt(req.params.id, 10);
+  const thread = threadId && getForumThread(threadId);
+  if (!thread) return res.status(404).json({ error: "Sujet introuvable." });
+  const { body } = req.body || {};
+  if (!body || !body.trim()) return res.status(400).json({ error: "Réponse vide." });
+  if (body.length > 5000) return res.status(400).json({ error: "Réponse trop longue (5000 caractères max)." });
+  const replies = addForumReply(threadId, req.user.sub, body.trim());
+  res.status(201).json({ replies });
 });
 
 // ── Administration (réservé au créateur du site) ────────────────
