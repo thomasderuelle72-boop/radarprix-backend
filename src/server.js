@@ -479,6 +479,15 @@ app.get("/api/health", (req, res) => res.json({ ok: true }));
 
 if (require.main === module) {
   app.listen(PORT, () => console.log(`RadarPrix backend en écoute sur le port ${PORT}`));
+
+  // Sur un hébergeur qui ne fait tourner qu'un seul service (ex: Railway sur
+  // le plan actuel), il n'y a personne d'autre pour exécuter `npm run cron` :
+  // sans ce démarrage ici, le catalogue de deals reste vide en permanence.
+  // Activé explicitement (ENABLE_CRON=true) pour ne jamais consommer le
+  // quota SerpApi par surprise en local/dev.
+  if (process.env.ENABLE_CRON === "true") {
+    require("./cron").startCron();
+  }
 }
 
 module.exports = app;

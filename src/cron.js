@@ -5,9 +5,13 @@
 //
 // ⚠️ Sur le plan gratuit SerpApi (~100 requêtes/mois), scanner tout le
 // catalogue plusieurs fois par jour n'est pas tenable. Ajuste
-// CRON_SCHEDULE et CRON_BATCH_SIZE selon ton quota réel. À lancer en
-// tâche de fond continue (`npm run cron`).
-require("dotenv").config();
+// CRON_SCHEDULE et CRON_BATCH_SIZE selon ton quota réel.
+//
+// Deux façons de le lancer :
+//  - en tâche de fond séparée : `npm run cron` (exécute ce fichier directement) ;
+//  - dans le même process que le serveur web, via startCron() — voir server.js,
+//    activé par la variable d'env ENABLE_CRON=true (utile sur un hébergeur qui
+//    ne fait tourner qu'un seul service, comme Railway sur le plan actuel).
 const cron = require("node-cron");
 const { runCatalogBatch, PRODUCTS } = require("./scanBatch");
 
@@ -22,7 +26,18 @@ async function tick() {
   }
 }
 
-cron.schedule(SCHEDULE, tick);
-console.log(`Cron RadarPrix démarré — ${BATCH_SIZE} produits toutes les exécutions (${SCHEDULE}).`);
-console.log(`Catalogue total : ${PRODUCTS.length} produits.`);
-tick(); // premier lot immédiat au démarrage
+function startCron() {
+  cron.schedule(SCHEDULE, tick);
+  console.log(`Cron RadarPrix démarré — ${BATCH_SIZE} produits toutes les exécutions (${SCHEDULE}).`);
+  console.log(`Catalogue total : ${PRODUCTS.length} produits.`);
+  tick(); // premier lot immédiat au démarrage
+}
+
+module.exports = { startCron };
+
+// Lancé directement (`npm run cron`), et seulement dans ce cas : pas d'effet
+// de bord au simple require() par server.js.
+if (require.main === module) {
+  require("dotenv").config();
+  startCron();
+}
