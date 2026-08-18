@@ -83,6 +83,31 @@ function filterRelevantOffers(offers, query) {
   return offers.filter((o) => !isAccessoryTitle(o.name) && titleMatchesQuery(o.name, query));
 }
 
+// "Même produit" = correspondance dans les deux sens (contrairement à
+// titleMatchesQuery(title, query) qui n'exige la correspondance que d'un
+// titre vers une requête). Utilisé pour regrouper entre elles les offres
+// qui décrivent effectivement le même produit.
+function sameProduct(titleA, titleB) {
+  return titleMatchesQuery(titleA, titleB) && titleMatchesQuery(titleB, titleA);
+}
+
+/**
+ * Regroupe les offres d'un lot par produit réel. Une recherche large
+ * ("PC portable Dell") peut faire remonter plusieurs modèles différents
+ * qui passent tous le filtre de pertinence (relevant à la requête) sans
+ * être le même produit entre eux — les comparer directement produirait une
+ * médiane de référence qui ne correspond à aucun d'entre eux.
+ */
+function clusterByProduct(offers) {
+  const clusters = [];
+  for (const offer of offers) {
+    const cluster = clusters.find((c) => sameProduct(offer.name, c[0].name));
+    if (cluster) cluster.push(offer);
+    else clusters.push([offer]);
+  }
+  return clusters;
+}
+
 function median(nums) {
   const s = [...nums].sort((a, b) => a - b);
   const mid = Math.floor(s.length / 2);
@@ -115,8 +140,16 @@ function trimmedMedian(nums) {
 function analyzeOffers(offers) {
   if (offers.length === 0) return [];
 
-  const prices = offers.map((o) => o.price);
-  const peerRef = trimmedMedian(prices);
+  // Référence "entre pairs" calculée séparément pour chaque produit distinct
+  // du lot (voir clusterByProduct) : jamais sur tout le lot mélangé, sinon
+  // des modèles différents remontés par une recherche large hériteraient
+  // tous d'une médiane qui ne correspond à aucun d'entre eux.
+  const peerRefByOffer = new Map();
+  for (const cluster of clusterByProduct(offers)) {
+    if (cluster.length < 2) continue; // rien à comparer entre pairs pour un produit seul dans le lot
+    const ref = trimmedMedian(cluster.map((o) => o.price));
+    for (const o of cluster) peerRefByOffer.set(o, ref);
+  }
 
   return offers.map((o) => {
     // Référence historique propre à ce produit, si elle existe.
@@ -127,10 +160,16 @@ function analyzeOffers(offers) {
     // pour comparer (sinon toute première observation serait trivialement "la plus basse").
     const allTimeLow = history.length >= 3 && o.price < Math.min(...history);
 
-    // On prend la référence la plus fiable disponible : l'historique
-    // du produit s'il y en a assez, sinon la médiane rognée du scan du jour.
+    // On prend la référence la plus fiable disponible : l'historique du
+    // produit s'il y en a assez, sinon la médiane rognée entre pairs du
+    // même produit dans ce scan. Sans l'un ou l'autre, aucune base de
+    // comparaison fiable n'existe : on ne peut pas affirmer une anomalie.
+    const peerRef = peerRefByOffer.get(o) || null;
     const refPrice = histRef || peerRef;
-    const pct = refPrice > 0 ? Math.round((1 - o.price / refPrice) * 100) : 0;
+    if (!refPrice) {
+      return { ...o, refPrice: null, pct: 0, verdict: "normal", score: 0, allTimeLow: false };
+    }
+    const pct = Math.round((1 - o.price / refPrice) * 100);
 
     let verdict = "normal";
     if (pct >= 60) verdict = "erreur";
@@ -148,4 +187,4 @@ function analyzeOffers(offers) {
   });
 }
 
-module.exports = { analyzeOffers, filterRelevantOffers, median, mean, trimmedMedian, isAccessoryTitle, titleMatchesQuery };
+module.exports = { analyzeOffers, filterRelevantOffers, median, mean, trimmedMedian, isAccessoryTitle, titleMatchesQuery, sameProduct, clusterByProduct };
