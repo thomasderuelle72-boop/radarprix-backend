@@ -91,12 +91,25 @@ async function scanQuery(query, category = "tout") {
   return [...top, ...rest];
 }
 
-// GET /api/deals?category=gaming&page=1&pageSize=15
+// Compare deux chaînes en ignorant casse et accents, pour que "reconditionné"
+// et "reconditionne" (ou une saisie sans accent côté utilisateur) matchent.
+function foldAccents(s) {
+  return (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+// GET /api/deals?category=gaming&page=1&pageSize=15&q=pc
 // Lit tous les deals déjà repérés en base (par le cron ou des scans précédents),
 // groupés par produit, analysés, fusionnés, triés par score, puis paginés.
 // AUCUN appel SerpApi ici : réponse instantanée, gratuite, appelable sans limite.
+// Le paramètre optionnel "q" filtre par mot-clé sur des deals DÉJÀ validés
+// individuellement (chacun comparé à ses propres pairs/historique) : une
+// recherche large comme "pc" peut ainsi parcourir tout ce qui a été détecté
+// sur des PC, sans jamais comparer entre eux des produits différents (voir
+// analyzeOffers/clusterByProduct) — contrairement à un scan en direct sur un
+// terme aussi vague, qui n'a par nature aucune base de comparaison fiable.
 app.get("/api/deals", (req, res) => {
   const category = req.query.category || "tout";
+  const q = foldAccents((req.query.q || "").trim());
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize, 10) || 15));
 
@@ -108,11 +121,12 @@ app.get("/api/deals", (req, res) => {
     const analyzed = analyzeOffers(relevant).filter((o) => o.verdict !== "normal");
     allFlagged.push(...analyzed);
   }
-  allFlagged.sort((a, b) => b.score - a.score);
+  const matching = q ? allFlagged.filter((o) => foldAccents(o.name).includes(q)) : allFlagged;
+  matching.sort((a, b) => b.score - a.score);
 
-  const total = allFlagged.length;
+  const total = matching.length;
   const start = (page - 1) * pageSize;
-  const pageItems = allFlagged.slice(start, start + pageSize).map(({ _token, ...clean }) => clean);
+  const pageItems = matching.slice(start, start + pageSize).map(({ _token, ...clean }) => clean);
 
   res.json({
     category,
