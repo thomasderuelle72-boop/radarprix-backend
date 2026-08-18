@@ -2,6 +2,7 @@
 // Utilisé à la fois par cron.js (planifié) et par la route admin
 // "lancer un scan maintenant" (à la demande), pour ne pas dupliquer la logique.
 const { fetchShoppingResults } = require("./serpapi");
+const { filterRelevantOffers } = require("./algorithm");
 const { insertSnapshots } = require("./db");
 const { allProducts } = require("./catalog");
 
@@ -22,7 +23,12 @@ async function runCatalogBatch(size = 10) {
   const results = [];
   for (const { name, category } of batch) {
     try {
-      const offers = await fetchShoppingResults(name);
+      const rawOffers = await fetchShoppingResults(name);
+      // Même filtrage qu'en recherche directe (scanQuery dans server.js) : on
+      // écarte accessoires et hors-sujet AVANT insertion, sinon l'historique
+      // automatique du cron se fait polluer par de mauvaises offres que la
+      // recherche directe, elle, filtre déjà.
+      const offers = filterRelevantOffers(rawOffers, name);
       insertSnapshots(name.toLowerCase(), category, offers);
       results.push({ name, category, offersFound: offers.length, ok: true });
     } catch (e) {

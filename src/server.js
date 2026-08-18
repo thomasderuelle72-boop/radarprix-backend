@@ -102,9 +102,9 @@ app.get("/api/deals", (req, res) => {
 
   const batches = latestBatchPerProduct(category);
   const allFlagged = [];
-  for (const { offers } of batches) {
+  for (const { query, offers } of batches) {
     if (offers.length === 0) continue;
-    const relevant = filterRelevantOffers(offers, offers[0].name);
+    const relevant = filterRelevantOffers(offers, query);
     const analyzed = analyzeOffers(relevant).filter((o) => o.verdict !== "normal");
     allFlagged.push(...analyzed);
   }
