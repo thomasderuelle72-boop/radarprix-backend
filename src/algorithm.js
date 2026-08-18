@@ -104,10 +104,37 @@ function trimmedMedian(nums) {
   return median(s.slice(cut, s.length - cut));
 }
 
+// Coefficient de variation (écart-type / moyenne) : mesure la dispersion
+// relative des prix d'un cluster. Un cluster serré (CV faible) rend sa
+// médiane plus digne de confiance qu'un cluster où les prix partent dans
+// tous les sens (mauvais rapprochements de variantes, par exemple).
+function coefficientOfVariation(nums) {
+  if (nums.length < 2) return 0;
+  const m = mean(nums);
+  if (m === 0) return 0;
+  const variance = mean(nums.map((n) => (n - m) ** 2));
+  return Math.sqrt(variance) / m;
+}
+
+const BIG_SELLERS = ["amazon", "cdiscount", "fnac", "ldlc", "darty", "boulanger", "materiel.net", "rakuten", "leclerc", "carrefour"];
+
 /**
  * Analyse un lot d'offres fraîchement scannées pour un même produit/requête.
+ *
+ * Deux scores distincts, volontairement séparés :
+ *  - `score` (Deal Score) : à quel point le prix est intéressant. Basé
+ *    uniquement sur l'écart au prix de référence.
+ *  - `confidence` (Confidence Score) : à quel point on peut faire confiance
+ *    à CETTE détection précise — nombre de pairs comparables, cohérence des
+ *    prix entre eux, confirmation par l'historique, fiabilité du vendeur.
+ *    Un écart énorme (-90%) sans aucune confirmation ne doit PAS produire
+ *    la même confiance qu'un écart plus modeste confirmé par l'historique
+ *    ET plusieurs vendeurs cohérents entre eux — l'un peut être une vraie
+ *    pépite, l'autre plus probablement une mauvaise variante, un accessoire
+ *    mal filtré, ou un prix déjà corrigé.
+ *
  * @param {Array} offers - [{name, price, seller, url, img}, ...]
- * @returns {Array} offres enrichies avec {refPrice, pct, verdict, score}
+ * @returns {Array} offres enrichies avec {refPrice, pct, verdict, score, confidence}
  */
 function analyzeOffers(offers) {
   if (offers.length === 0) return [];
@@ -115,12 +142,19 @@ function analyzeOffers(offers) {
   // Référence "entre pairs" calculée séparément pour chaque produit distinct
   // du lot (voir clusterByProduct) : jamais sur tout le lot mélangé, sinon
   // des modèles différents remontés par une recherche large hériteraient
-  // tous d'une médiane qui ne correspond à aucun d'entre eux.
+  // tous d'une médiane qui ne correspond à aucun d'entre eux. On garde aussi
+  // la taille du cluster et la dispersion des prix, utiles au Confidence Score.
   const peerRefByOffer = new Map();
+  const peerStatsByOffer = new Map();
   for (const cluster of clusterByProduct(offers)) {
     if (cluster.length < 2) continue; // rien à comparer entre pairs pour un produit seul dans le lot
-    const ref = trimmedMedian(cluster.map((o) => o.price));
-    for (const o of cluster) peerRefByOffer.set(o, ref);
+    const prices = cluster.map((o) => o.price);
+    const ref = trimmedMedian(prices);
+    const stats = { size: cluster.length, cv: coefficientOfVariation(prices) };
+    for (const o of cluster) {
+      peerRefByOffer.set(o, ref);
+      peerStatsByOffer.set(o, stats);
+    }
   }
 
   return offers.map((o) => {
@@ -139,10 +173,11 @@ function analyzeOffers(offers) {
     // produit s'il y en a assez, sinon la médiane rognée entre pairs du
     // même produit dans ce scan. Sans l'un ou l'autre, aucune base de
     // comparaison fiable n'existe : on ne peut pas affirmer une anomalie.
+    const peerStats = peerStatsByOffer.get(o) || null;
     const peerRef = peerRefByOffer.get(o) || null;
     const refPrice = histRef || peerRef;
     if (!refPrice) {
-      return { ...o, refPrice: null, pct: 0, verdict: "normal", score: 0, allTimeLow: false };
+      return { ...o, refPrice: null, pct: 0, verdict: "normal", score: 0, confidence: null, allTimeLow: false };
     }
     const pct = Math.round((1 - o.price / refPrice) * 100);
 
@@ -150,16 +185,32 @@ function analyzeOffers(offers) {
     if (pct >= 60) verdict = "erreur";
     else if (pct >= 40) verdict = "deal";
 
-    const BIG_SELLERS = ["amazon", "cdiscount", "fnac", "ldlc", "darty", "boulanger", "materiel.net", "rakuten", "leclerc", "carrefour"];
+    const sellerLower = (o.seller || "").toLowerCase();
+    const isTrustedSeller = BIG_SELLERS.some((b) => sellerLower.includes(b));
+
+    // Deal Score : uniquement l'attractivité du prix.
     let score = Math.min(Math.max(pct, 0), 70);
     if (verdict === "erreur") score += 15;
-    const sellerLower = (o.seller || "").toLowerCase();
-    if (BIG_SELLERS.some((b) => sellerLower.includes(b))) score += 15;
+    if (isTrustedSeller) score += 15;
     if (histRef) score += 5; // référence historique = plus fiable qu'une simple comparaison du jour
     score = Math.min(score, 100);
 
-    return { ...o, refPrice: Math.round(refPrice), pct, verdict, score, allTimeLow };
+    // Confidence Score : la fiabilité de CETTE détection, indépendamment
+    // de l'attractivité du prix.
+    let confidence = 50;
+    if (peerStats) {
+      confidence += Math.min(peerStats.size - 1, 5) * 5; // jusqu'à +25 pour un groupe de pairs fourni
+      if (peerStats.cv < 0.15) confidence += 10; // prix des pairs cohérents entre eux
+      else if (peerStats.cv > 0.5) confidence -= 10; // pairs très dispersés = rapprochements douteux
+    }
+    if (histRef) confidence += 20; // confirmé par l'historique du produit, pas seulement le scan du jour
+    if (pct >= 80) confidence -= 20; // écart énorme = plus probablement une erreur de rapprochement
+    else if (pct >= 60) confidence -= 10;
+    if (isTrustedSeller) confidence += 10;
+    confidence = Math.max(0, Math.min(100, Math.round(confidence)));
+
+    return { ...o, refPrice: Math.round(refPrice), pct, verdict, score, confidence, allTimeLow };
   });
 }
 
-module.exports = { analyzeOffers, filterRelevantOffers, median, mean, trimmedMedian, isAccessoryTitle, titleMatchesQuery, sameProduct, clusterByProduct };
+module.exports = { analyzeOffers, filterRelevantOffers, median, mean, trimmedMedian, coefficientOfVariation, isAccessoryTitle, titleMatchesQuery, sameProduct, clusterByProduct };
