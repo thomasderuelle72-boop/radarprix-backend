@@ -34,6 +34,7 @@ const {
   listConversationsFor,
   submitCommunityDeal,
   getCommunityDeal,
+  merchantReliability,
   listCommunityDeals,
   voteCommunityDeal,
   removeCommunityVote,
@@ -362,9 +363,9 @@ app.get("/api/community/deals", optionalAuth, (req, res) => {
   res.json({ category, sort, page, pageSize, total, hasMore: start + pageSize < total, items });
 });
 
-// POST /api/community/deals  { title, description?, url?, price?, imageUrl?, category? }
+// POST /api/community/deals  { title, description?, url?, price?, imageUrl?, category?, seller? }
 app.post("/api/community/deals", requireAuth, (req, res) => {
-  const { title, description, url, price, imageUrl, category } = req.body || {};
+  const { title, description, url, price, imageUrl, category, seller } = req.body || {};
   if (!title || !title.trim()) return res.status(400).json({ error: "Le titre du deal est requis." });
   if (title.length > 150) return res.status(400).json({ error: "Titre trop long (150 caractères max)." });
   if (description && description.length > 1000) {
@@ -378,8 +379,19 @@ app.post("/api/community/deals", requireAuth, (req, res) => {
     price: price !== undefined && price !== null && price !== "" ? Number(price) : null,
     imageUrl: imageUrl ? imageUrl.trim() : null,
     category: category || "tout",
+    seller: seller ? seller.trim() : null,
   });
   res.status(201).json({ deal: { ...deal, score: hotScore(deal.upvotes, deal.downvotes, deal.created_at) } });
+});
+
+// GET /api/merchants/reliability?name=Amazon — fiabilité perçue par la
+// communauté (ratio de votes positifs sur les deals qui mentionnent ce
+// marchand). Distinct du Deal/Confidence Score : c'est un avis collectif
+// sur le vendeur, pas une mesure algorithmique sur un prix précis.
+app.get("/api/merchants/reliability", (req, res) => {
+  const { name } = req.query;
+  if (!name) return res.status(400).json({ error: "Paramètre 'name' requis." });
+  res.json(merchantReliability(name));
 });
 
 // POST /api/community/deals/:id/vote  { value: 1 | -1 }

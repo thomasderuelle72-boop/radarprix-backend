@@ -76,6 +76,7 @@ db.exec(`
     price REAL,
     image_url TEXT,
     category TEXT DEFAULT 'tout',
+    seller TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_community_deals_created ON community_deals(created_at);
@@ -140,6 +141,7 @@ for (const stmt of [
   "ALTER TABLE users ADD COLUMN pseudo TEXT",
   "ALTER TABLE users ADD COLUMN avatar_url TEXT",
   "ALTER TABLE snapshots ADD COLUMN product_key TEXT",
+  "ALTER TABLE community_deals ADD COLUMN seller TEXT",
 ]) {
   try {
     db.exec(stmt);
@@ -442,14 +444,41 @@ function getWatchlist(userId) {
 
 // ── Communauté : deals soumis par les membres + votes ───────────
 /** Enregistre un deal soumis par un membre de la communauté. */
-function submitCommunityDeal(userId, { title, description, url, price, imageUrl, category }) {
+function submitCommunityDeal(userId, { title, description, url, price, imageUrl, category, seller }) {
   const info = db
     .prepare(
-      `INSERT INTO community_deals (user_id, title, description, url, price, image_url, category)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO community_deals (user_id, title, description, url, price, image_url, category, seller)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(userId, title, description || null, url || null, price ?? null, imageUrl || null, category || "tout");
+    .run(userId, title, description || null, url || null, price ?? null, imageUrl || null, category || "tout", seller?.trim() || null);
   return getCommunityDeal(info.lastInsertRowid);
+}
+
+/**
+ * Fiabilité d'un marchand telle que perçue par la communauté : ratio de
+ * votes positifs sur tous les deals communautaires qui le mentionnent
+ * (comparaison insensible à la casse/espaces). Reflète l'avis des membres
+ * sur ce marchand, pas l'algorithme de détection de prix (données
+ * distinctes, volontairement séparées).
+ */
+function merchantReliability(sellerName) {
+  const name = (sellerName || "").trim().toLowerCase();
+  if (!name) return null;
+  const row = db
+    .prepare(
+      `SELECT
+         COUNT(DISTINCT d.id) AS deal_count,
+         COALESCE(SUM(CASE WHEN v.value = 1 THEN 1 ELSE 0 END), 0) AS upvotes,
+         COALESCE(SUM(CASE WHEN v.value = -1 THEN 1 ELSE 0 END), 0) AS downvotes
+       FROM community_deals d
+       LEFT JOIN community_votes v ON v.deal_id = d.id
+       WHERE lower(trim(d.seller)) = ?`
+    )
+    .get(name);
+  if (!row || row.deal_count === 0) return { seller: sellerName, dealCount: 0, upvotes: 0, downvotes: 0, reliability: null };
+  const totalVotes = row.upvotes + row.downvotes;
+  const reliability = totalVotes > 0 ? Math.round((row.upvotes / totalVotes) * 100) : null;
+  return { seller: sellerName, dealCount: row.deal_count, upvotes: row.upvotes, downvotes: row.downvotes, reliability };
 }
 
 /** Un deal communautaire avec son décompte de votes et l'auteur. */
@@ -612,6 +641,7 @@ module.exports = {
   listConversationsFor,
   submitCommunityDeal,
   getCommunityDeal,
+  merchantReliability,
   listCommunityDeals,
   voteCommunityDeal,
   removeCommunityVote,
