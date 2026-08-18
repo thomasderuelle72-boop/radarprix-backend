@@ -47,6 +47,17 @@ db.exec(`
     UNIQUE(user_id, query)
   );
 
+  -- Historise les alertes déjà envoyées pour éviter de spammer un membre
+  -- à chaque scan tant que le prix erroné détecté n'a pas changé.
+  CREATE TABLE IF NOT EXISTS watchlist_alerts_sent (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    query TEXT NOT NULL,
+    price REAL NOT NULL,
+    sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(user_id, query, price)
+  );
+
   CREATE TABLE IF NOT EXISTS comments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     deal_query TEXT NOT NULL,
@@ -442,6 +453,30 @@ function getWatchlist(userId) {
     .all(userId);
 }
 
+/** Membres qui suivent cette requête (favoris), avec leur email — pour l'envoi d'alertes. */
+function watchersFor(query) {
+  return db
+    .prepare(
+      `SELECT u.id AS user_id, u.email
+       FROM watchlist w JOIN users u ON u.id = w.user_id
+       WHERE w.query = ?`
+    )
+    .all(query.toLowerCase().trim());
+}
+
+/**
+ * Enregistre qu'une alerte a été envoyée à ce membre pour ce produit à ce
+ * prix. INSERT OR IGNORE + UNIQUE(user_id, query, price) : renvoie true la
+ * première fois (à notifier), false si déjà envoyée pour ce même prix (pas
+ * de re-notification tant que le prix ne change pas).
+ */
+function recordAlertSent(userId, query, price) {
+  const info = db
+    .prepare("INSERT OR IGNORE INTO watchlist_alerts_sent (user_id, query, price) VALUES (?, ?, ?)")
+    .run(userId, query.toLowerCase().trim(), price);
+  return info.changes > 0;
+}
+
 // ── Communauté : deals soumis par les membres + votes ───────────
 /** Enregistre un deal soumis par un membre de la communauté. */
 function submitCommunityDeal(userId, { title, description, url, price, imageUrl, category, seller }) {
@@ -633,6 +668,8 @@ module.exports = {
   addToWatchlist,
   removeFromWatchlist,
   getWatchlist,
+  watchersFor,
+  recordAlertSent,
   addComment,
   listComments,
   sendMessage,
