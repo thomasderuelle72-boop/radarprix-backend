@@ -5,6 +5,7 @@
 //  2) Comparaison "historique" : le prix est comparé à la moyenne des
 //     prix déjà vus pour ce produit exact (s'améliore avec le temps).
 const { priceHistoryFor } = require("./db");
+const { significantWords } = require("./productKey.js");
 
 // Titres à écarter d'office : ce sont presque toujours des accessoires
 // (coque, chargeur...) qui portent le nom du produit recherché mais coûtent
@@ -21,35 +22,6 @@ const ACCESSORY_KEYWORDS = [
 function isAccessoryTitle(title) {
   const t = (title || "").toLowerCase();
   return ACCESSORY_KEYWORDS.some((kw) => t.includes(kw));
-}
-
-// Les mots vides ne comptent pas comme "mots significatifs" de la requête.
-const STOPWORDS = new Set(["de", "du", "des", "le", "la", "les", "un", "une", "et", "pour", "avec"]);
-
-// Abréviations courantes à normaliser AVANT de découper en mots, pour que
-// "PS5" (vendeur) et "PlayStation 5" (notre catalogue) soient reconnus
-// comme le même produit malgré l'écriture différente.
-function normalizeAbbreviations(text) {
-  return (text || "")
-    .replace(/\bps\s*([1-5])\b/gi, "playstation $1")
-    .replace(/\bxbox\s*one\b/gi, "xbox one");
-}
-
-function significantWords(text) {
-  const normalized = normalizeAbbreviations(text)
-    .toLowerCase()
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // enlève les accents
-  return normalized
-    .split(/[^a-z0-9]+/)
-    .filter((w) => {
-      if (!w) return false;
-      // Un token contenant un chiffre (15, 128, 4060, s24...) est presque
-      // toujours un identifiant de modèle/génération/capacité : on le garde
-      // TOUJOURS, même court — c'est justement ce qui distingue un iPhone 15
-      // d'un iPhone 11, ou une RTX 4060 d'une RTX 4070.
-      if (/\d/.test(w)) return true;
-      return w.length >= 3 && !STOPWORDS.has(w);
-    });
 }
 
 /**
@@ -152,7 +124,10 @@ function analyzeOffers(offers) {
   }
 
   return offers.map((o) => {
-    // Référence historique propre à ce produit, si elle existe.
+    // Référence historique propre à ce produit, si elle existe. priceHistoryFor
+    // indexe par product_key (voir productKey.js) plutôt que par titre exact,
+    // pour que des formulations différentes du même produit partagent leur
+    // historique — o.name est canonicalisé en interne.
     const history = priceHistoryFor(o.name, 0).filter((p) => p !== o.price);
     const histRef = history.length >= 3 ? mean(history) : null;
 

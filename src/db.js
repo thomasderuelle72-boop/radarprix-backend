@@ -3,6 +3,7 @@
 const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
+const { productKey } = require("./productKey.js");
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "..", "data", "radarprix.sqlite");
 // Le dossier data/ n'existe pas toujours après un déploiement (Git ne suit pas
@@ -18,6 +19,7 @@ db.exec(`
     query TEXT NOT NULL,
     category TEXT DEFAULT 'tout',
     name TEXT NOT NULL,
+    product_key TEXT,
     seller TEXT,
     price REAL NOT NULL,
     url TEXT,
@@ -26,6 +28,7 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_snapshots_query ON snapshots(query);
   CREATE INDEX IF NOT EXISTS idx_snapshots_name ON snapshots(name);
+  CREATE INDEX IF NOT EXISTS idx_snapshots_product_key ON snapshots(product_key);
 
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,6 +139,7 @@ for (const stmt of [
   "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
   "ALTER TABLE users ADD COLUMN pseudo TEXT",
   "ALTER TABLE users ADD COLUMN avatar_url TEXT",
+  "ALTER TABLE snapshots ADD COLUMN product_key TEXT",
 ]) {
   try {
     db.exec(stmt);
@@ -144,11 +148,25 @@ for (const stmt of [
   }
 }
 
+// Backfill : les lignes enregistrées avant l'ajout de product_key n'ont pas
+// encore cette colonne calculée. Peu coûteux à l'échelle de cette base
+// (fichier SQLite local), donc fait en JS plutôt qu'en migration SQL dédiée.
+{
+  const missing = db.prepare("SELECT DISTINCT name FROM snapshots WHERE product_key IS NULL").all();
+  if (missing.length > 0) {
+    const update = db.prepare("UPDATE snapshots SET product_key = ? WHERE name = ? AND product_key IS NULL");
+    const backfill = db.transaction((names) => {
+      for (const { name } of names) update.run(productKey(name), name);
+    });
+    backfill(missing);
+  }
+}
+
 /** Enregistre une liste d'offres observées lors d'un scan. */
 function insertSnapshots(query, category, offers) {
   const stmt = db.prepare(`
-    INSERT INTO snapshots (query, category, name, seller, price, url, img)
-    VALUES (@query, @category, @name, @seller, @price, @url, @img)
+    INSERT INTO snapshots (query, category, name, product_key, seller, price, url, img)
+    VALUES (@query, @category, @name, @product_key, @seller, @price, @url, @img)
   `);
   const insertMany = db.transaction((rows) => {
     for (const row of rows) stmt.run(row);
@@ -158,6 +176,7 @@ function insertSnapshots(query, category, offers) {
       query,
       category,
       name: o.name,
+      product_key: productKey(o.name),
       seller: o.seller || null,
       price: o.price,
       url: o.url || null,
@@ -167,18 +186,23 @@ function insertSnapshots(query, category, offers) {
 }
 
 /**
- * Historique des prix pour un même produit (regroupé par nom normalisé),
- * utilisé pour calculer une moyenne de référence.
+ * Historique des prix pour un même produit, regroupé par product_key (voir
+ * productKey.js) plutôt que par titre exact : "Apple AirPods Pro 2 USB-C" et
+ * "AirPods Pro 2e génération USB-C" partagent le même historique dès lors
+ * qu'ils désignent le même produit, malgré des formulations différentes.
+ * Accepte soit un titre brut (le product_key est calculé ici), soit un
+ * product_key déjà calculé — idempotent dans les deux cas.
  */
-function priceHistoryFor(name, excludeLastMinutes = 0) {
+function priceHistoryFor(nameOrKey, excludeLastMinutes = 0) {
+  const key = productKey(nameOrKey);
   const rows = db
     .prepare(
       `SELECT price FROM snapshots
-       WHERE name = ?
+       WHERE product_key = ?
        ${excludeLastMinutes ? "AND scraped_at < datetime('now', ?)" : ""}
        ORDER BY scraped_at DESC LIMIT 200`
     )
-    .all(...(excludeLastMinutes ? [name, `-${excludeLastMinutes} minutes`] : [name]));
+    .all(...(excludeLastMinutes ? [key, `-${excludeLastMinutes} minutes`] : [key]));
   return rows.map((r) => r.price);
 }
 
