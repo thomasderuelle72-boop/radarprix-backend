@@ -13,6 +13,7 @@ const { significantWords } = require("./productKey.js");
 // médiane de référence et remontent comme de fausses "erreurs de prix".
 const ACCESSORY_KEYWORDS = [
   "coque", "housse", "étui", "etui", "protection écran", "protège-écran",
+  "protection pour", "vitre de protection", "vitre protectrice",
   "verre trempé", "film de protection", "autocollant", "sticker", "skin",
   "support", "chargeur", "câble", "cable", "adaptateur", "batterie externe",
   "sacoche", "sac de transport", "pochette", "bumper",
@@ -22,6 +23,25 @@ const ACCESSORY_KEYWORDS = [
 function isAccessoryTitle(title) {
   const t = (title || "").toLowerCase();
   return ACCESSORY_KEYWORDS.some((kw) => t.includes(kw));
+}
+
+// Une annonce reconditionnée/d'occasion peut porter exactement le bon nom de
+// modèle (elle passe donc titleMatchesQuery) tout en étant nettement moins
+// chère qu'un exemplaire neuf pour des raisons qui n'ont rien à voir avec
+// une erreur de prix — l'inclure dans le calcul de la référence ou la
+// flagger comme "deal"/"erreur" par rapport au prix du neuf n'a pas de sens.
+// On l'écarte donc par défaut, au même titre qu'un accessoire.
+const USED_CONDITION_KEYWORDS = [
+  "reconditionné", "reconditionne", "reconditionnée", "reconditionnee",
+  "occasion", "d'occasion", "seconde main", "2ème main", "2eme main",
+  "grade a", "grade b", "grade c", "état correct", "etat correct",
+  "très bon état", "tres bon etat", "bon état", "bon etat",
+  "refurbished", "used", "pré-owned", "preowned",
+];
+
+function isUsedOrRefurbishedTitle(title) {
+  const t = (title || "").toLowerCase();
+  return USED_CONDITION_KEYWORDS.some((kw) => t.includes(kw));
 }
 
 /**
@@ -48,11 +68,14 @@ function titleMatchesQuery(title, query) {
 }
 
 /**
- * Retire du lot les accessoires et les produits qui ne correspondent
- * manifestement pas à la recherche, avant toute analyse de prix.
+ * Retire du lot les accessoires, les annonces reconditionnées/d'occasion et
+ * les produits qui ne correspondent manifestement pas à la recherche, avant
+ * toute analyse de prix.
  */
 function filterRelevantOffers(offers, query) {
-  return offers.filter((o) => !isAccessoryTitle(o.name) && titleMatchesQuery(o.name, query));
+  return offers.filter(
+    (o) => !isAccessoryTitle(o.name) && !isUsedOrRefurbishedTitle(o.name) && titleMatchesQuery(o.name, query)
+  );
 }
 
 // "Même produit" = correspondance dans les deux sens (contrairement à
@@ -104,6 +127,24 @@ function trimmedMedian(nums) {
   return median(s.slice(cut, s.length - cut));
 }
 
+/**
+ * Écarte d'un cluster les prix grossièrement aberrants (moins d'un quart ou
+ * plus de 4x la médiane du groupe) avant de calculer la référence — filet de
+ * sécurité si un intrus (mauvaise variante, accessoire mal filtré) passe
+ * quand même le filtrage par mots-clés/titre. Rognage à 10% (trimmedMedian)
+ * seul ne suffit pas sur un petit cluster : 1 intrus sur 4-5 offres n'est
+ * pas retiré par un simple rognage de 10%. Renvoie la liste d'origine si le
+ * filtrage éliminerait plus de la moitié des prix (signe que c'est la
+ * médiane elle-même qui n'est pas fiable, pas un intrus isolé).
+ */
+function stripGrossOutliers(prices) {
+  if (prices.length < 3) return prices;
+  const roughMedian = median(prices);
+  if (roughMedian === 0) return prices;
+  const filtered = prices.filter((p) => p >= roughMedian * 0.25 && p <= roughMedian * 4);
+  return filtered.length >= Math.ceil(prices.length / 2) ? filtered : prices;
+}
+
 // Coefficient de variation (écart-type / moyenne) : mesure la dispersion
 // relative des prix d'un cluster. Un cluster serré (CV faible) rend sa
 // médiane plus digne de confiance qu'un cluster où les prix partent dans
@@ -148,9 +189,9 @@ function analyzeOffers(offers) {
   const peerStatsByOffer = new Map();
   for (const cluster of clusterByProduct(offers)) {
     if (cluster.length < 2) continue; // rien à comparer entre pairs pour un produit seul dans le lot
-    const prices = cluster.map((o) => o.price);
+    const prices = stripGrossOutliers(cluster.map((o) => o.price));
     const ref = trimmedMedian(prices);
-    const stats = { size: cluster.length, cv: coefficientOfVariation(prices) };
+    const stats = { size: prices.length, cv: coefficientOfVariation(prices) };
     for (const o of cluster) {
       peerRefByOffer.set(o, ref);
       peerStatsByOffer.set(o, stats);
@@ -213,4 +254,4 @@ function analyzeOffers(offers) {
   });
 }
 
-module.exports = { analyzeOffers, filterRelevantOffers, median, mean, trimmedMedian, coefficientOfVariation, isAccessoryTitle, titleMatchesQuery, sameProduct, clusterByProduct };
+module.exports = { analyzeOffers, filterRelevantOffers, median, mean, trimmedMedian, stripGrossOutliers, coefficientOfVariation, isAccessoryTitle, isUsedOrRefurbishedTitle, titleMatchesQuery, sameProduct, clusterByProduct };
