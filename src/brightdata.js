@@ -61,7 +61,16 @@ async function fetchShoppingResultsBrightData(query) {
     // simplement sur SerpApi en repli.
     console.warn(`[brightdata] 0 offre extraite pour "${query}" — longueur HTML : ${html.length}`);
     if (process.env.BRIGHT_DATA_DEBUG === "true") {
-      console.warn(`[brightdata] DEBUG extrait : ${html.slice(0, 20000)}`);
+      // La page fait souvent plus d'1 Mo, presque tout en JS d'analytics dans
+      // le <head> : logguer le début ne montre jamais la zone des résultats.
+      // On cherche plutôt des signaux connus et on logue leur contexte.
+      const markers = ['"/shopping/product/', "sh-dgr__", "sh-dlr__", "shopping_results", '"€"', " €<"];
+      for (const marker of markers) {
+        const idx = html.indexOf(marker);
+        console.warn(
+          `[brightdata] DEBUG marqueur "${marker}" : ${idx === -1 ? "absent" : `trouvé à l'offset ${idx}, contexte : ${html.slice(Math.max(0, idx - 500), idx + 1500)}`}`
+        );
+      }
     }
   }
   return offers;
