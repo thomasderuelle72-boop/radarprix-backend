@@ -20,6 +20,17 @@ const {
   updateProfile,
   listUsers,
   listMembersPublic,
+  publicProfile,
+  userStats,
+  userActivity,
+  userDeals,
+  userThreads,
+  badgeEventDates,
+  followUser,
+  unfollowUser,
+  isFollowing,
+  listFollowing,
+  dealsFromFollowed,
   promoteToAdmin,
   countUsers,
   countScans,
@@ -52,6 +63,7 @@ const { randomProductFor } = require("./catalog");
 const { runCatalogBatch } = require("./scanBatch");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
 const { hotScore } = require("./ranking");
+const { calculerBadges, prochainsBadges } = require("./badges");
 const { validerTexte, limiterFrequence, refuserDoublon } = require("./moderation");
 
 const app = express();
@@ -219,14 +231,29 @@ app.patch("/api/auth/me", requireAuth, (req, res) => {
   if (pseudo !== undefined && (typeof pseudo !== "string" || pseudo.length > 30)) {
     return res.status(400).json({ error: "Le pseudo doit faire 30 caractères maximum." });
   }
-  if (avatarUrl !== undefined && avatarUrl && !/^https?:\/\//.test(avatarUrl)) {
-    return res.status(400).json({ error: "L'URL de la photo doit commencer par http:// ou https://" });
+  // Deux formes acceptées : un lien vers une image hébergée ailleurs, ou une
+  // photo choisie sur l'appareil — que le navigateur nous envoie déjà
+  // redimensionnée, sous forme de données intégrées (data:image/...). Cette
+  // seconde forme était refusée ici alors que le site la produisait : le
+  // bouton "Choisir une photo" échouait systématiquement.
+  if (avatarUrl !== undefined && avatarUrl) {
+    const lien = /^https?:\/\//.test(avatarUrl);
+    const integree = /^data:image\/(jpeg|png|webp);base64,/.test(avatarUrl);
+    if (!lien && !integree) {
+      return res.status(400).json({ error: "Photo invalide : indique un lien http(s) ou choisis une image." });
+    }
+    // La photo est stockée dans la base et renvoyée avec chaque commentaire :
+    // au-delà de ~150 Ko elle alourdirait toutes les pages du site.
+    if (avatarUrl.length > 150 * 1024) {
+      return res.status(400).json({ error: "Photo trop lourde. Choisis une image plus petite." });
+    }
   }
-  const user = updateProfile(req.user.sub, {
+  const maj = updateProfile(req.user.sub, {
     pseudo: pseudo !== undefined ? pseudo.trim().slice(0, 30) : undefined,
     avatarUrl: avatarUrl !== undefined ? avatarUrl.trim() : undefined,
   });
-  res.json({ user });
+  if (!maj.ok) return res.status(409).json({ error: maj.error });
+  res.json({ user: maj.user });
 });
 
 // PATCH /api/auth/password  { currentPassword, newPassword } — nécessite le mot de passe actuel.
@@ -312,6 +339,91 @@ app.get("/api/members", requireAuth, (req, res) => {
   res.json({ items: listMembersPublic(req.user.sub) });
 });
 
+// ── Profils publics de membres ───────────────────────────────────
+//
+// Consultables sans être connecté : c'est ce qui permet à un membre de
+// partager son profil, et à un visiteur de juger qui a publié un deal avant
+// de faire confiance au prix annoncé.
+
+/** Résout :handle (id ou pseudo) et renvoie 404 proprement si inconnu. */
+function chargerMembre(req, res) {
+  const membre = publicProfile(req.params.handle);
+  if (!membre) {
+    res.status(404).json({ error: "Membre introuvable." });
+    return null;
+  }
+  return membre;
+}
+
+// GET /api/members/:handle — fiche complète : profil, chiffres, badges.
+app.get("/api/members/:handle", optionalAuth, (req, res) => {
+  const membre = chargerMembre(req, res);
+  if (!membre) return;
+  const evenements = badgeEventDates(membre.id);
+  res.json({
+    membre,
+    stats: userStats(membre.id),
+    badges: calculerBadges(evenements),
+    prochainsBadges: prochainsBadges(evenements),
+    jeLeSuis: req.user ? isFollowing(req.user.sub, membre.id) : false,
+    cestMoi: req.user ? req.user.sub === membre.id : false,
+  });
+});
+
+// GET /api/members/:handle/activity — tout ce qu'il a publié, toutes sections confondues.
+app.get("/api/members/:handle/activity", (req, res) => {
+  const membre = chargerMembre(req, res);
+  if (!membre) return;
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 30));
+  res.json({ items: userActivity(membre.id, limit) });
+});
+
+// GET /api/members/:handle/deals — ses deals communautaires.
+app.get("/api/members/:handle/deals", optionalAuth, (req, res) => {
+  const membre = chargerMembre(req, res);
+  if (!membre) return;
+  const items = userDeals(membre.id).map((d) => ({
+    ...d,
+    score: hotScore(d.upvotes, d.downvotes, d.created_at),
+    myVote: req.user ? getUserVote(d.id, req.user.sub) : null,
+  }));
+  res.json({ items });
+});
+
+// GET /api/members/:handle/threads — ses sujets de forum.
+app.get("/api/members/:handle/threads", (req, res) => {
+  const membre = chargerMembre(req, res);
+  if (!membre) return;
+  res.json({ items: userThreads(membre.id) });
+});
+
+// POST /api/members/:handle/follow — s'abonner à ce membre.
+app.post("/api/members/:handle/follow", requireAuth, (req, res) => {
+  const membre = chargerMembre(req, res);
+  if (!membre) return;
+  const r = followUser(req.user.sub, membre.id);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json({ jeLeSuis: true, abonnes: userStats(membre.id).abonnes });
+});
+
+// DELETE /api/members/:handle/follow — se désabonner.
+app.delete("/api/members/:handle/follow", requireAuth, (req, res) => {
+  const membre = chargerMembre(req, res);
+  if (!membre) return;
+  unfollowUser(req.user.sub, membre.id);
+  res.json({ jeLeSuis: false, abonnes: userStats(membre.id).abonnes });
+});
+
+// GET /api/feed/following — les deals publiés par les membres qu'on suit.
+app.get("/api/feed/following", requireAuth, (req, res) => {
+  const items = dealsFromFollowed(req.user.sub).map((d) => ({
+    ...d,
+    score: hotScore(d.upvotes, d.downvotes, d.created_at),
+    myVote: getUserVote(d.id, req.user.sub),
+  }));
+  res.json({ suivis: listFollowing(req.user.sub), items });
+});
+
 // GET /api/chat/public?afterId=0 — messages du salon général, à sonder régulièrement.
 app.get("/api/chat/public", (req, res) => {
   const afterId = parseInt(req.query.afterId, 10) || 0;
@@ -379,9 +491,24 @@ app.get("/api/community/deals", optionalAuth, (req, res) => {
   res.json({ category, sort, page, pageSize, total, hasMore: start + pageSize < total, items });
 });
 
-// POST /api/community/deals  { title, description?, url?, price?, imageUrl?, category?, seller? }
+/**
+ * Date de fin d'une offre, telle que saisie dans le formulaire ("2026-08-31"
+ * ou une date-heure ISO). Renvoie une date SQLite, ou null si le champ est
+ * vide ou inexploitable — une date d'expiration reste facultative, on ne
+ * bloque pas une publication pour ça.
+ */
+function normaliserExpiration(valeur) {
+  if (!valeur) return null;
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(valeur) ? `${valeur}T23:59:59Z` : valeur);
+  if (Number.isNaN(d.getTime())) return null;
+  // Une offre déjà terminée n'a pas de sens ; on ignore plutôt que refuser.
+  if (d.getTime() < Date.now()) return null;
+  return d.toISOString().slice(0, 19).replace("T", " ");
+}
+
+// POST /api/community/deals  { title, description?, url?, price?, imageUrl?, category?, seller?, expiresAt? }
 app.post("/api/community/deals", requireAuth, (req, res) => {
-  const { title, description, url, price, imageUrl, category, seller } = req.body || {};
+  const { title, description, url, price, imageUrl, category, seller, expiresAt } = req.body || {};
   const titreOk = validerTexte(title, "dealTitle");
   if (!titreOk.ok) return res.status(400).json({ error: titreOk.error });
   if (description && description.trim()) {
@@ -401,6 +528,7 @@ app.post("/api/community/deals", requireAuth, (req, res) => {
     imageUrl: imageUrl ? imageUrl.trim() : null,
     category: category || "tout",
     seller: seller ? seller.trim() : null,
+    expiresAt: normaliserExpiration(expiresAt),
   });
   res.status(201).json({ deal: { ...deal, score: hotScore(deal.upvotes, deal.downvotes, deal.created_at) } });
 });

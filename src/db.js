@@ -129,6 +129,18 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_forum_replies_thread ON forum_replies(thread_id);
+
+  -- ── Abonnements entre membres ──
+  -- On suit quelqu'un pour son flair à dénicher des offres, exactement
+  -- comme sur les grands sites de bons plans. Volontairement asymétrique
+  -- (pas de demande à accepter) : c'est un abonnement, pas une amitié.
+  CREATE TABLE IF NOT EXISTS follows (
+    follower_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    followed_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (follower_id, followed_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_follows_followed ON follows(followed_id);
 `);
 
 // Catégories de forum par défaut — insérées une seule fois (slug UNIQUE).
@@ -154,12 +166,28 @@ for (const stmt of [
   "ALTER TABLE snapshots ADD COLUMN product_key TEXT",
   "ALTER TABLE community_deals ADD COLUMN seller TEXT",
   "ALTER TABLE watchlist ADD COLUMN target_price REAL",
+  "ALTER TABLE community_deals ADD COLUMN expires_at TEXT",
 ]) {
   try {
     db.exec(stmt);
   } catch (e) {
     if (!/duplicate column/i.test(e.message)) throw e;
   }
+}
+
+// Un pseudo identifie publiquement un membre (adresse de son profil, mentions
+// dans le salon) : deux membres ne peuvent pas porter le même. Index partiel
+// pour ne pas gêner les comptes qui n'ont pas encore choisi de pseudo.
+// Si la base contient déjà des doublons, on renonce à l'index plutôt que de
+// faire échouer le démarrage du serveur — l'unicité reste alors vérifiée au
+// moment de l'enregistrement du profil (voir updateProfile).
+try {
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_pseudo_unique
+     ON users(lower(trim(pseudo))) WHERE pseudo IS NOT NULL AND trim(pseudo) != ''`
+  );
+} catch (e) {
+  console.warn("[db] index d'unicité des pseudos non créé :", e.message);
 }
 
 // Backfill : les lignes enregistrées avant l'ajout de product_key n'ont pas
@@ -263,6 +291,7 @@ function deleteAccount(userId) {
     db.prepare("DELETE FROM community_deals WHERE user_id = ?").run(id);
     db.prepare("DELETE FROM forum_replies WHERE user_id = ?").run(id);
     db.prepare("DELETE FROM forum_threads WHERE user_id = ?").run(id);
+    db.prepare("DELETE FROM follows WHERE follower_id = ? OR followed_id = ?").run(id, id);
     db.prepare("DELETE FROM users WHERE id = ?").run(id);
   });
   tx(userId);
@@ -272,15 +301,41 @@ function findUserById(id) {
   return db.prepare("SELECT id, email, role, pseudo, avatar_url, created_at FROM users WHERE id = ?").get(id);
 }
 
-/** Met à jour le pseudo et/ou l'avatar d'un utilisateur (champs optionnels). */
+/** Ce pseudo est-il déjà porté par quelqu'un d'autre ? (comparaison insensible à la casse) */
+function pseudoDejaPris(pseudo, exceptUserId) {
+  const propre = String(pseudo || "").trim().toLowerCase();
+  if (!propre) return false;
+  const row = db
+    .prepare("SELECT id FROM users WHERE lower(trim(pseudo)) = ? AND id != ?")
+    .get(propre, exceptUserId || 0);
+  return Boolean(row);
+}
+
+/**
+ * Met à jour le pseudo et/ou l'avatar d'un utilisateur (champs optionnels).
+ * @returns {{ok: true, user: object} | {ok: false, error: string}}
+ */
 function updateProfile(userId, { pseudo, avatarUrl }) {
-  if (pseudo !== undefined) {
-    db.prepare("UPDATE users SET pseudo = ? WHERE id = ?").run(pseudo, userId);
+  if (pseudo !== undefined && pseudoDejaPris(pseudo, userId)) {
+    return { ok: false, error: "Ce pseudo est déjà utilisé par un autre membre." };
   }
-  if (avatarUrl !== undefined) {
-    db.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").run(avatarUrl, userId);
+  try {
+    if (pseudo !== undefined) {
+      db.prepare("UPDATE users SET pseudo = ? WHERE id = ?").run(pseudo, userId);
+    }
+    if (avatarUrl !== undefined) {
+      db.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").run(avatarUrl, userId);
+    }
+  } catch (e) {
+    // Filet de sécurité : deux enregistrements simultanés du même pseudo
+    // passent tous les deux la vérification ci-dessus, mais l'index unique
+    // en arrête un.
+    if (/UNIQUE constraint/i.test(e.message)) {
+      return { ok: false, error: "Ce pseudo est déjà utilisé par un autre membre." };
+    }
+    throw e;
   }
-  return findUserById(userId);
+  return { ok: true, user: findUserById(userId) };
 }
 
 /** Liste de tous les utilisateurs, pour le tableau de bord admin. */
@@ -496,13 +551,16 @@ function recordAlertSent(userId, query, price) {
 
 // ── Communauté : deals soumis par les membres + votes ───────────
 /** Enregistre un deal soumis par un membre de la communauté. */
-function submitCommunityDeal(userId, { title, description, url, price, imageUrl, category, seller }) {
+function submitCommunityDeal(userId, { title, description, url, price, imageUrl, category, seller, expiresAt }) {
   const info = db
     .prepare(
-      `INSERT INTO community_deals (user_id, title, description, url, price, image_url, category, seller)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO community_deals (user_id, title, description, url, price, image_url, category, seller, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(userId, title, description || null, url || null, price ?? null, imageUrl || null, category || "tout", seller?.trim() || null);
+    .run(
+      userId, title, description || null, url || null, price ?? null,
+      imageUrl || null, category || "tout", seller?.trim() || null, expiresAt || null
+    );
   return getCommunityDeal(info.lastInsertRowid);
 }
 
@@ -692,8 +750,250 @@ function addForumReply(threadId, userId, body) {
   return listForumReplies(threadId);
 }
 
+// ── Profils publics de membres ───────────────────────────────────
+//
+// Jusqu'ici un membre n'existait que comme un pseudo et une pastille de
+// couleur en marge d'un commentaire. Rien ne permettait de savoir qui il
+// était, ce qu'il avait apporté au site, ni de le suivre. C'est pourtant
+// ce qui fait vivre une communauté de bons plans : on finit par suivre
+// ceux qui dénichent les bonnes affaires.
+
+/** Seuil à partir duquel un deal est considéré validé par la communauté. */
+const SEUIL_DEAL_VALIDE = 3;
+
+/**
+ * Retrouve un membre par son identifiant public : un id numérique, ou un
+ * pseudo. Les deux formes d'adresse restent valables — un membre qui change
+ * de pseudo ne casse pas les liens déjà partagés vers son profil par id.
+ */
+function findUserByHandle(handle) {
+  const brut = String(handle || "").trim();
+  if (!brut) return null;
+  if (/^\d+$/.test(brut)) {
+    const parId = db.prepare("SELECT * FROM users WHERE id = ?").get(Number(brut));
+    if (parId) return parId;
+  }
+  return db.prepare("SELECT * FROM users WHERE lower(trim(pseudo)) = ?").get(brut.toLowerCase());
+}
+
+/** Fiche publique d'un membre : jamais l'email, jamais le rôle interne détaillé. */
+function publicProfile(handle) {
+  const u = findUserByHandle(handle);
+  if (!u) return null;
+  return {
+    id: u.id,
+    displayName: u.pseudo && u.pseudo.trim() ? u.pseudo.trim() : `Membre #${u.id}`,
+    pseudo: u.pseudo || null,
+    avatarUrl: u.avatar_url || null,
+    createdAt: u.created_at,
+    isAdmin: u.role === "admin",
+  };
+}
+
+/** Chiffres d'activité d'un membre — uniquement des compteurs réels, rien d'estimé. */
+function userStats(userId) {
+  const deals = db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              COALESCE(SUM(CASE WHEN net >= ? THEN 1 ELSE 0 END), 0) AS valides,
+              COALESCE(MAX(net), 0) AS meilleur,
+              COALESCE(SUM(up), 0) AS votes_recus
+       FROM (
+         SELECT d.id,
+                COALESCE(SUM(CASE WHEN v.value = 1 THEN 1 ELSE 0 END), 0) AS up,
+                COALESCE(SUM(v.value), 0) AS net
+         FROM community_deals d
+         LEFT JOIN community_votes v ON v.deal_id = d.id
+         WHERE d.user_id = ?
+         GROUP BY d.id
+       )`
+    )
+    .get(SEUIL_DEAL_VALIDE, userId);
+
+  const compte = (sql, ...args) => db.prepare(sql).get(...args).n;
+
+  const votesEmis = compte("SELECT COUNT(*) AS n FROM community_votes WHERE user_id = ?", userId);
+  const categorieFavorite = db
+    .prepare(
+      `SELECT d.category AS categorie, COUNT(*) AS n
+       FROM community_votes v JOIN community_deals d ON d.id = v.deal_id
+       WHERE v.user_id = ? AND d.category IS NOT NULL AND d.category != 'tout'
+       GROUP BY d.category ORDER BY n DESC LIMIT 1`
+    )
+    .get(userId);
+
+  return {
+    deals: {
+      publies: deals.total,
+      valides: deals.valides,
+      partValides: deals.total > 0 ? Math.round((deals.valides / deals.total) * 100) : null,
+      meilleurScore: deals.meilleur,
+      votesRecus: deals.votes_recus,
+    },
+    commentaires: compte("SELECT COUNT(*) AS n FROM comments WHERE user_id = ?", userId),
+    forum: {
+      sujets: compte("SELECT COUNT(*) AS n FROM forum_threads WHERE user_id = ?", userId),
+      reponses: compte("SELECT COUNT(*) AS n FROM forum_replies WHERE user_id = ?", userId),
+    },
+    votes: {
+      emis: votesEmis,
+      categorieFavorite: categorieFavorite ? categorieFavorite.categorie : null,
+    },
+    abonnes: compte("SELECT COUNT(*) AS n FROM follows WHERE followed_id = ?", userId),
+    abonnements: compte("SELECT COUNT(*) AS n FROM follows WHERE follower_id = ?", userId),
+  };
+}
+
+/**
+ * Fil d'activité : tout ce que le membre a publié, toutes sections
+ * confondues, du plus récent au plus ancien.
+ */
+function userActivity(userId, limit = 30) {
+  return db
+    .prepare(
+      `SELECT 'deal' AS type, d.id AS ref, d.title AS titre, NULL AS extrait, d.created_at
+         FROM community_deals d WHERE d.user_id = @u
+       UNION ALL
+       SELECT 'comment', NULL, c.deal_query, substr(c.body, 1, 180), c.created_at
+         FROM comments c WHERE c.user_id = @u
+       UNION ALL
+       SELECT 'thread', t.id, t.title, substr(t.body, 1, 180), t.created_at
+         FROM forum_threads t WHERE t.user_id = @u
+       UNION ALL
+       SELECT 'reply', r.thread_id, t.title, substr(r.body, 1, 180), r.created_at
+         FROM forum_replies r JOIN forum_threads t ON t.id = r.thread_id WHERE r.user_id = @u
+       ORDER BY created_at DESC LIMIT @l`
+    )
+    .all({ u: userId, l: limit });
+}
+
+/** Les deals publiés par un membre, avec leur décompte de votes. */
+function userDeals(userId, limit = 50) {
+  return db
+    .prepare(
+      `SELECT d.*, COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url,
+              COALESCE(SUM(CASE WHEN v.value = 1 THEN 1 ELSE 0 END), 0) AS upvotes,
+              COALESCE(SUM(CASE WHEN v.value = -1 THEN 1 ELSE 0 END), 0) AS downvotes
+       FROM community_deals d
+       JOIN users u ON u.id = d.user_id
+       LEFT JOIN community_votes v ON v.deal_id = d.id
+       WHERE d.user_id = ?
+       GROUP BY d.id ORDER BY d.created_at DESC LIMIT ?`
+    )
+    .all(userId, limit);
+}
+
+/** Les sujets de forum ouverts par un membre. */
+function userThreads(userId, limit = 50) {
+  return db
+    .prepare(
+      `SELECT t.id, t.title, t.created_at, c.slug AS category_slug, c.name AS category_name,
+              (SELECT COUNT(*) FROM forum_replies r WHERE r.thread_id = t.id) AS reply_count
+       FROM forum_threads t JOIN forum_categories c ON c.id = t.category_id
+       WHERE t.user_id = ? ORDER BY t.created_at DESC LIMIT ?`
+    )
+    .all(userId, limit);
+}
+
+/**
+ * Dates horodatées des évènements qui font progresser chaque famille de
+ * badges. Le calcul des paliers vit dans badges.js : ici on ne fait que
+ * fournir la matière brute, triée du plus ancien au plus récent.
+ */
+function badgeEventDates(userId, plafond = 1000) {
+  const dates = (sql) => db.prepare(sql).all(userId, plafond).map((r) => r.created_at);
+  return {
+    votes: dates("SELECT created_at FROM community_votes WHERE user_id = ? ORDER BY created_at ASC LIMIT ?"),
+    deals: dates("SELECT created_at FROM community_deals WHERE user_id = ? ORDER BY created_at ASC LIMIT ?"),
+    commentaires: dates("SELECT created_at FROM comments WHERE user_id = ? ORDER BY created_at ASC LIMIT ?"),
+    forum: db
+      .prepare(
+        `SELECT created_at FROM (
+           SELECT created_at FROM forum_threads WHERE user_id = @u
+           UNION ALL
+           SELECT created_at FROM forum_replies WHERE user_id = @u
+         ) ORDER BY created_at ASC LIMIT @l`
+      )
+      .all({ u: userId, l: plafond })
+      .map((r) => r.created_at),
+    // Votes positifs reçus sur ses propres deals : c'est la reconnaissance
+    // de la communauté, pas le volume publié.
+    votesRecus: db
+      .prepare(
+        `SELECT v.created_at FROM community_votes v
+         JOIN community_deals d ON d.id = v.deal_id
+         WHERE d.user_id = ? AND v.value = 1
+         ORDER BY v.created_at ASC LIMIT ?`
+      )
+      .all(userId, plafond)
+      .map((r) => r.created_at),
+    inscription: db.prepare("SELECT created_at FROM users WHERE id = ?").get(userId)?.created_at || null,
+  };
+}
+
+// ── Abonnements ──────────────────────────────────────────────────
+function followUser(followerId, followedId) {
+  if (followerId === followedId) return { ok: false, error: "On ne peut pas s'abonner à soi-même." };
+  db.prepare("INSERT OR IGNORE INTO follows (follower_id, followed_id) VALUES (?, ?)").run(followerId, followedId);
+  return { ok: true };
+}
+
+function unfollowUser(followerId, followedId) {
+  db.prepare("DELETE FROM follows WHERE follower_id = ? AND followed_id = ?").run(followerId, followedId);
+  return { ok: true };
+}
+
+function isFollowing(followerId, followedId) {
+  if (!followerId) return false;
+  return Boolean(
+    db.prepare("SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?").get(followerId, followedId)
+  );
+}
+
+/** Les membres suivis par quelqu'un, pour son fil personnalisé. */
+function listFollowing(followerId) {
+  return db
+    .prepare(
+      `SELECT u.id, COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS display_name, u.avatar_url
+       FROM follows f JOIN users u ON u.id = f.followed_id
+       WHERE f.follower_id = ? ORDER BY f.created_at DESC`
+    )
+    .all(followerId);
+}
+
+/** Les deals publiés par les membres qu'on suit — le fil "mes dénicheurs". */
+function dealsFromFollowed(followerId, limit = 30) {
+  return db
+    .prepare(
+      `SELECT d.*, COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url,
+              COALESCE(SUM(CASE WHEN v.value = 1 THEN 1 ELSE 0 END), 0) AS upvotes,
+              COALESCE(SUM(CASE WHEN v.value = -1 THEN 1 ELSE 0 END), 0) AS downvotes
+       FROM follows f
+       JOIN community_deals d ON d.user_id = f.followed_id
+       JOIN users u ON u.id = d.user_id
+       LEFT JOIN community_votes v ON v.deal_id = d.id
+       WHERE f.follower_id = ?
+       GROUP BY d.id ORDER BY d.created_at DESC LIMIT ?`
+    )
+    .all(followerId, limit);
+}
+
 module.exports = {
   db,
+  SEUIL_DEAL_VALIDE,
+  findUserByHandle,
+  publicProfile,
+  userStats,
+  userActivity,
+  userDeals,
+  userThreads,
+  badgeEventDates,
+  followUser,
+  unfollowUser,
+  isFollowing,
+  listFollowing,
+  dealsFromFollowed,
+  pseudoDejaPris,
   insertSnapshots,
   priceHistoryFor,
   priceHistoryByDay,
