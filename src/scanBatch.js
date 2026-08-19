@@ -57,17 +57,31 @@ async function notifyWatchers(name, offers) {
   if (watchers.length === 0) return;
 
   const analyzed = analyzeOffers(offers);
-  const best = analyzed.find((o) => o.verdict === "erreur");
-  if (!best) return;
+  if (analyzed.length === 0) return;
 
-  for (const { user_id, email } of watchers) {
-    if (!recordAlertSent(user_id, name, best.price)) continue; // déjà notifié pour ce prix
+  // Deux motifs d'alerte, évalués séparément pour chaque membre :
+  //  - une erreur de prix détectée par l'algorithme (concerne tout le monde) ;
+  //  - le prix descendu sous le seuil que CE membre a fixé (target_price).
+  // Le second est la vraie attente d'un suivi de prix : "préviens-moi si ça
+  // passe sous 400 €", sans dépendre du verdict de l'algorithme.
+  const erreur = analyzed.find((o) => o.verdict === "erreur");
+  const moinsCher = analyzed.reduce((a, b) => (b.price < a.price ? b : a));
+
+  for (const { user_id, email, target_price } of watchers) {
+    const seuilAtteint = target_price > 0 && moinsCher.price <= target_price;
+    // L'erreur de prix prime : c'est l'offre la plus remarquable des deux.
+    const offre = erreur || (seuilAtteint ? moinsCher : null);
+    if (!offre) continue;
+    if (!recordAlertSent(user_id, name, offre.price)) continue; // déjà notifié pour ce prix
+
     await sendPriceErrorAlert(email, {
       name,
-      price: best.price,
-      refPrice: best.refPrice,
-      pct: best.pct,
-      url: best.url,
+      price: offre.price,
+      refPrice: offre.refPrice,
+      pct: offre.pct,
+      url: offre.url,
+      motif: erreur ? "erreur" : "seuil",
+      targetPrice: target_price,
     });
   }
 }

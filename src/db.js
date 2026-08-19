@@ -153,6 +153,7 @@ for (const stmt of [
   "ALTER TABLE users ADD COLUMN avatar_url TEXT",
   "ALTER TABLE snapshots ADD COLUMN product_key TEXT",
   "ALTER TABLE community_deals ADD COLUMN seller TEXT",
+  "ALTER TABLE watchlist ADD COLUMN target_price REAL",
 ]) {
   try {
     db.exec(stmt);
@@ -434,10 +435,26 @@ function latestBatchPerProduct(category) {
 }
 
 // ── Favoris / recherches suivies ──────────────────────────────
-function addToWatchlist(userId, query, category) {
+/**
+ * Ajoute (ou met à jour) une recherche suivie. `targetPrice` est facultatif :
+ * quand il est renseigné, le membre est aussi prévenu dès que le prix passe
+ * sous ce seuil, et pas uniquement quand l'algorithme crie "erreur de prix".
+ * ON CONFLICT plutôt qu'INSERT OR IGNORE : re-suivre un produit déjà suivi
+ * doit pouvoir changer le seuil, pas être silencieusement ignoré.
+ */
+function addToWatchlist(userId, query, category, targetPrice) {
+  const seuil = Number(targetPrice);
   db.prepare(
-    "INSERT OR IGNORE INTO watchlist (user_id, query, category) VALUES (?, ?, ?)"
-  ).run(userId, query.toLowerCase().trim(), category || "tout");
+    `INSERT INTO watchlist (user_id, query, category, target_price) VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id, query) DO UPDATE SET
+       category = excluded.category,
+       target_price = excluded.target_price`
+  ).run(
+    userId,
+    query.toLowerCase().trim(),
+    category || "tout",
+    Number.isFinite(seuil) && seuil > 0 ? seuil : null
+  );
 }
 
 function removeFromWatchlist(userId, query) {
@@ -449,7 +466,7 @@ function removeFromWatchlist(userId, query) {
 
 function getWatchlist(userId) {
   return db
-    .prepare("SELECT query, category, created_at FROM watchlist WHERE user_id = ? ORDER BY created_at DESC")
+    .prepare("SELECT query, category, target_price, created_at FROM watchlist WHERE user_id = ? ORDER BY created_at DESC")
     .all(userId);
 }
 
@@ -457,7 +474,7 @@ function getWatchlist(userId) {
 function watchersFor(query) {
   return db
     .prepare(
-      `SELECT u.id AS user_id, u.email
+      `SELECT u.id AS user_id, u.email, w.target_price
        FROM watchlist w JOIN users u ON u.id = w.user_id
        WHERE w.query = ?`
     )

@@ -259,9 +259,13 @@ app.get("/api/watchlist", requireAuth, (req, res) => {
 });
 
 app.post("/api/watchlist", requireAuth, (req, res) => {
-  const { query, category } = req.body || {};
+  const { query, category, targetPrice } = req.body || {};
   if (!query || !query.trim()) return res.status(400).json({ error: "Paramètre 'query' requis." });
-  addToWatchlist(req.user.sub, query, category);
+  // targetPrice est optionnel : absent = alerte uniquement sur erreur de prix.
+  if (targetPrice != null && targetPrice !== "" && !(Number(targetPrice) > 0)) {
+    return res.status(400).json({ error: "'targetPrice' doit être un prix positif." });
+  }
+  addToWatchlist(req.user.sub, query, category, targetPrice);
   res.status(201).json({ items: getWatchlist(req.user.sub) });
 });
 
