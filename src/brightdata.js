@@ -59,7 +59,10 @@ async function fetchShoppingResultsBrightData(query) {
     // on logue un extrait pour pouvoir ajuster les sélecteurs sans deviner
     // à l'aveugle. Ne fait jamais échouer l'appel : le code appelant bascule
     // simplement sur SerpApi en repli.
-    console.warn(`[brightdata] 0 offre extraite pour "${query}" — extrait HTML : ${html.slice(0, 1500)}`);
+    console.warn(`[brightdata] 0 offre extraite pour "${query}" — longueur HTML : ${html.length}`);
+    if (process.env.BRIGHT_DATA_DEBUG === "true") {
+      console.warn(`[brightdata] DEBUG extrait : ${html.slice(0, 20000)}`);
+    }
   }
   return offers;
 }
