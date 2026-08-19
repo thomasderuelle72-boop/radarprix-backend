@@ -1,46 +1,43 @@
-// brightdata.js — Tentative d'alimenter la recherche EN DIRECT (à la
-// demande) et le scan catalogue via Bright Data, en repli/complément de
-// SerpApi (voir fetchOffers.js). Voir CONSTAT ci-dessous avant de retoucher
-// ce fichier : dans son état actuel, cette fonction ne renvoie jamais
-// d'offres — c'est documenté, pas un bug caché.
+// brightdata.js — Récupère les résultats Google Shopping via le Browser API
+// de Bright Data (navigateur distant piloté par Puppeteer), en repli quand
+// SerpApi échoue (quota épuisé, panne). Voir fetchOffers.js pour la logique
+// de choix entre les deux sources.
 //
-// CONSTAT (vérifié en production, deux zones et deux formats testés) :
-// les résultats Google Shopping (tbm=shop) sont injectés côté client après
-// coup — jamais présents dans le HTML servi initialement par Google.
-//   - Zone "Web Unlocker" (web_unlocker1), format "raw" : HTML reçu (~1,2 Mo)
-//     sans un seul caractère "€" dedans.
-//   - Zone "SERP API" (serp_api1), format "raw" + data_format "html" : même
-//     résultat, HTML identique en substance.
-//   - Zone "SERP API", format "json" : ne renvoie PAS de données structurées
-//     comme chez SerpApi — juste {status_code, headers, body} où body est le
-//     même HTML non rendu, enveloppé en JSON.
-// Conclusion : aucun mode de ces deux produits Bright Data n'exécute le
-// JavaScript de la page Google Shopping. Il faudrait leur produit "Browser
-// API" (navigateur distant piloté, différent de Web Unlocker/SERP API) pour
-// obtenir le HTML réellement rendu — pas encore mis en place.
+// Deux essais précédents (zone "Web Unlocker", zone "SERP API" en formats
+// raw et json) ont tous échoué : aucun des deux ne rend le JavaScript, or
+// les résultats Google Shopping sont injectés côté client (confirmé en
+// prod : 0 caractère "€" sur 1,2 Mo de HTML reçu à chaque fois). Le Browser
+// API pilote un vrai Chrome distant via CDP (Puppeteer) : la page est
+// réellement rendue avant qu'on en lise le HTML.
 //
-// Le code ci-dessous reste branché (voir fetchOffers.js) parce qu'il est
-// sans risque : en l'absence d'offres, l'appelant bascule automatiquement
-// sur SerpApi. Le jour où une zone Browser API est configurée, il suffira
-// d'adapter la requête HTTP ci-dessous ; parseGoogleShoppingHtml() cible déjà
-// des signaux structurels stables (lien de fiche produit, rôle ARIA
-// "heading") et n'aura probablement pas besoin de changer.
+// Coût réel (contrairement aux deux essais précédents, gratuits) : facturé
+// au volume de données ($8/Go sur le compte actuel). Cette source ne doit
+// donc JAMAIS être la première essayée pour du trafic récurrent (scan
+// catalogue, recherches fréquentes) — seulement un repli quand SerpApi (peu
+// coûteux, quota mensuel) est indisponible. Voir fetchOffers.js.
+const puppeteer = require("puppeteer-core");
 const cheerio = require("cheerio");
 
-const BRIGHT_DATA_API_KEY = process.env.BRIGHT_DATA_API_KEY;
-const BRIGHT_DATA_ZONE = process.env.BRIGHT_DATA_ZONE || "serp_api1";
-const API_URL = "https://api.brightdata.com/request";
+const BROWSER_HOST = process.env.BRIGHT_DATA_BROWSER_HOST;
+const BROWSER_USER = process.env.BRIGHT_DATA_BROWSER_USER;
+const BROWSER_PASS = process.env.BRIGHT_DATA_BROWSER_PASS;
+
+function browserWsEndpoint() {
+  if (!BROWSER_HOST || !BROWSER_USER || !BROWSER_PASS) return null;
+  return `wss://${BROWSER_USER}:${BROWSER_PASS}@${BROWSER_HOST}`;
+}
 
 /**
- * Récupère les résultats Google Shopping pour une requête via Bright Data.
- * Même forme de retour que fetchShoppingResults (serpapi.js) : {name, price,
- * seller, url, img} — sans _token (spécifique à SerpApi). Voir CONSTAT en
- * tête de fichier : renvoie [] tant qu'aucune zone ne rend le JS.
+ * Récupère les résultats Google Shopping pour une requête via un navigateur
+ * distant Bright Data. Même forme de retour que fetchShoppingResults
+ * (serpapi.js) : {name, price, seller, url, img} — sans _token.
  */
 async function fetchShoppingResultsBrightData(query) {
-  if (!BRIGHT_DATA_API_KEY) {
-    throw new Error("BRIGHT_DATA_API_KEY manquante");
+  const wsEndpoint = browserWsEndpoint();
+  if (!wsEndpoint) {
+    throw new Error("Identifiants Bright Data Browser API manquants (BRIGHT_DATA_BROWSER_HOST/USER/PASS)");
   }
+
   const targetUrl = `https://www.google.com/search?${new URLSearchParams({
     q: query,
     tbm: "shop",
@@ -48,32 +45,34 @@ async function fetchShoppingResultsBrightData(query) {
     hl: "fr",
   })}`;
 
-  const res = await fetch(API_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${BRIGHT_DATA_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ zone: BRIGHT_DATA_ZONE, url: targetUrl, format: "raw", data_format: "html" }),
-  });
-
-  if (!res.ok) {
-    throw new Error(`Bright Data a répondu ${res.status} : ${(await res.text()).slice(0, 300)}`);
+  let browser;
+  try {
+    browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint });
+    const page = await browser.newPage();
+    try {
+      await page.goto(targetUrl, { waitUntil: "networkidle2", timeout: 45000 });
+      // Les résultats Shopping se chargent en JS après le rendu initial —
+      // on attend leur apparition sans faire échouer la requête si absents
+      // (page différente selon la requête : parfois pas de résultats Shopping).
+      await page.waitForSelector('a[href*="/shopping/product/"]', { timeout: 8000 }).catch(() => {});
+      const html = await page.content();
+      const offers = parseGoogleShoppingHtml(html);
+      if (offers.length === 0) {
+        console.warn(`[brightdata] 0 offre extraite pour "${query}" (Browser API) — longueur HTML : ${html.length}`);
+      }
+      return offers;
+    } finally {
+      await page.close().catch(() => {});
+    }
+  } finally {
+    if (browser) await browser.disconnect(); // ne PAS browser.close() : session distante gérée par Bright Data
   }
-  const html = await res.text();
-  const offers = parseGoogleShoppingHtml(html);
-
-  if (offers.length === 0) {
-    console.warn(`[brightdata] 0 offre extraite pour "${query}" (JS non rendu par la zone actuelle, voir CONSTAT dans brightdata.js) — longueur HTML : ${html.length}`);
-  }
-  return offers;
 }
 
 /**
- * Analyse le HTML d'une page de résultats Google Shopping. Fonction pure,
- * testable sans réseau à partir d'un extrait de HTML capturé (voir
- * test-brightdata-parser.js). Prête à fonctionner dès que la requête
- * ci-dessus renverra du HTML réellement rendu.
+ * Analyse le HTML (réellement rendu) d'une page de résultats Google
+ * Shopping. Fonction pure, testable sans réseau à partir d'un extrait de
+ * HTML capturé (voir test-brightdata-parser.js).
  */
 function parseGoogleShoppingHtml(html) {
   const $ = cheerio.load(html);
@@ -99,8 +98,8 @@ function parseGoogleShoppingHtml(html) {
     offers.push({
       name: title,
       price,
-      seller: null, // pas d'extraction fiable du vendeur depuis ce HTML (voir note en tête de fichier)
-      url: null, // jamais le lien Google en repli — voir note en tête de fichier
+      seller: null, // pas d'extraction fiable du vendeur depuis ce HTML
+      url: null, // jamais le lien Google en repli — pas de résolution du lien marchand direct ici
       img: $card.find("img").first().attr("src") || null,
     });
   });
