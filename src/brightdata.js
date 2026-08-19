@@ -1,15 +1,21 @@
 // brightdata.js — Alimente la recherche EN DIRECT (à la demande, quand un
-// visiteur tape une recherche absente du catalogue déjà scanné) via le Web
-// Unlocker de Bright Data, pour ne pas consommer le quota SerpApi (~100
+// visiteur tape une recherche absente du catalogue déjà scanné) via l'API
+// SERP de Bright Data, pour ne pas consommer le quota SerpApi (~100
 // requêtes/mois, réservé au scan catalogue planifié de cron.js/scanBatch.js)
 // sur des recherches utilisateur potentiellement fréquentes et imprévisibles.
 //
+// Premier essai avec une zone "Web Unlocker" (web_unlocker1) : échec — ce
+// produit ne rend pas le JavaScript, or les résultats Google Shopping sont
+// injectés côté client, donc absents du HTML brut (confirmé en prod : 0
+// occurrence de "€" sur 1,2 Mo de page). La zone "SERP API" (serp_api1),
+// elle, rend le JS côté Bright Data avant de renvoyer la page — c'est le bon
+// produit pour ce cas d'usage.
+//
 // Contrairement à SerpApi (serpapi.js), qui renvoie du JSON déjà structuré,
-// le Web Unlocker renvoie la page HTML de Google Shopping "débloquée" (anti-
-// bot contourné) : c'est à nous de l'analyser. Le HTML de Google change
-// régulièrement, donc ce parsing vise des signaux structurels stables
-// (liens vers une fiche produit, rôle ARIA "heading") plutôt que des noms
-// de classes CSS, qui eux changent à chaque déploiement de Google.
+// l'API SERP Bright Data (en format "raw") renvoie ici la page HTML rendue :
+// c'est à nous de l'analyser. Le HTML de Google change régulièrement, donc
+// ce parsing vise des signaux structurels stables (liens vers une fiche
+// produit, rôle ARIA "heading") plutôt que des noms de classes CSS.
 //
 // Limite assumée : contrairement à SerpApi (resolveDirectLink via son API
 // "immersive product"), on n'a pas ici de moyen fiable de résoudre le lien
@@ -19,14 +25,13 @@
 const cheerio = require("cheerio");
 
 const BRIGHT_DATA_API_KEY = process.env.BRIGHT_DATA_API_KEY;
-const BRIGHT_DATA_ZONE = process.env.BRIGHT_DATA_ZONE || "web_unlocker1";
+const BRIGHT_DATA_ZONE = process.env.BRIGHT_DATA_ZONE || "serp_api1";
 const API_URL = "https://api.brightdata.com/request";
 
 /**
- * Récupère les résultats Google Shopping pour une requête, via le Web
- * Unlocker Bright Data. Même forme de retour que fetchShoppingResults
- * (serpapi.js) : {name, price, seller, url, img} — sans _token (spécifique
- * à SerpApi).
+ * Récupère les résultats Google Shopping pour une requête, via l'API SERP
+ * Bright Data. Même forme de retour que fetchShoppingResults (serpapi.js) :
+ * {name, price, seller, url, img} — sans _token (spécifique à SerpApi).
  */
 async function fetchShoppingResultsBrightData(query) {
   if (!BRIGHT_DATA_API_KEY) {
@@ -45,7 +50,7 @@ async function fetchShoppingResultsBrightData(query) {
       Authorization: `Bearer ${BRIGHT_DATA_API_KEY}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ zone: BRIGHT_DATA_ZONE, url: targetUrl, format: "raw" }),
+    body: JSON.stringify({ zone: BRIGHT_DATA_ZONE, url: targetUrl, format: "raw", data_format: "html" }),
   });
 
   if (!res.ok) {
