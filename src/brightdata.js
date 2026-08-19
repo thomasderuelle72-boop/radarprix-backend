@@ -57,6 +57,30 @@ async function fetchShoppingResultsBrightData(query) {
     throw new Error(`Bright Data a répondu ${res.status} : ${(await res.text()).slice(0, 300)}`);
   }
   const html = await res.text();
+
+  if (process.env.BRIGHT_DATA_DEBUG === "true") {
+    // Deux essais précédents (zones web_unlocker1 et serp_api1, toutes deux
+    // en format "raw") ont renvoyé une page sans le moindre "€" malgré
+    // data_format:"html" — donc probablement pas de rendu JS effectif dans
+    // ce mode. On teste ici en parallèle le format "json" documenté par
+    // Bright Data pour l'API SERP, qui déclenche normalement leur propre
+    // extraction structurée côté serveur (comme SerpApi), sans qu'on ait à
+    // parser du HTML nous-mêmes.
+    try {
+      const jsonRes = await fetch(API_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${BRIGHT_DATA_API_KEY}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ zone: BRIGHT_DATA_ZONE, url: targetUrl, format: "json" }),
+      });
+      const jsonText = await jsonRes.text();
+      console.warn(
+        `[brightdata] DEBUG format=json → status ${jsonRes.status}, ${jsonText.length} caractères, aperçu : ${jsonText.slice(0, 4000)}`
+      );
+    } catch (e) {
+      console.warn(`[brightdata] DEBUG format=json a échoué : ${e.message}`);
+    }
+  }
+
   const offers = parseGoogleShoppingHtml(html);
 
   if (offers.length === 0) {
@@ -65,18 +89,6 @@ async function fetchShoppingResultsBrightData(query) {
     // à l'aveugle. Ne fait jamais échouer l'appel : le code appelant bascule
     // simplement sur SerpApi en repli.
     console.warn(`[brightdata] 0 offre extraite pour "${query}" — longueur HTML : ${html.length}`);
-    if (process.env.BRIGHT_DATA_DEBUG === "true") {
-      // La page fait souvent plus d'1 Mo, presque tout en JS d'analytics dans
-      // le <head> : logguer le début ne montre jamais la zone des résultats.
-      // On cherche plutôt des signaux connus et on logue leur contexte.
-      const markers = ['"/shopping/product/', "sh-dgr__", "sh-dlr__", "shopping_results", '"€"', " €<"];
-      for (const marker of markers) {
-        const idx = html.indexOf(marker);
-        console.warn(
-          `[brightdata] DEBUG marqueur "${marker}" : ${idx === -1 ? "absent" : `trouvé à l'offset ${idx}, contexte : ${html.slice(Math.max(0, idx - 500), idx + 1500)}`}`
-        );
-      }
-    }
   }
   return offers;
 }
