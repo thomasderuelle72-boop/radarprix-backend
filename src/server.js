@@ -3,8 +3,8 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const { fetchShoppingResults, resolveDirectLink } = require("./serpapi");
-const { fetchShoppingResultsBrightData } = require("./brightdata");
+const { resolveDirectLink } = require("./serpapi");
+const { fetchLiveOffers } = require("./fetchOffers");
 const { analyzeOffers, filterRelevantOffers } = require("./algorithm");
 const {
   insertSnapshots,
@@ -63,24 +63,6 @@ const PORT = process.env.PORT || 3001;
 // que pour les meilleures offres affichées — pas pour toute la liste,
 // pour rester raisonnable sur le quota.
 const MAX_DIRECT_LINKS = 6;
-
-/**
- * Récupère les offres brutes pour une recherche en direct : Bright Data en
- * priorité si configuré (pour épargner le quota SerpApi, réservé au cron
- * catalogue), repli automatique sur SerpApi si Bright Data échoue ou ne
- * renvoie rien (ex : parsing HTML à ajuster suite à un changement Google).
- */
-async function fetchLiveOffers(query) {
-  if (process.env.BRIGHT_DATA_API_KEY) {
-    try {
-      const offers = await fetchShoppingResultsBrightData(query);
-      if (offers.length > 0) return offers;
-    } catch (e) {
-      console.error(`[scanQuery] Bright Data a échoué pour "${query}", repli sur SerpApi : ${e.message}`);
-    }
-  }
-  return fetchShoppingResults(query);
-}
 
 /** Lance un scan réel pour une requête, l'analyse, le stocke. */
 async function scanQuery(query, category = "tout") {

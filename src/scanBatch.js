@@ -1,7 +1,7 @@
 // scanBatch.js — Scanne un lot de produits du catalogue et les enregistre.
 // Utilisé à la fois par cron.js (planifié) et par la route admin
 // "lancer un scan maintenant" (à la demande), pour ne pas dupliquer la logique.
-const { fetchShoppingResults } = require("./serpapi");
+const { fetchCatalogOffers } = require("./fetchOffers");
 const { filterRelevantOffers, analyzeOffers } = require("./algorithm");
 const { insertSnapshots, watchersFor, recordAlertSent } = require("./db");
 const { allProducts } = require("./catalog");
@@ -24,7 +24,7 @@ async function runCatalogBatch(size = 10) {
   const results = [];
   for (const { name, category } of batch) {
     try {
-      const rawOffers = await fetchShoppingResults(name);
+      const rawOffers = await fetchCatalogOffers(name);
       // Même filtrage qu'en recherche directe (scanQuery dans server.js) : on
       // écarte accessoires et hors-sujet AVANT insertion, sinon l'historique
       // automatique du cron se fait polluer par de mauvaises offres que la
