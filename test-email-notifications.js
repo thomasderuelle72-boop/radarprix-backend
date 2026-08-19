@@ -3,6 +3,7 @@
 // le prix ne change pas, et un nouveau prix plus bas déclenche un nouvel envoi.
 process.env.SERPAPI_KEY = "fake";
 process.env.JWT_SECRET = "test-secret";
+process.env.DB_PATH = require("node:path").join(require("node:os").tmpdir(), `radarprix-test-email-notifications-${process.pid}.sqlite`);
 process.env.RESEND_API_KEY = "fake-resend-key";
 
 const { createUser, addToWatchlist, insertSnapshots } = require("./src/db");

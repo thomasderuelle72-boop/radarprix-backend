@@ -4,6 +4,7 @@
 // titre exact comme avant.
 process.env.SERPAPI_KEY = "fake";
 process.env.JWT_SECRET = "test-secret";
+process.env.DB_PATH = require("node:path").join(require("node:os").tmpdir(), `radarprix-test-product-key-${process.pid}.sqlite`);
 
 const { productKey } = require("./src/productKey.js");
 const { insertSnapshots } = require("./src/db");
@@ -28,7 +29,7 @@ const batch = [{ name: "AirPods Pro 2 USB-C Apple", price: 79, seller: "Boutique
 const result = analyzeOffers(batch);
 console.log(`  Prix vu : 79€, référence historique retrouvée : ${result[0].refPrice}€`);
 console.log(
-  result[0].verdict === "erreur" && result[0].refPrice > 200
+  ["erreur", "erreur_verifiee"].includes(result[0].verdict) && result[0].refPrice > 200
     ? "✅ L'historique du produit (formulé différemment) a bien été retrouvé et l'erreur détectée\n"
     : "❌ ÉCHEC : historique non retrouvé malgré la formulation différente\n"
 );

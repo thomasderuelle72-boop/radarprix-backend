@@ -1,3 +1,4 @@
+process.env.DB_PATH = require("node:path").join(require("node:os").tmpdir(), `radarprix-test-condition-outliers-${process.pid}.sqlite`);
 // Vérifie deux protections contre la pollution des références de prix :
 // 1) les annonces reconditionnées/d'occasion du bon produit sont écartées
 //    (elles passaient le filtre de pertinence mais faussaient la référence).

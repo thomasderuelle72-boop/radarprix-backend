@@ -38,6 +38,13 @@ async function fetchShoppingResults(query) {
       // quand c'est possible — ne jamais compter dessus comme lien final.
       url: r.product_link || null,
       img: r.thumbnail || null,
+      oldPrice: parseOptionalPrice(r.old_price || r.extracted_old_price),
+      delivery: r.delivery || null,
+      condition: r.second_hand_condition || null,
+      rating: typeof r.rating === "number" ? r.rating : null,
+      reviews: typeof r.reviews === "number" ? r.reviews : null,
+      multipleSources: r.multiple_sources || null,
+      badge: r.badge || r.tag || null,
       // Token permettant de retrouver le vrai lien marchand.
       _token: r.immersive_product_page_token || null,
     }))
@@ -98,12 +105,33 @@ function pickBestStore(stores, sellerHint, priceHint) {
   return stores.find((s) => s.link)?.link || null;
 }
 
+function parseOptionalPrice(raw) {
+  const price = parsePrice(raw);
+  return price > 0 ? price : null;
+}
+
 function parsePrice(raw) {
   if (typeof raw === "number") return raw;
   if (!raw) return 0;
-  const cleaned = String(raw).replace(/[^\d,.-]/g, "").replace(",", ".");
-  const n = parseFloat(cleaned);
+
+  const compact = String(raw).replace(/[^\d,.-]/g, "");
+  if (!compact) return 0;
+
+  const lastComma = compact.lastIndexOf(",");
+  const lastDot = compact.lastIndexOf(".");
+  const decimalIndex = Math.max(lastComma, lastDot);
+  const decimalSeparator = compact[decimalIndex];
+
+  const normalized = decimalSeparator
+    ? compact
+        .slice(0, decimalIndex)
+        .replace(/[^\d-]/g, "") +
+      "." +
+      compact.slice(decimalIndex + 1).replace(/[^\d]/g, "")
+    : compact.replace(/[^\d-]/g, "");
+
+  const n = parseFloat(normalized);
   return Number.isFinite(n) ? n : 0;
 }
 
-module.exports = { fetchShoppingResults, resolveDirectLink, pickBestStore };
+module.exports = { fetchShoppingResults, resolveDirectLink, pickBestStore, parsePrice, parseOptionalPrice };

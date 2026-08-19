@@ -17,6 +17,7 @@
 // coûteux, quota mensuel) est indisponible. Voir fetchOffers.js.
 const puppeteer = require("puppeteer-core");
 const cheerio = require("cheerio");
+const { parsePrice } = require("./serpapi");
 
 const BROWSER_HOST = process.env.BRIGHT_DATA_BROWSER_HOST;
 const BROWSER_USER = process.env.BRIGHT_DATA_BROWSER_USER;
@@ -85,11 +86,9 @@ function parseGoogleShoppingHtml(html) {
 
     const priceMatch = text.match(/(\d[\d\s.,]*)\s?€/);
     if (!priceMatch) return;
-    // Même logique que parsePrice() dans serpapi.js : on ne garde que
-    // chiffres/virgule/point, la virgule devient le séparateur décimal —
-    // gère aussi bien "299,99" que "1 299,99" (l'espace est déjà filtré).
-    const cleaned = priceMatch[1].replace(/[^\d,.-]/g, "").replace(",", ".");
-    const price = parseFloat(cleaned);
+    // Même logique que parsePrice() dans serpapi.js, y compris pour les
+    // prix avec séparateur de milliers ("1 299,99 €", "1.299,99 €").
+    const price = parsePrice(priceMatch[1]);
     if (!Number.isFinite(price) || price <= 0) return;
 
     const title = $card.find('[role="heading"]').first().text().trim() || $a.attr("aria-label") || "";

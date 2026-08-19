@@ -3,7 +3,9 @@
 // /api/deals les agrège, filtre et pagine correctement — sans réseau.
 process.env.SERPAPI_KEY = "fake";
 process.env.JWT_SECRET = "test-secret";
+process.env.DB_PATH = require("node:path").join(require("node:os").tmpdir(), `radarprix-deals-test-${process.pid}.sqlite`);
 
+const assert = require("node:assert/strict");
 const { insertSnapshots } = require("./src/db");
 
 console.log("── Simulation d'un catalogue déjà scanné par le cron ──");
@@ -70,31 +72,33 @@ function simulateDealsEndpoint(category, page, pageSize, q) {
 const all = simulateDealsEndpoint("tout", 1, 15);
 console.log(`Total deals tous produits confondus : ${all.total} (attendu : 3 — PS5, iPhone et PC gamer, pas l'aspirateur)`);
 all.items.forEach((i) => console.log(`  - ${i.name} (${i.price}€, ${i.verdict})`));
-console.log(all.total === 3 ? "✅ Bon nombre de deals, aspirateur normal bien exclu\n" : "❌ ÉCHEC\n");
+assert.equal(all.total, 3);
+console.log("✅ Bon nombre de deals, aspirateur normal bien exclu\n");
 
 console.log("── Test : filtre par catégorie 'gaming' ──");
 const gaming = simulateDealsEndpoint("gaming", 1, 15);
 console.log(`Deals en gaming : ${gaming.total} (attendu : 2 — PS5 et PC gamer)`);
-console.log(gaming.total === 2 ? "✅ Filtre catégorie fonctionne\n" : "❌ ÉCHEC\n");
+assert.equal(gaming.total, 2);
+console.log("✅ Filtre catégorie fonctionne\n");
 
 console.log("── Test : recherche par mot-clé 'pc' (reproduit le cas signalé en prod) ──");
 const pcSearch = simulateDealsEndpoint("tout", 1, 15, "pc");
 console.log(`Résultats pour \"pc\" : ${pcSearch.total} (attendu : 1 — le PC gamer, jamais comparé à un autre produit)`);
-console.log(
-  pcSearch.total === 1 && pcSearch.items[0].name.includes("PC portable")
-    ? "✅ La recherche large retrouve les deals déjà validés, sans comparaison inventée\n"
-    : "❌ ÉCHEC\n"
-);
+assert.equal(pcSearch.total, 1);
+assert.equal(pcSearch.items[0].name.includes("PC portable"), true);
+console.log("✅ La recherche large retrouve les deals déjà validés, sans comparaison inventée\n");
 
 console.log("── Test : recherche par mot-clé insensible aux accents ──");
 const accentSearch = simulateDealsEndpoint("tout", 1, 15, "PLAYSTATION");
 console.log(`Résultats pour \"PLAYSTATION\" (majuscules) : ${accentSearch.total} (attendu : 1)`);
-console.log(accentSearch.total === 1 ? "✅ Recherche insensible à la casse\n" : "❌ ÉCHEC\n");
+assert.equal(accentSearch.total, 1);
+console.log("✅ Recherche insensible à la casse\n");
 
 console.log("── Test : filtre par catégorie 'maison' (aucun deal attendu) ──");
 const maison = simulateDealsEndpoint("maison", 1, 15);
 console.log(`Deals en maison : ${maison.total} (attendu : 0)`);
-console.log(maison.total === 0 ? "✅ Aucun faux positif en maison\n" : "❌ ÉCHEC\n");
+assert.equal(maison.total, 0);
+console.log("✅ Aucun faux positif en maison\n");
 
 console.log("── Test : pagination (pageSize=1, total=3) ──");
 const p1 = simulateDealsEndpoint("tout", 1, 1);
@@ -107,6 +111,7 @@ const paginationOk =
   p1.items.length === 1 && p1.hasMore === true &&
   p2.items.length === 1 && p2.hasMore === true &&
   p3.items.length === 1 && p3.hasMore === false;
-console.log(paginationOk ? "✅ Pagination correcte (3 pages sans doublon)\n" : "❌ ÉCHEC\n");
+assert.equal(paginationOk, true);
+console.log("✅ Pagination correcte (3 pages sans doublon)\n");
 
 console.log("Tests terminés.");
