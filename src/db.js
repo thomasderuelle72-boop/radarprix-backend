@@ -593,12 +593,42 @@ function getUserVote(dealId, userId) {
 }
 
 // ── Forum : catégories, sujets, réponses ─────────────────────────
+/**
+ * Catégories du forum, avec de quoi montrer si l'endroit est vivant :
+ * nombre de sujets, nombre total de réponses, et le dernier sujet actif
+ * (titre, auteur, date). Sans ces informations, la liste des catégories
+ * n'affichait qu'un compteur de sujets — impossible de savoir si quelqu'un
+ * y écrit encore.
+ */
 function listForumCategories() {
   return db
     .prepare(
       `SELECT c.*,
-              (SELECT COUNT(*) FROM forum_threads t WHERE t.category_id = c.id) AS thread_count
-       FROM forum_categories c ORDER BY c.sort_order ASC`
+              (SELECT COUNT(*) FROM forum_threads t WHERE t.category_id = c.id) AS thread_count,
+              (SELECT COUNT(*) FROM forum_replies r
+                 JOIN forum_threads t ON t.id = r.thread_id
+                WHERE t.category_id = c.id) AS reply_count,
+              last.title AS last_title,
+              last.id AS last_thread_id,
+              last.activity_at AS last_activity_at,
+              last.author AS last_author
+       FROM forum_categories c
+       LEFT JOIN (
+         SELECT t.category_id,
+                t.id,
+                t.title,
+                COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author,
+                COALESCE((SELECT MAX(r.created_at) FROM forum_replies r WHERE r.thread_id = t.id), t.created_at) AS activity_at
+           FROM forum_threads t
+           JOIN users u ON u.id = t.user_id
+       ) AS last
+         ON last.category_id = c.id
+        AND last.activity_at = (
+              SELECT MAX(COALESCE((SELECT MAX(r2.created_at) FROM forum_replies r2 WHERE r2.thread_id = t2.id), t2.created_at))
+                FROM forum_threads t2 WHERE t2.category_id = c.id
+            )
+       GROUP BY c.id
+       ORDER BY c.sort_order ASC`
     )
     .all();
 }

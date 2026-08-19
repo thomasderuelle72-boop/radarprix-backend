@@ -52,6 +52,7 @@ const { randomProductFor } = require("./catalog");
 const { runCatalogBatch } = require("./scanBatch");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
 const { hotScore } = require("./ranking");
+const { validerTexte, limiterFrequence, refuserDoublon } = require("./moderation");
 
 const app = express();
 app.use(cors());
@@ -293,9 +294,14 @@ app.get("/api/comments", (req, res) => {
 
 app.post("/api/comments", requireAuth, (req, res) => {
   const { query, body } = req.body || {};
-  if (!query || !body || !body.trim()) return res.status(400).json({ error: "Paramètres 'query' et 'body' requis." });
-  if (body.length > 500) return res.status(400).json({ error: "Commentaire trop long (500 caractères max)." });
-  addComment(query, req.user.sub, body.trim());
+  if (!query) return res.status(400).json({ error: "Paramètre 'query' requis." });
+  const texte = validerTexte(body, "comment");
+  if (!texte.ok) return res.status(400).json({ error: texte.error });
+  const debit = limiterFrequence(req.user.sub, "comment", 5, 60000);
+  if (!debit.ok) return res.status(429).json({ error: debit.error });
+  const doublon = refuserDoublon(req.user.sub, texte.value);
+  if (!doublon.ok) return res.status(409).json({ error: doublon.error });
+  addComment(query, req.user.sub, texte.value);
   res.status(201).json({ items: listComments(query) });
 });
 
@@ -313,10 +319,13 @@ app.get("/api/chat/public", (req, res) => {
 });
 
 app.post("/api/chat/public", requireAuth, (req, res) => {
-  const { body } = req.body || {};
-  if (!body || !body.trim()) return res.status(400).json({ error: "Message vide." });
-  if (body.length > 500) return res.status(400).json({ error: "Message trop long (500 caractères max)." });
-  const id = sendMessage(req.user.sub, null, body.trim());
+  const texte = validerTexte(req.body?.body, "message");
+  if (!texte.ok) return res.status(400).json({ error: texte.error });
+  // Salon en direct : plafond plus haut qu'ailleurs, une conversation
+  // normale enchaîne facilement plusieurs messages courts d'affilée.
+  const debit = limiterFrequence(req.user.sub, "chat", 12, 60000);
+  if (!debit.ok) return res.status(429).json({ error: debit.error });
+  const id = sendMessage(req.user.sub, null, texte.value);
   res.status(201).json({ id });
 });
 
@@ -336,9 +345,11 @@ app.post("/api/chat/with/:userId", requireAuth, (req, res) => {
   const otherId = parseInt(req.params.userId, 10);
   const { body } = req.body || {};
   if (!otherId) return res.status(400).json({ error: "Identifiant invalide." });
-  if (!body || !body.trim()) return res.status(400).json({ error: "Message vide." });
-  if (body.length > 500) return res.status(400).json({ error: "Message trop long (500 caractères max)." });
-  const id = sendMessage(req.user.sub, otherId, body.trim());
+  const texte = validerTexte(body, "message");
+  if (!texte.ok) return res.status(400).json({ error: texte.error });
+  const debit = limiterFrequence(req.user.sub, "dm", 12, 60000);
+  if (!debit.ok) return res.status(429).json({ error: debit.error });
+  const id = sendMessage(req.user.sub, otherId, texte.value);
   res.status(201).json({ id });
 });
 
@@ -371,12 +382,17 @@ app.get("/api/community/deals", optionalAuth, (req, res) => {
 // POST /api/community/deals  { title, description?, url?, price?, imageUrl?, category?, seller? }
 app.post("/api/community/deals", requireAuth, (req, res) => {
   const { title, description, url, price, imageUrl, category, seller } = req.body || {};
-  if (!title || !title.trim()) return res.status(400).json({ error: "Le titre du deal est requis." });
-  if (title.length > 150) return res.status(400).json({ error: "Titre trop long (150 caractères max)." });
-  if (description && description.length > 1000) {
-    return res.status(400).json({ error: "Description trop longue (1000 caractères max)." });
+  const titreOk = validerTexte(title, "dealTitle");
+  if (!titreOk.ok) return res.status(400).json({ error: titreOk.error });
+  if (description && description.trim()) {
+    const descOk = validerTexte(description, "dealDescription");
+    if (!descOk.ok) return res.status(400).json({ error: descOk.error });
   }
   if (url && !/^https?:\/\//.test(url)) return res.status(400).json({ error: "L'URL doit commencer par http:// ou https://" });
+  // Publier un deal est un acte rare : plafond bas, c'est le contenu le
+  // plus exposé au spam commercial.
+  const debitDeal = limiterFrequence(req.user.sub, "deal", 3, 300000);
+  if (!debitDeal.ok) return res.status(429).json({ error: debitDeal.error });
   const deal = submitCommunityDeal(req.user.sub, {
     title: title.trim(),
     description: description ? description.trim() : null,
@@ -437,11 +453,13 @@ app.post("/api/forum/categories/:slug/threads", requireAuth, (req, res) => {
   const cat = getForumCategoryBySlug(req.params.slug);
   if (!cat) return res.status(404).json({ error: "Catégorie introuvable." });
   const { title, body } = req.body || {};
-  if (!title || !title.trim()) return res.status(400).json({ error: "Le titre du sujet est requis." });
-  if (title.length > 150) return res.status(400).json({ error: "Titre trop long (150 caractères max)." });
-  if (!body || !body.trim()) return res.status(400).json({ error: "Le message est requis." });
-  if (body.length > 5000) return res.status(400).json({ error: "Message trop long (5000 caractères max)." });
-  const thread = createForumThread(cat.id, req.user.sub, title.trim(), body.trim());
+  const titreOk = validerTexte(title, "title");
+  if (!titreOk.ok) return res.status(400).json({ error: titreOk.error });
+  const corpsOk = validerTexte(body, "thread");
+  if (!corpsOk.ok) return res.status(400).json({ error: corpsOk.error });
+  const debitSujet = limiterFrequence(req.user.sub, "thread", 3, 300000);
+  if (!debitSujet.ok) return res.status(429).json({ error: debitSujet.error });
+  const thread = createForumThread(cat.id, req.user.sub, titreOk.value, corpsOk.value);
   res.status(201).json({ thread });
 });
 
@@ -459,9 +477,11 @@ app.post("/api/forum/threads/:id/replies", requireAuth, (req, res) => {
   const thread = threadId && getForumThread(threadId);
   if (!thread) return res.status(404).json({ error: "Sujet introuvable." });
   const { body } = req.body || {};
-  if (!body || !body.trim()) return res.status(400).json({ error: "Réponse vide." });
-  if (body.length > 5000) return res.status(400).json({ error: "Réponse trop longue (5000 caractères max)." });
-  const replies = addForumReply(threadId, req.user.sub, body.trim());
+  const reponseOk = validerTexte(body, "reply");
+  if (!reponseOk.ok) return res.status(400).json({ error: reponseOk.error });
+  const debitReponse = limiterFrequence(req.user.sub, "reply", 8, 60000);
+  if (!debitReponse.ok) return res.status(429).json({ error: debitReponse.error });
+  const replies = addForumReply(threadId, req.user.sub, reponseOk.value);
   res.status(201).json({ replies });
 });
 
