@@ -65,7 +65,11 @@ async function fetchShoppingResultsBrightData(query) {
       await page.close().catch(() => {});
     }
   } finally {
-    if (browser) await browser.disconnect(); // ne PAS browser.close() : session distante gérée par Bright Data
+    // browser.close() (pas juste .disconnect()) : sinon la session distante
+    // reste ouverte côté Bright Data et bloque les appels suivants avec une
+    // erreur "no_peer" (plus de session disponible dans le pool), constaté
+    // en prod sur tout un lot de scan catalogue.
+    if (browser) await browser.close().catch(() => {});
   }
 }
 
