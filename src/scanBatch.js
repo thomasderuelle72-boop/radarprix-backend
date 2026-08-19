@@ -57,7 +57,7 @@ async function notifyWatchers(name, offers) {
   if (watchers.length === 0) return;
 
   const analyzed = analyzeOffers(offers);
-  const best = analyzed.find((o) => o.verdict === "erreur");
+  const best = analyzed.find((o) => o.verdict === "erreur_verifiee" || o.verdict === "erreur");
   if (!best) return;
 
   for (const { user_id, email } of watchers) {

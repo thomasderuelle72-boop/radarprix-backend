@@ -26,6 +26,7 @@
 // des signaux structurels stables (lien de fiche produit, rôle ARIA
 // "heading") et n'aura probablement pas besoin de changer.
 const cheerio = require("cheerio");
+const { parsePrice } = require("./serpapi");
 
 const BRIGHT_DATA_API_KEY = process.env.BRIGHT_DATA_API_KEY;
 const BRIGHT_DATA_ZONE = process.env.BRIGHT_DATA_ZONE || "serp_api1";
@@ -86,11 +87,9 @@ function parseGoogleShoppingHtml(html) {
 
     const priceMatch = text.match(/(\d[\d\s.,]*)\s?€/);
     if (!priceMatch) return;
-    // Même logique que parsePrice() dans serpapi.js : on ne garde que
-    // chiffres/virgule/point, la virgule devient le séparateur décimal —
-    // gère aussi bien "299,99" que "1 299,99" (l'espace est déjà filtré).
-    const cleaned = priceMatch[1].replace(/[^\d,.-]/g, "").replace(",", ".");
-    const price = parseFloat(cleaned);
+    // Même logique que parsePrice() dans serpapi.js, y compris pour les
+    // prix avec séparateur de milliers ("1 299,99 €", "1.299,99 €").
+    const price = parsePrice(priceMatch[1]);
     if (!Number.isFinite(price) || price <= 0) return;
 
     const title = $card.find('[role="heading"]').first().text().trim() || $a.attr("aria-label") || "";

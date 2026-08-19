@@ -5,6 +5,7 @@
 // correspondait à aucun d'entre eux, et se faisait flagger ERREUR à tort.
 process.env.SERPAPI_KEY = "fake";
 process.env.JWT_SECRET = "test-secret";
+process.env.DB_PATH = require("node:path").join(require("node:os").tmpdir(), `radarprix-test-cluster-regression-${process.pid}.sqlite`);
 
 const { analyzeOffers } = require("./src/algorithm");
 
@@ -46,7 +47,7 @@ const samePs5 = [
 const ps5Results = analyzeOffers(samePs5);
 ps5Results.forEach((o) => console.log(`  ${o.seller.padEnd(16)} ${o.price}€ → ${o.verdict.toUpperCase()} (réf ${o.refPrice}€)`));
 const ps5RefsOk = ps5Results.every((o) => o.refPrice === ps5Results[0].refPrice);
-const ps5ErreurDetectee = ps5Results.find((o) => o.seller === "Boutique Louche").verdict === "erreur";
+const ps5ErreurDetectee = ["erreur", "erreur_verifiee"].includes(ps5Results.find((o) => o.seller === "Boutique Louche").verdict);
 console.log(
   ps5RefsOk && ps5ErreurDetectee
     ? "✅ Toujours une référence partagée + détection correcte pour un vrai groupe de pairs\n"

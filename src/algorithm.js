@@ -6,6 +6,7 @@
 //     prix déjà vus pour ce produit exact (s'améliore avec le temps).
 const { priceHistoryFor } = require("./db");
 const { significantWords } = require("./productKey.js");
+const { merchantProfile } = require("./merchants");
 
 // Titres à écarter d'office : ce sont presque toujours des accessoires
 // (coque, chargeur...) qui portent le nom du produit recherché mais coûtent
@@ -157,8 +158,6 @@ function coefficientOfVariation(nums) {
   return Math.sqrt(variance) / m;
 }
 
-const BIG_SELLERS = ["amazon", "cdiscount", "fnac", "ldlc", "darty", "boulanger", "materiel.net", "rakuten", "leclerc", "carrefour"];
-
 /**
  * Analyse un lot d'offres fraîchement scannées pour un même produit/requête.
  *
@@ -175,7 +174,7 @@ const BIG_SELLERS = ["amazon", "cdiscount", "fnac", "ldlc", "darty", "boulanger"
  *    mal filtré, ou un prix déjà corrigé.
  *
  * @param {Array} offers - [{name, price, seller, url, img}, ...]
- * @returns {Array} offres enrichies avec {refPrice, pct, verdict, score, confidence}
+ * @returns {Array} offres enrichies avec {refPrice, pct, verdict, score, confidence, merchantRisk, merchantType}
  */
 function analyzeOffers(offers) {
   if (offers.length === 0) return [];
@@ -204,7 +203,7 @@ function analyzeOffers(offers) {
     // pour que des formulations différentes du même produit partagent leur
     // historique — o.name est canonicalisé en interne.
     const history = priceHistoryFor(o.name, 0).filter((p) => p !== o.price);
-    const histRef = history.length >= 3 ? mean(history) : null;
+    const histRef = history.length >= 3 ? median(history) : null;
 
     // "Prix le plus bas jamais vu" : vrai seulement s'il y a un historique
     // pour comparer (sinon toute première observation serait trivialement "la plus basse").
@@ -226,15 +225,17 @@ function analyzeOffers(offers) {
     if (pct >= 60) verdict = "erreur";
     else if (pct >= 40) verdict = "deal";
 
-    const sellerLower = (o.seller || "").toLowerCase();
-    const isTrustedSeller = BIG_SELLERS.some((b) => sellerLower.includes(b));
+    const merchant = merchantProfile(o.seller);
+    const isTrustedSeller = merchant.trust >= 75;
 
-    // Deal Score : uniquement l'attractivité du prix.
+    // Deal Score : uniquement l'attractivité du prix, légèrement pondérée
+    // par le niveau de confiance marchand (vendeur établi vs inconnu).
     let score = Math.min(Math.max(pct, 0), 70);
     if (verdict === "erreur") score += 15;
     if (isTrustedSeller) score += 15;
     if (histRef) score += 5; // référence historique = plus fiable qu'une simple comparaison du jour
-    score = Math.min(score, 100);
+    if (merchant.risk >= 60) score -= 10; // marketplace/unknown : attractif, mais plus risqué
+    score = Math.max(0, Math.min(score, 100));
 
     // Confidence Score : la fiabilité de CETTE détection, indépendamment
     // de l'attractivité du prix.
@@ -248,9 +249,16 @@ function analyzeOffers(offers) {
     if (pct >= 80) confidence -= 20; // écart énorme = plus probablement une erreur de rapprochement
     else if (pct >= 60) confidence -= 10;
     if (isTrustedSeller) confidence += 10;
+    confidence += Math.round((merchant.trust - 50) / 5);
+    confidence -= Math.round(Math.max(0, merchant.risk - 50) / 5);
     confidence = Math.max(0, Math.min(100, Math.round(confidence)));
 
-    return { ...o, refPrice: Math.round(refPrice), pct, verdict, score, confidence, allTimeLow };
+    const merchantRisk = merchant.risk;
+    if (verdict === "erreur" && confidence >= 75 && merchantRisk <= 40 && (histRef || (peerStats && peerStats.size >= 3))) {
+      verdict = "erreur_verifiee";
+    }
+
+    return { ...o, refPrice: Math.round(refPrice), pct, verdict, score, confidence, merchantRisk, merchantType: merchant.type, allTimeLow };
   });
 }
 

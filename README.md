@@ -43,7 +43,7 @@ npm run cron      # (optionnel, dans un 2e terminal) scans automatiques toutes l
 
 ## Déploiement (mise en ligne)
 
-Ce backend a besoin de tourner en continu (pas un simple artifact) :
+Ce backend a besoin de tourner en continu (pas un simple artefact) :
 
 1. **Railway.app** ou **Render.com** (plans gratuits disponibles) : connecte ton dépôt GitHub, ils détectent `npm start` automatiquement. Ajoute `SERPAPI_KEY` dans leurs variables d'environnement (jamais dans le code).
 2. Si tu veux le scan automatique (`cron.js`), ajoute un second "service" sur la même plateforme avec la commande `npm run cron`.

@@ -5,6 +5,7 @@
 // par plusieurs vendeurs cohérents ET l'historique doit avoir les deux hauts.
 process.env.SERPAPI_KEY = "fake";
 process.env.JWT_SECRET = "test-secret";
+process.env.DB_PATH = require("node:path").join(require("node:os").tmpdir(), `radarprix-test-confidence-score-${process.pid}.sqlite`);
 
 const { insertSnapshots } = require("./src/db");
 const { analyzeOffers } = require("./src/algorithm");

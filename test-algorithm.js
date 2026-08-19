@@ -1,3 +1,4 @@
+process.env.DB_PATH = require("node:path").join(require("node:os").tmpdir(), `radarprix-test-algorithm-${process.pid}.sqlite`);
 // Test de l'algorithme sans dépendre de SerpApi : on simule un scan.
 const { analyzeOffers } = require("./src/algorithm");
 const { insertSnapshots } = require("./src/db");
@@ -14,7 +15,7 @@ result1.forEach((o) =>
   console.log(`  ${o.seller.padEnd(22)} ${String(o.price).padStart(7)} €  →  ${o.verdict.toUpperCase().padEnd(7)} (score ${o.score}, réf ${o.refPrice}€, -${o.pct}%)`)
 );
 
-const okDetected = result1.find((o) => o.seller === "Cdiscount Marketplace").verdict === "erreur";
+const okDetected = ["erreur", "erreur_verifiee"].includes(result1.find((o) => o.seller === "Cdiscount Marketplace").verdict);
 console.log(okDetected ? "  ✅ La virgule décalée est bien détectée comme ERREUR\n" : "  ❌ ÉCHEC : non détectée\n");
 
 // On enregistre ce scan pour construire un historique
@@ -31,7 +32,7 @@ const batch2 = [{ name: "Casque Gaming XYZ", price: 89, seller: "Boutique Inconn
 const result2 = analyzeOffers(batch2);
 console.log(`  Prix vu : ${batch2[0].price}€, référence historique calculée : ${result2[0].refPrice}€`);
 console.log(`  Verdict : ${result2[0].verdict.toUpperCase()} (-${result2[0].pct}%, score ${result2[0].score})`);
-console.log(result2[0].verdict === "erreur" ? "  ✅ Détection par historique fonctionnelle\n" : "  ❌ ÉCHEC\n");
+console.log(["erreur", "erreur_verifiee"].includes(result2[0].verdict) ? "  ✅ Détection par historique fonctionnelle\n" : "  ❌ ÉCHEC\n");
 
 console.log("── Test 3 : prix normal, ne doit PAS être flaggé ──");
 const batch3 = [

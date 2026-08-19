@@ -4,6 +4,7 @@
 // à obtenir depuis cet environnement, api.brightdata.com y est bloqué par la
 // politique réseau du bac à sable) : à re-valider via les logs Railway après
 // déploiement, et à ajuster si Google a changé sa structure entre-temps.
+const assert = require("node:assert/strict");
 const { parseGoogleShoppingHtml } = require("./src/brightdata");
 
 console.log("── Extraction de base : titre, prix, image ──");
@@ -28,18 +29,14 @@ const html1 = `
 const offers1 = parseGoogleShoppingHtml(html1);
 console.log(`  ${offers1.length} offres extraites`);
 console.log(JSON.stringify(offers1, null, 2));
-console.log(
-  offers1.length === 2 && offers1[0].price === 699.99 && offers1[1].price === 1299
-    ? "✅ Titre, prix (avec séparateur de milliers) et image bien extraits\n"
-    : "❌ ÉCHEC\n"
-);
+assert.equal(offers1.length, 2);
+assert.equal(offers1[0].price, 699.99);
+assert.equal(offers1[1].price, 1299);
+console.log("✅ Titre, prix (avec séparateur de milliers) et image bien extraits\n");
 
 console.log("── Jamais de lien Google en repli (url doit rester null) ──");
-console.log(
-  offers1.every((o) => o.url === null)
-    ? "✅ Aucune offre n'expose de lien Google comme lien final\n"
-    : "❌ ÉCHEC\n"
-);
+assert.equal(offers1.every((o) => o.url === null), true);
+console.log("✅ Aucune offre n'expose de lien Google comme lien final\n");
 
 console.log("── Déduplication d'un même produit apparu deux fois ──");
 const html2 = `
@@ -60,10 +57,12 @@ const html2 = `
 `;
 const offers2 = parseGoogleShoppingHtml(html2);
 console.log(`  ${offers2.length} offre(s) après dédoublonnage`);
-console.log(offers2.length === 1 ? "✅ Doublon bien filtré\n" : "❌ ÉCHEC\n");
+assert.equal(offers2.length, 1);
+console.log("✅ Doublon bien filtré\n");
 
 console.log("── HTML sans résultat Shopping : liste vide, pas d'erreur ──");
 const offers3 = parseGoogleShoppingHtml("<html><body>Aucun résultat</body></html>");
-console.log(offers3.length === 0 ? "✅ Liste vide gérée proprement\n" : "❌ ÉCHEC\n");
+assert.equal(offers3.length, 0);
+console.log("✅ Liste vide gérée proprement\n");
 
 console.log("Tests terminés.");

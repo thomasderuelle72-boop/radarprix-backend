@@ -3,6 +3,7 @@
 // et "non évalué" (pas 0 fabriqué) pour un marchand jamais mentionné.
 process.env.SERPAPI_KEY = "fake";
 process.env.JWT_SECRET = "test-secret";
+process.env.DB_PATH = require("node:path").join(require("node:os").tmpdir(), `radarprix-test-merchant-reliability-${process.pid}.sqlite`);
 
 const { createUser, submitCommunityDeal, voteCommunityDeal, merchantReliability } = require("./src/db");
 
