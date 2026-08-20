@@ -44,6 +44,8 @@ const {
   listPublicMessages,
   listConversation,
   listConversationsFor,
+  markConversationRead,
+  countUnreadMessages,
   submitCommunityDeal,
   getCommunityDeal,
   merchantReliability,
@@ -441,15 +443,23 @@ app.post("/api/chat/public", requireAuth, (req, res) => {
   res.status(201).json({ id });
 });
 
-// GET /api/chat/conversations — mes conversations privées, avec dernier message.
+// GET /api/chat/conversations — mes conversations privées, avec dernier
+// message et nombre de messages en attente pour chacune.
 app.get("/api/chat/conversations", requireAuth, (req, res) => {
-  res.json({ items: listConversationsFor(req.user.sub) });
+  res.json({
+    items: listConversationsFor(req.user.sub),
+    nonLus: countUnreadMessages(req.user.sub),
+  });
 });
 
 // GET /api/chat/with/:userId — historique d'une conversation privée avec un membre.
 app.get("/api/chat/with/:userId", requireAuth, (req, res) => {
   const otherId = parseInt(req.params.userId, 10);
   if (!otherId) return res.status(400).json({ error: "Identifiant invalide." });
+  // Ouvrir un fil vaut lecture : c'est le seul instant où l'on sait de façon
+  // fiable que le destinataire a les messages sous les yeux. `read=0` permet
+  // au sondage régulier de relire un fil sans marquer quoi que ce soit.
+  if (req.query.read !== "0") markConversationRead(req.user.sub, otherId);
   res.json({ items: listConversation(req.user.sub, otherId) });
 });
 

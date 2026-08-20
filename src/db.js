@@ -167,6 +167,10 @@ for (const stmt of [
   "ALTER TABLE community_deals ADD COLUMN seller TEXT",
   "ALTER TABLE watchlist ADD COLUMN target_price REAL",
   "ALTER TABLE community_deals ADD COLUMN expires_at TEXT",
+  // Marque le moment où le destinataire a ouvert la conversation. Sans
+  // ça, impossible de distinguer un message lu d'un message en attente :
+  // la liste des conversations ne pouvait signaler aucune nouveauté.
+  "ALTER TABLE messages ADD COLUMN read_at TEXT",
 ]) {
   try {
     db.exec(stmt);
@@ -383,29 +387,75 @@ function sendMessage(fromUserId, toUserId, body) {
   return info.lastInsertRowid;
 }
 
+/**
+ * Messages du salon général.
+ *
+ * afterId > 0 : les messages arrivés depuis, pour le sondage régulier.
+ * afterId = 0 : le premier chargement. On renvoie alors les DERNIERS
+ * messages, pas les premiers — sinon, passé une centaine de messages, un
+ * visiteur qui arrive découvrait l'historique le plus ancien du salon et
+ * devait attendre autant de sondages qu'il y a de pages pour rattraper la
+ * conversation en cours.
+ */
 function listPublicMessages(afterId = 0, limit = 100) {
+  if (afterId > 0) {
+    return db
+      .prepare(
+        `SELECT m.id, m.body, m.created_at, u.id AS user_id,
+                COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
+         FROM messages m JOIN users u ON u.id = m.from_user_id
+         WHERE m.to_user_id IS NULL AND m.id > ?
+         ORDER BY m.id ASC LIMIT ?`
+      )
+      .all(afterId, limit);
+  }
+  // Les N derniers, remis dans l'ordre chronologique pour l'affichage.
   return db
     .prepare(
-      `SELECT m.id, m.body, m.created_at, u.id AS user_id,
-              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
-       FROM messages m JOIN users u ON u.id = m.from_user_id
-       WHERE m.to_user_id IS NULL AND m.id > ?
-       ORDER BY m.id ASC LIMIT ?`
+      `SELECT * FROM (
+         SELECT m.id, m.body, m.created_at, u.id AS user_id,
+                COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
+         FROM messages m JOIN users u ON u.id = m.from_user_id
+         WHERE m.to_user_id IS NULL
+         ORDER BY m.id DESC LIMIT ?
+       ) ORDER BY id ASC`
     )
-    .all(afterId, limit);
+    .all(limit);
 }
 
 function listConversation(userId, otherUserId, limit = 200) {
   return db
     .prepare(
-      `SELECT m.id, m.body, m.created_at, m.from_user_id,
-              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author
+      `SELECT m.id, m.body, m.created_at, m.from_user_id, m.read_at,
+              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
        FROM messages m JOIN users u ON u.id = m.from_user_id
        WHERE (m.from_user_id = ? AND m.to_user_id = ?)
           OR (m.from_user_id = ? AND m.to_user_id = ?)
        ORDER BY m.id ASC LIMIT ?`
     )
     .all(userId, otherUserId, otherUserId, userId, limit);
+}
+
+/**
+ * Marque comme lus les messages qu'un membre vient de recevoir dans une
+ * conversation. Appelé à l'ouverture du fil : c'est le seul moment où l'on
+ * sait de façon fiable que le destinataire les a sous les yeux.
+ */
+function markConversationRead(userId, otherUserId) {
+  const info = db
+    .prepare(
+      `UPDATE messages SET read_at = datetime('now')
+       WHERE to_user_id = ? AND from_user_id = ? AND read_at IS NULL`
+    )
+    .run(userId, otherUserId);
+  return info.changes;
+}
+
+/** Total de messages privés en attente, toutes conversations confondues. */
+function countUnreadMessages(userId) {
+  return db
+    .prepare("SELECT COUNT(*) AS n FROM messages WHERE to_user_id = ? AND read_at IS NULL")
+    .get(userId).n;
 }
 
 /** Liste des conversations privées d'un utilisateur, avec le dernier message de chacune. */
@@ -417,7 +467,10 @@ function listConversationsFor(userId) {
          COALESCE(NULLIF(other.pseudo, ''), 'Membre #' || other.id) AS display_name,
          other.avatar_url,
          last_msg.body AS last_body,
-         last_msg.created_at AS last_at
+         last_msg.created_at AS last_at,
+         last_msg.from_user_id AS last_from,
+         (SELECT COUNT(*) FROM messages nl
+           WHERE nl.from_user_id = other.id AND nl.to_user_id = ? AND nl.read_at IS NULL) AS non_lus
        FROM (
          SELECT DISTINCT CASE WHEN from_user_id = ? THEN to_user_id ELSE from_user_id END AS other_id
          FROM messages
@@ -429,9 +482,12 @@ function listConversationsFor(userId) {
          WHERE (from_user_id = ? AND to_user_id = other.id) OR (from_user_id = other.id AND to_user_id = ?)
          ORDER BY id DESC LIMIT 1
        )
-       ORDER BY last_msg.created_at DESC`
+       -- Sur l'identifiant du dernier message, pas sur sa date : les dates
+       -- SQLite s'arrêtent à la seconde, et deux conversations actives dans
+       -- la même seconde se seraient classées au hasard.
+       ORDER BY last_msg.id DESC`
     )
-    .all(userId, userId, userId, userId, userId);
+    .all(userId, userId, userId, userId, userId, userId);
 }
 
 // ── Historique de prix agrégé par jour (pour un mini-graphique) ──
@@ -1023,6 +1079,8 @@ module.exports = {
   listPublicMessages,
   listConversation,
   listConversationsFor,
+  markConversationRead,
+  countUnreadMessages,
   submitCommunityDeal,
   getCommunityDeal,
   merchantReliability,
