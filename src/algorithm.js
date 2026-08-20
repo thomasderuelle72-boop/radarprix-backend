@@ -4,7 +4,7 @@
 //     produit sont comparées à leur médiane (dispo dès le 1er scan).
 //  2) Comparaison "historique" : le prix est comparé à la moyenne des
 //     prix déjà vus pour ce produit exact (s'améliore avec le temps).
-const { priceHistoryFor } = require("./db");
+const { priceHistoryFor, reglages, offreBannie } = require("./db");
 const { significantWords } = require("./productKey.js");
 
 // Titres à écarter d'office : ce sont presque toujours des accessoires
@@ -74,7 +74,14 @@ function titleMatchesQuery(title, query) {
  */
 function filterRelevantOffers(offers, query) {
   return offers.filter(
-    (o) => !isAccessoryTitle(o.name) && !isUsedOrRefurbishedTitle(o.name) && titleMatchesQuery(o.name, query)
+    (o) =>
+      !isAccessoryTitle(o.name) &&
+      !isUsedOrRefurbishedTitle(o.name) &&
+      titleMatchesQuery(o.name, query) &&
+      // Liste noire tenue à la main : elle rattrape ce que les règles
+      // automatiques laissent passer — une gamme d'accessoires dont le nom
+      // ressemble trop au produit, un marchand systématiquement trompeur.
+      !offreBannie(o)
   );
 }
 
@@ -180,6 +187,10 @@ const BIG_SELLERS = ["amazon", "cdiscount", "fnac", "ldlc", "darty", "boulanger"
 function analyzeOffers(offers) {
   if (offers.length === 0) return [];
 
+  // Réglages lus une fois par lot, pas une fois par offre : ils viennent de
+  // la base et sont modifiables depuis le tableau de bord.
+  const R = reglages();
+
   // Référence "entre pairs" calculée séparément pour chaque produit distinct
   // du lot (voir clusterByProduct) : jamais sur tout le lot mélangé, sinon
   // des modèles différents remontés par une recherche large hériteraient
@@ -188,7 +199,7 @@ function analyzeOffers(offers) {
   const peerRefByOffer = new Map();
   const peerStatsByOffer = new Map();
   for (const cluster of clusterByProduct(offers)) {
-    if (cluster.length < 2) continue; // rien à comparer entre pairs pour un produit seul dans le lot
+    if (cluster.length < R.minPairs) continue; // pas assez de pairs comparables dans ce lot
     const prices = stripGrossOutliers(cluster.map((o) => o.price));
     const ref = trimmedMedian(prices);
     const stats = { size: prices.length, cv: coefficientOfVariation(prices) };
@@ -204,11 +215,11 @@ function analyzeOffers(offers) {
     // pour que des formulations différentes du même produit partagent leur
     // historique — o.name est canonicalisé en interne.
     const history = priceHistoryFor(o.name, 0).filter((p) => p !== o.price);
-    const histRef = history.length >= 3 ? mean(history) : null;
+    const histRef = history.length >= R.minHistorique ? mean(history) : null;
 
     // "Prix le plus bas jamais vu" : vrai seulement s'il y a un historique
     // pour comparer (sinon toute première observation serait trivialement "la plus basse").
-    const allTimeLow = history.length >= 3 && o.price < Math.min(...history);
+    const allTimeLow = history.length >= R.minHistorique && o.price < Math.min(...history);
 
     // On prend la référence la plus fiable disponible : l'historique du
     // produit s'il y en a assez, sinon la médiane rognée entre pairs du
@@ -223,8 +234,8 @@ function analyzeOffers(offers) {
     const pct = Math.round((1 - o.price / refPrice) * 100);
 
     let verdict = "normal";
-    if (pct >= 60) verdict = "erreur";
-    else if (pct >= 40) verdict = "deal";
+    if (pct >= R.seuilErreur) verdict = "erreur";
+    else if (pct >= R.seuilDeal) verdict = "deal";
 
     const sellerLower = (o.seller || "").toLowerCase();
     const isTrustedSeller = BIG_SELLERS.some((b) => sellerLower.includes(b));
@@ -249,6 +260,11 @@ function analyzeOffers(offers) {
     else if (pct >= 60) confidence -= 10;
     if (isTrustedSeller) confidence += 10;
     confidence = Math.max(0, Math.min(100, Math.round(confidence)));
+
+    // Plancher de confiance : au-delà d'un certain doute, mieux vaut ne rien
+    // annoncer qu'annoncer une anomalie qui n'en est pas une. À 0 (valeur
+    // d'origine), ce filtre ne retire rien.
+    if (verdict !== "normal" && confidence < R.confianceMin) verdict = "normal";
 
     return { ...o, refPrice: Math.round(refPrice), pct, verdict, score, confidence, allTimeLow };
   });

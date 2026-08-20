@@ -66,6 +66,19 @@ const {
   sourceHealth,
   listEmailLog,
   emailStats,
+  reglagesDetailles,
+  definirReglage,
+  listBlacklist,
+  ajouterBlacklist,
+  retirerBlacklist,
+  offreRejetee,
+  rejeterOffre,
+  listRejets,
+  annulerRejet,
+  listCatalogItems,
+  ajouterCatalogItem,
+  basculerCatalogItem,
+  supprimerCatalogItem,
   submitCommunityDeal,
   getCommunityDeal,
   merchantReliability,
@@ -81,7 +94,7 @@ const {
   listForumReplies,
   addForumReply,
 } = require("./db");
-const { randomProductFor } = require("./catalog");
+const { randomProductFor, allProducts: allCatalogProducts } = require("./catalog");
 const { runCatalogBatch } = require("./scanBatch");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
 const { hotScore } = require("./ranking");
@@ -179,7 +192,12 @@ app.get("/api/deals", (req, res) => {
   for (const { query, offers } of batches) {
     if (offers.length === 0) continue;
     const relevant = filterRelevantOffers(offers, query);
-    const analyzed = analyzeOffers(relevant).filter((o) => o.verdict !== "normal");
+    // Les anomalies écartées à la main par la modération ne sont plus
+    // publiées : un faux positif visible en ligne devait pouvoir être retiré
+    // sans attendre un correctif de l'algorithme.
+    const analyzed = analyzeOffers(relevant)
+      .filter((o) => o.verdict !== "normal")
+      .filter((o) => !offreRejetee(o));
     allFlagged.push(...analyzed);
   }
   const matching = q ? allFlagged.filter((o) => foldAccents(o.name).includes(q)) : allFlagged;
@@ -828,6 +846,92 @@ app.post("/api/admin/diagnose", requireAuth, requireAdmin, async (req, res) => {
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
+});
+
+
+// ── Qualité de la détection ──────────────────────────────────────
+
+// GET /api/admin/settings — réglages de l'algorithme, avec bornes et valeur d'origine.
+app.get("/api/admin/settings", requireAuth, requireAdmin, (req, res) => {
+  res.json({ items: reglagesDetailles() });
+});
+
+// PATCH /api/admin/settings  { cle, valeur }  (valeur null = valeur d'origine)
+app.patch("/api/admin/settings", requireAuth, requireAdmin, (req, res) => {
+  const r = definirReglage(req.user.sub, req.body?.cle, req.body?.valeur);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json({ ok: true, valeur: r.valeur, items: reglagesDetailles() });
+});
+
+// GET /api/admin/blacklist
+app.get("/api/admin/blacklist", requireAuth, requireModerator, (req, res) => {
+  res.json({ items: listBlacklist() });
+});
+
+// POST /api/admin/blacklist  { type: "marchand"|"motif", valeur, note? }
+app.post("/api/admin/blacklist", requireAuth, requireModerator, (req, res) => {
+  const r = ajouterBlacklist(req.user.sub, req.body?.type, req.body?.valeur, req.body?.note);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.status(201).json({ ok: true, items: listBlacklist() });
+});
+
+// DELETE /api/admin/blacklist/:id
+app.delete("/api/admin/blacklist/:id", requireAuth, requireModerator, (req, res) => {
+  const r = retirerBlacklist(req.user.sub, parseInt(req.params.id, 10));
+  if (!r.ok) return res.status(404).json({ error: r.error });
+  res.json({ ok: true, items: listBlacklist() });
+});
+
+// POST /api/admin/rejects  { name, seller, price, motif? } — écarte une anomalie.
+app.post("/api/admin/rejects", requireAuth, requireModerator, (req, res) => {
+  const r = rejeterOffre(req.user.sub, req.body || {});
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.status(201).json({ ok: true, deja: Boolean(r.deja) });
+});
+
+// GET /api/admin/rejects
+app.get("/api/admin/rejects", requireAuth, requireModerator, (req, res) => {
+  res.json({ items: listRejets() });
+});
+
+// DELETE /api/admin/rejects/:id — remet l'anomalie en circulation.
+app.delete("/api/admin/rejects/:id", requireAuth, requireModerator, (req, res) => {
+  const r = annulerRejet(req.user.sub, parseInt(req.params.id, 10));
+  if (!r.ok) return res.status(404).json({ error: r.error });
+  res.json({ ok: true });
+});
+
+// ── Catalogue ────────────────────────────────────────────────────
+
+// GET /api/admin/catalog — produits du fichier + produits ajoutés à la main.
+app.get("/api/admin/catalog", requireAuth, requireAdmin, (req, res) => {
+  res.json({
+    // Le fichier catalog.js reste la référence et n'est pas modifiable
+    // depuis le site : le distinguer évite de croire qu'on peut y toucher.
+    fichier: allCatalogProducts(),
+    ajoutes: listCatalogItems(),
+  });
+});
+
+// POST /api/admin/catalog  { name, category }
+app.post("/api/admin/catalog", requireAuth, requireAdmin, (req, res) => {
+  const r = ajouterCatalogItem(req.user.sub, req.body?.name, req.body?.category);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.status(201).json({ ok: true, ajoutes: listCatalogItems() });
+});
+
+// PATCH /api/admin/catalog/:id  { actif }
+app.patch("/api/admin/catalog/:id", requireAuth, requireAdmin, (req, res) => {
+  const r = basculerCatalogItem(req.user.sub, parseInt(req.params.id, 10), Boolean(req.body?.actif));
+  if (!r.ok) return res.status(404).json({ error: r.error });
+  res.json({ ok: true, ajoutes: listCatalogItems() });
+});
+
+// DELETE /api/admin/catalog/:id
+app.delete("/api/admin/catalog/:id", requireAuth, requireAdmin, (req, res) => {
+  const r = supprimerCatalogItem(req.user.sub, parseInt(req.params.id, 10));
+  if (!r.ok) return res.status(404).json({ error: r.error });
+  res.json({ ok: true, ajoutes: listCatalogItems() });
 });
 
 app.get("/api/admin/stats", requireAuth, requireAdmin, (req, res) => {

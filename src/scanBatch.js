@@ -5,7 +5,7 @@ const { fetchCatalogOffers } = require("./fetchOffers");
 const { filterRelevantOffers, analyzeOffers } = require("./algorithm");
 const {
   insertSnapshots, watchersFor, recordAlertSent,
-  debuterScan, terminerScan, sourceHealth,
+  debuterScan, terminerScan, sourceHealth, catalogItemsActifs,
 } = require("./db");
 const { allProducts } = require("./catalog");
 const { sendPriceErrorAlert, sendAdminAlert } = require("./email");
@@ -14,13 +14,26 @@ const PRODUCTS = allProducts();
 let cursor = 0;
 
 /**
+ * Liste scannée : le fichier catalog.js, plus les produits ajoutés depuis le
+ * tableau de bord. Recomposée à chaque exécution et non au chargement du
+ * module : sinon un produit ajouté ne serait pris en compte qu'au prochain
+ * redémarrage du serveur.
+ */
+function produitsAScanner() {
+  const ajoutes = catalogItemsActifs().map((p) => ({ name: p.name, category: p.category }));
+  const connus = new Set(PRODUCTS.map((p) => p.name.toLowerCase()));
+  return [...PRODUCTS, ...ajoutes.filter((p) => !connus.has(p.name.toLowerCase()))];
+}
+
+/**
  * Scanne `size` produits du catalogue (rotation continue à chaque appel)
  * et les enregistre en base. Renvoie un résumé pour affichage/logs.
  */
 async function runCatalogBatch(size = 10, { source = "cron", triggeredBy = null } = {}) {
+  const produits = produitsAScanner();
   const batch = [];
   for (let i = 0; i < size; i++) {
-    batch.push(PRODUCTS[cursor % PRODUCTS.length]);
+    batch.push(produits[cursor % produits.length]);
     cursor++;
   }
 
@@ -142,4 +155,4 @@ async function notifyWatchers(name, offers) {
   }
 }
 
-module.exports = { runCatalogBatch, PRODUCTS, notifyWatchers };
+module.exports = { runCatalogBatch, PRODUCTS, produitsAScanner, notifyWatchers };

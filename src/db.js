@@ -221,6 +221,55 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_email_log_date ON email_log(id);
+
+  -- ── Qualité de la détection ───────────────────────────────────
+
+  -- Réglages de l'algorithme, modifiables sans redéployer. Les valeurs par
+  -- défaut restent dans le code (voir REGLAGES_DEFAUT) : cette table ne
+  -- contient que les écarts volontaires, ce qui rend un retour en arrière
+  -- aussi simple que supprimer une ligne.
+  CREATE TABLE IF NOT EXISTS settings (
+    cle TEXT PRIMARY KEY,
+    valeur TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Produits ou marchands bannis des résultats. Répond au cas concret
+  -- "ça annonce un téléphone et c'est une coque" quand le filtrage
+  -- automatique ne suffit pas.
+  CREATE TABLE IF NOT EXISTS blacklist (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,          -- marchand | motif
+    valeur TEXT NOT NULL,
+    note TEXT,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(type, valeur)
+  );
+
+  -- Anomalies écartées à la main : un faux positif visible en ligne devait
+  -- pouvoir être retiré sans attendre un correctif de l'algorithme.
+  CREATE TABLE IF NOT EXISTS rejected_offers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_key TEXT NOT NULL,
+    seller TEXT,
+    price REAL,
+    motif TEXT,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(product_key, seller, price)
+  );
+
+  -- Produits ajoutés ou désactivés à la main, par-dessus catalog.js. Le
+  -- fichier reste la référence ; cette table n'enregistre que les écarts.
+  CREATE TABLE IF NOT EXISTS catalog_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    category TEXT NOT NULL DEFAULT 'tout',
+    actif INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 // Catégories de forum par défaut — insérées une seule fois (slug UNIQUE).
@@ -1431,8 +1480,261 @@ function purgerJournaux() {
   db.prepare("DELETE FROM scan_runs WHERE started_at < datetime('now', ?)").run(limite);
 }
 
+
+// ── Réglages de l'algorithme ─────────────────────────────────────
+//
+// Les seuils vivaient en constantes dans algorithm.js : les changer
+// demandait une modification du code et un redéploiement, donc personne ne
+// les changeait. Ils sont désormais lisibles et modifiables depuis le
+// tableau de bord.
+//
+// Les valeurs par défaut restent ici, dans le code. La table `settings` ne
+// contient que les écarts volontaires : revenir au comportement d'origine
+// se fait en supprimant une ligne, pas en se rappelant le chiffre initial.
+const REGLAGES_DEFAUT = {
+  seuilErreur: { valeur: 60, min: 20, max: 95, libelle: "Écart minimum pour un verdict « erreur de prix » (%)" },
+  seuilDeal: { valeur: 40, min: 10, max: 90, libelle: "Écart minimum pour un verdict « bon deal » (%)" },
+  minHistorique: { valeur: 3, min: 2, max: 20, libelle: "Nombre de prix passés requis pour se fier à l'historique" },
+  minPairs: { valeur: 2, min: 2, max: 10, libelle: "Nombre d'offres comparables requis dans un scan" },
+  confianceMin: { valeur: 0, min: 0, max: 100, libelle: "Confiance minimale pour publier une anomalie (0 = tout publier)" },
+};
+
+// Cache mémoire : analyzeOffers lit ces réglages pour chaque offre de chaque
+// scan. Sans cache, ce serait une requête SQL par offre.
+let cacheReglages = null;
+
+function reglages() {
+  if (cacheReglages) return cacheReglages;
+  const lignes = db.prepare("SELECT cle, valeur FROM settings").all();
+  const surcharges = Object.fromEntries(lignes.map((l) => [l.cle, Number(l.valeur)]));
+  cacheReglages = Object.fromEntries(
+    Object.entries(REGLAGES_DEFAUT).map(([cle, d]) => [
+      cle,
+      Number.isFinite(surcharges[cle]) ? surcharges[cle] : d.valeur,
+    ])
+  );
+  return cacheReglages;
+}
+
+/** Réglages accompagnés de leurs bornes et de leur valeur d'origine, pour l'interface. */
+function reglagesDetailles() {
+  const actuels = reglages();
+  return Object.entries(REGLAGES_DEFAUT).map(([cle, d]) => ({
+    cle,
+    libelle: d.libelle,
+    valeur: actuels[cle],
+    defaut: d.valeur,
+    min: d.min,
+    max: d.max,
+    modifie: actuels[cle] !== d.valeur,
+  }));
+}
+
+/** Change un réglage. `null` remet la valeur d'origine. */
+function definirReglage(adminId, cle, valeur) {
+  const d = REGLAGES_DEFAUT[cle];
+  if (!d) return { ok: false, error: "Réglage inconnu." };
+
+  if (valeur === null || valeur === undefined || valeur === "") {
+    db.prepare("DELETE FROM settings WHERE cle = ?").run(cle);
+    cacheReglages = null;
+    journaliser(adminId, "réglage réinitialisé", { detail: `${cle} → ${d.valeur} (valeur d'origine)` });
+    return { ok: true, valeur: d.valeur };
+  }
+
+  const n = Number(valeur);
+  if (!Number.isFinite(n) || n < d.min || n > d.max) {
+    return { ok: false, error: `Valeur hors bornes (${d.min} à ${d.max}).` };
+  }
+  db.prepare(
+    "INSERT INTO settings (cle, valeur) VALUES (?, ?) ON CONFLICT(cle) DO UPDATE SET valeur = excluded.valeur, updated_at = datetime('now')"
+  ).run(cle, String(n));
+  cacheReglages = null;
+  journaliser(adminId, "réglage modifié", { detail: `${cle} → ${n}` });
+  return { ok: true, valeur: n };
+}
+
+// ── Liste noire ──────────────────────────────────────────────────
+//
+// Deux natures : un marchand entier, ou un motif de titre. Le second sert
+// aux cas que le filtrage automatique laisse passer — une gamme
+// d'accessoires dont le nom ressemble trop au produit, par exemple.
+let cacheBlacklist = null;
+
+function blacklist() {
+  if (!cacheBlacklist) {
+    const lignes = db.prepare("SELECT type, valeur FROM blacklist").all();
+    cacheBlacklist = {
+      marchands: lignes.filter((l) => l.type === "marchand").map((l) => l.valeur.toLowerCase()),
+      motifs: lignes.filter((l) => l.type === "motif").map((l) => l.valeur.toLowerCase()),
+    };
+  }
+  return cacheBlacklist;
+}
+
+function listBlacklist() {
+  return db
+    .prepare(
+      `SELECT b.*, COALESCE(NULLIF(u.pseudo, ''), u.email) AS ajoute_par
+       FROM blacklist b LEFT JOIN users u ON u.id = b.created_by ORDER BY b.type, b.valeur`
+    )
+    .all();
+}
+
+function ajouterBlacklist(adminId, type, valeur, note) {
+  if (!["marchand", "motif"].includes(type)) return { ok: false, error: "Type inconnu." };
+  const propre = String(valeur || "").trim();
+  if (propre.length < 2) return { ok: false, error: "Valeur trop courte." };
+  try {
+    db.prepare("INSERT INTO blacklist (type, valeur, note, created_by) VALUES (?, ?, ?, ?)")
+      .run(type, propre, note || null, adminId);
+  } catch (e) {
+    if (/UNIQUE constraint/i.test(e.message)) return { ok: false, error: "Cette entrée existe déjà." };
+    throw e;
+  }
+  cacheBlacklist = null;
+  journaliser(adminId, "liste noire — ajout", { detail: `${type} : ${propre}` });
+  return { ok: true };
+}
+
+function retirerBlacklist(adminId, id) {
+  const ligne = db.prepare("SELECT type, valeur FROM blacklist WHERE id = ?").get(id);
+  if (!ligne) return { ok: false, error: "Entrée introuvable." };
+  db.prepare("DELETE FROM blacklist WHERE id = ?").run(id);
+  cacheBlacklist = null;
+  journaliser(adminId, "liste noire — retrait", { detail: `${ligne.type} : ${ligne.valeur}` });
+  return { ok: true };
+}
+
+/** Une offre est-elle bannie ? (marchand entier ou motif dans le titre) */
+function offreBannie(offre) {
+  const b = blacklist();
+  const vendeur = (offre.seller || "").toLowerCase();
+  if (b.marchands.some((m) => vendeur.includes(m))) return true;
+  const titre = (offre.name || "").toLowerCase();
+  return b.motifs.some((m) => titre.includes(m));
+}
+
+// ── Anomalies rejetées à la main ─────────────────────────────────
+let cacheRejets = null;
+
+function rejets() {
+  if (!cacheRejets) {
+    cacheRejets = new Set(
+      db.prepare("SELECT product_key, seller, price FROM rejected_offers").all()
+        .map((r) => cleRejet(r.product_key, r.seller, r.price))
+    );
+  }
+  return cacheRejets;
+}
+
+const cleRejet = (pk, seller, price) =>
+  `${pk}|${(seller || "").toLowerCase()}|${Number(price).toFixed(2)}`;
+
+/** Cette offre précise a-t-elle été écartée à la main ? */
+function offreRejetee(offre) {
+  return rejets().has(cleRejet(productKey(offre.name), offre.seller, offre.price));
+}
+
+function rejeterOffre(adminId, { name, seller, price, motif }) {
+  if (!name || !Number.isFinite(Number(price))) return { ok: false, error: "Offre incomplète." };
+  const pk = productKey(name);
+  try {
+    db.prepare("INSERT INTO rejected_offers (product_key, seller, price, motif, created_by) VALUES (?, ?, ?, ?, ?)")
+      .run(pk, seller || null, Number(price), motif || null, adminId);
+  } catch (e) {
+    if (/UNIQUE constraint/i.test(e.message)) return { ok: true, deja: true };
+    throw e;
+  }
+  cacheRejets = null;
+  journaliser(adminId, "anomalie rejetée", { detail: `${name} — ${seller} à ${price} €${motif ? " — " + motif : ""}` });
+  return { ok: true };
+}
+
+function listRejets(limit = 100) {
+  return db
+    .prepare(
+      `SELECT r.*, COALESCE(NULLIF(u.pseudo, ''), u.email) AS rejete_par
+       FROM rejected_offers r LEFT JOIN users u ON u.id = r.created_by
+       ORDER BY r.id DESC LIMIT ?`
+    )
+    .all(limit);
+}
+
+function annulerRejet(adminId, id) {
+  const info = db.prepare("DELETE FROM rejected_offers WHERE id = ?").run(id);
+  if (info.changes === 0) return { ok: false, error: "Rejet introuvable." };
+  cacheRejets = null;
+  journaliser(adminId, "rejet annulé", { contentId: id });
+  return { ok: true };
+}
+
+// ── Catalogue ────────────────────────────────────────────────────
+function listCatalogItems() {
+  return db
+    .prepare(
+      `SELECT c.*, COALESCE(NULLIF(u.pseudo, ''), u.email) AS ajoute_par
+       FROM catalog_items c LEFT JOIN users u ON u.id = c.created_by
+       ORDER BY c.category, c.name`
+    )
+    .all();
+}
+
+function ajouterCatalogItem(adminId, name, category) {
+  const propre = String(name || "").trim();
+  if (propre.length < 3) return { ok: false, error: "Nom de produit trop court." };
+  try {
+    db.prepare("INSERT INTO catalog_items (name, category, created_by) VALUES (?, ?, ?)")
+      .run(propre, category || "tout", adminId);
+  } catch (e) {
+    if (/UNIQUE constraint/i.test(e.message)) return { ok: false, error: "Ce produit est déjà dans le catalogue." };
+    throw e;
+  }
+  journaliser(adminId, "catalogue — ajout", { detail: propre });
+  return { ok: true };
+}
+
+/** Active ou désactive un produit ajouté à la main. */
+function basculerCatalogItem(adminId, id, actif) {
+  const item = db.prepare("SELECT name FROM catalog_items WHERE id = ?").get(id);
+  if (!item) return { ok: false, error: "Produit introuvable." };
+  db.prepare("UPDATE catalog_items SET actif = ? WHERE id = ?").run(actif ? 1 : 0, id);
+  journaliser(adminId, actif ? "catalogue — réactivation" : "catalogue — désactivation", { detail: item.name });
+  return { ok: true };
+}
+
+function supprimerCatalogItem(adminId, id) {
+  const item = db.prepare("SELECT name FROM catalog_items WHERE id = ?").get(id);
+  if (!item) return { ok: false, error: "Produit introuvable." };
+  db.prepare("DELETE FROM catalog_items WHERE id = ?").run(id);
+  journaliser(adminId, "catalogue — retrait", { detail: item.name });
+  return { ok: true };
+}
+
+/** Produits ajoutés à la main et actifs, à fusionner avec catalog.js. */
+function catalogItemsActifs() {
+  return db.prepare("SELECT name, category FROM catalog_items WHERE actif = 1").all();
+}
+
 module.exports = {
   db,
+  REGLAGES_DEFAUT,
+  reglages,
+  reglagesDetailles,
+  definirReglage,
+  listBlacklist,
+  ajouterBlacklist,
+  retirerBlacklist,
+  offreBannie,
+  offreRejetee,
+  rejeterOffre,
+  listRejets,
+  annulerRejet,
+  listCatalogItems,
+  ajouterCatalogItem,
+  basculerCatalogItem,
+  supprimerCatalogItem,
+  catalogItemsActifs,
   debuterScan,
   terminerScan,
   listScanRuns,
