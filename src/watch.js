@@ -26,6 +26,7 @@ const { extraireOffre } = require("./jsonld");
 const { evaluer } = require("./anomalies");
 const { isTrustedSeller } = require("./algorithm");
 const { productKey } = require("./productKey");
+const { recupererPage } = require("./fetchPage");
 const { upsertDeal } = require("./dealsStore");
 const { scoreDesirabilite, meritePublication } = require("./curation");
 const { logSourceEvent } = require("./db");
@@ -162,18 +163,11 @@ function prixDesPairs(productKeyValeur, urlIdExclue) {
 async function verifierFiche(fiche, { fetcher = fetch, maintenant = new Date() } = {}) {
   let html;
   try {
-    const res = await fetcher(fiche.url, {
-      headers: {
-        // Un agent identifiable et honnête : c'est la moindre des politesses
-        // vis-à-vis des serveurs interrogés, et cela permet aux marchands de
-        // nous contacter plutôt que de nous bloquer en silence.
-        "User-Agent": "RadarPrixBot/1.0 (+https://radarprix.fr/bot)",
-        Accept: "text/html,application/xhtml+xml",
-      },
-      redirect: "follow",
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    html = await res.text();
+    // Deux étages : requête directe d'abord, repli Bright Data si le marchand
+    // la refuse. Les grandes enseignes bloquent les adresses de centres de
+    // données quel que soit l'agent annoncé — sans ce repli, la surveillance
+    // échouerait précisément chez les marchands qui comptent.
+    ({ html } = await recupererPage(fiche.url, { fetcher }));
   } catch (e) {
     db.prepare("UPDATE watched_urls SET echecs = echecs + 1, last_checked_at = datetime('now') WHERE id = ?").run(fiche.id);
     return { url: fiche.url, ok: false, erreur: e.message };

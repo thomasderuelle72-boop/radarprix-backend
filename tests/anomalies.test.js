@@ -1,5 +1,5 @@
 // Phase 3 — signatures d'erreur de prix, JSON-LD, surveillance de fiches.
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -390,5 +390,73 @@ describe("amorçage de la surveillance", () => {
     ]);
     expect(amorcerDepuisSnapshots({ limite: 40 }).ajoutees).toBe(0);
     expect(amorcerDepuisSnapshots({ limite: 40, toutMarchand: true }).ajoutees).toBe(1);
+  });
+});
+
+describe("récupération d'une page marchande", () => {
+  const fp = require("../src/fetchPage.js");
+  const env = { ...process.env };
+
+  beforeEach(() => {
+    fp.reinitialiserQuota();
+  });
+  afterEach(() => {
+    process.env = { ...env };
+    fp.reinitialiserQuota();
+  });
+
+  const ok = (html) => async () => ({ ok: true, status: 200, text: async () => html });
+  const refus = async () => ({ ok: false, status: 403, text: async () => "" });
+
+  it("passe en direct quand le marchand répond", async () => {
+    const r = await fp.recupererPage("https://www.fnac.com/x", { fetcher: ok("<html>prix</html>") });
+    expect(r.via).toBe("directe");
+    expect(r.html).toContain("prix");
+  });
+
+  it("bascule sur Bright Data quand le marchand refuse", async () => {
+    process.env.BRIGHT_DATA_API_KEY = "cle";
+    let appels = 0;
+    const r = await fp.recupererPage("https://www.cdiscount.com/x", {
+      fetcher: async (url, opts) => {
+        appels++;
+        if (appels === 1) return refus();
+        // Le repli doit viser l'API Bright Data, pas de nouveau le marchand.
+        expect(url).toBe(fp.ENDPOINT_BRIGHTDATA);
+        expect(opts.method).toBe("POST");
+        expect(JSON.parse(opts.body).url).toBe("https://www.cdiscount.com/x");
+        return { ok: true, status: 200, text: async () => "<html>via repli</html>" };
+      },
+    });
+    expect(r.via).toBe("brightdata");
+    expect(r.html).toContain("via repli");
+  });
+
+  it("ne tente aucun repli sans clé, et remonte l'échec direct", async () => {
+    delete process.env.BRIGHT_DATA_API_KEY;
+    await expect(fp.recupererPage("https://x.fr/y", { fetcher: refus })).rejects.toThrow(/HTTP 403/);
+  });
+
+  it("s'arrête au plafond quotidien plutôt que de laisser filer la facture", async () => {
+    process.env.BRIGHT_DATA_API_KEY = "cle";
+    process.env.BRIGHT_DATA_MAX_PAR_JOUR = "2";
+    const fetcher = async (url) =>
+      url === fp.ENDPOINT_BRIGHTDATA
+        ? { ok: true, status: 200, text: async () => "<html>ok</html>" }
+        : refus();
+
+    await fp.recupererPage("https://a.fr/1", { fetcher });
+    await fp.recupererPage("https://a.fr/2", { fetcher });
+    // Le troisième dépasse le plafond : l'erreur doit le dire, sinon on
+    // croirait le marchand injoignable et on chercherait au mauvais endroit.
+    await expect(fp.recupererPage("https://a.fr/3", { fetcher })).rejects.toThrow(/plafond quotidien/);
+    expect(fp.etatQuota().utilisees).toBe(2);
+  });
+
+  it("remonte les deux causes quand le repli échoue aussi", async () => {
+    process.env.BRIGHT_DATA_API_KEY = "cle";
+    const fetcher = async (url) =>
+      url === fp.ENDPOINT_BRIGHTDATA ? { ok: false, status: 502, text: async () => "" } : refus();
+    await expect(fp.recupererPage("https://a.fr/1", { fetcher })).rejects.toThrow(/directe : HTTP 403.*repli : Bright Data a répondu 502/);
   });
 });
