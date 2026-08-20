@@ -308,6 +308,11 @@ for (const stmt of [
   // Mise en avant d'un deal communautaire, sans avoir à le supprimer pour
   // le sortir de la une ni à trafiquer ses votes pour l'y faire monter.
   "ALTER TABLE community_deals ADD COLUMN pinned_at TEXT",
+  // Le rejet d'une anomalie ne conservait que la clé normalisée du produit
+  // ("128 15 iphone") : la liste des anomalies écartées était illisible.
+  // On garde désormais le libellé d'origine, sans toucher à la clé qui
+  // reste ce sur quoi la comparaison se fait.
+  "ALTER TABLE rejected_offers ADD COLUMN label TEXT",
 ]) {
   try {
     db.exec(stmt);
@@ -1640,8 +1645,8 @@ function rejeterOffre(adminId, { name, seller, price, motif }) {
   if (!name || !Number.isFinite(Number(price))) return { ok: false, error: "Offre incomplète." };
   const pk = productKey(name);
   try {
-    db.prepare("INSERT INTO rejected_offers (product_key, seller, price, motif, created_by) VALUES (?, ?, ?, ?, ?)")
-      .run(pk, seller || null, Number(price), motif || null, adminId);
+    db.prepare("INSERT INTO rejected_offers (product_key, label, seller, price, motif, created_by) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(pk, String(name).trim(), seller || null, Number(price), motif || null, adminId);
   } catch (e) {
     if (/UNIQUE constraint/i.test(e.message)) return { ok: true, deja: true };
     throw e;
@@ -1654,7 +1659,8 @@ function rejeterOffre(adminId, { name, seller, price, motif }) {
 function listRejets(limit = 100) {
   return db
     .prepare(
-      `SELECT r.*, COALESCE(NULLIF(u.pseudo, ''), u.email) AS rejete_par
+      `SELECT r.*, COALESCE(NULLIF(r.label, ''), r.product_key) AS produit,
+              COALESCE(NULLIF(u.pseudo, ''), u.email) AS rejete_par
        FROM rejected_offers r LEFT JOIN users u ON u.id = r.created_by
        ORDER BY r.id DESC LIMIT ?`
     )

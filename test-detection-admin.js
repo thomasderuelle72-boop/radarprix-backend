@@ -91,6 +91,10 @@ const doublon = rejeterOffre(admin.id, anomalie);
 verifie("Rejeter deux fois ne crée pas de doublon", doublon.ok === true && doublon.deja === true);
 verifie("Offre incomplète refusée", rejeterOffre(admin.id, { name: "X" }).ok === false);
 verifie("Le motif est conservé", listRejets()[0].motif === "mauvaise variante");
+// La clé normalisée sert à comparer, pas à s'afficher : « 1000xm5 sony wh
+// casque » ne dit rien à personne dans la liste des anomalies écartées.
+verifie("Le libellé d'origine est conservé pour l'affichage",
+  listRejets()[0].produit === "Casque Sony WH-1000XM5");
 verifie("Annulation du rejet", annulerRejet(admin.id, listRejets()[0].id).ok === true);
 verifie("L'anomalie revient en circulation", offreRejetee(anomalie) === false);
 verifie("Annuler un rejet inexistant refusé", annulerRejet(admin.id, 9999).ok === false);
