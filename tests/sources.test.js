@@ -283,9 +283,10 @@ describe("D1 — Awin : diagnostic des pannes", () => {
     expect(recu.headers["Content-Type"]).toBe("application/json");
   });
 
-  it("n'envoie aucun corps en GET", async () => {
+  it("n'envoie aucun corps quand la méthode est forcée en GET", async () => {
     process.env.AWIN_API_TOKEN = "jeton";
     process.env.AWIN_PUBLISHER_ID = "3048875";
+    process.env.AWIN_OFFERS_METHOD = "GET";
     process.env.AWIN_OFFERS_BODY = '{"ignoré":true}';
     let recu = null;
     await fetchAwinOffers({
@@ -296,5 +297,58 @@ describe("D1 — Awin : diagnostic des pannes", () => {
     });
     expect(recu.method).toBe("GET");
     expect(recu.body).toBeUndefined();
+  });
+
+  it("vise par défaut le point d'entrée réel de la documentation Awin", async () => {
+    // Les trois parties ont été fausses en production : GET au lieu de POST,
+    // « publishers » au pluriel, « offers » au lieu de « promotions ».
+    process.env.AWIN_API_TOKEN = "jeton";
+    process.env.AWIN_PUBLISHER_ID = "3048875";
+    let vue = null;
+    let recu = null;
+    await fetchAwinOffers({
+      fetcher: async (url, opts) => {
+        vue = url;
+        recu = opts;
+        return { ok: true, json: async () => ({ promotions: [] }) };
+      },
+    });
+    expect(vue).toBe("https://api.awin.com/publisher/3048875/promotions");
+    expect(recu.method).toBe("POST");
+    expect(JSON.parse(recu.body)).toEqual({ filters: { membership: "joined" } });
+  });
+
+  it("lit les promotions dans l'enveloppe renvoyée par Awin", async () => {
+    process.env.AWIN_API_TOKEN = "jeton";
+    process.env.AWIN_PUBLISHER_ID = "3048875";
+    const offres = await fetchAwinOffers({
+      fetcher: async () => ({
+        ok: true,
+        json: async () => ({
+          promotions: [
+            {
+              promotionId: 991,
+              title: "-20 % sur tout le site",
+              type: "voucher",
+              voucherCode: "RADAR20",
+              advertiser: { name: "Cdiscount" },
+              urlTracking: "https://www.awin1.com/cread.php?...",
+              startDate: "2026-08-01",
+              endDate: "2026-09-01",
+            },
+          ],
+        }),
+      }),
+    });
+    expect(offres).toHaveLength(1);
+    expect(offres[0]).toMatchObject({
+      source: "awin",
+      externalId: 991,
+      detector: "D1",
+      type: "code",
+      voucherCode: "RADAR20",
+      merchant: "Cdiscount",
+      discountPct: 20,
+    });
   });
 });

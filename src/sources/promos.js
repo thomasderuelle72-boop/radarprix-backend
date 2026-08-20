@@ -204,7 +204,20 @@ async function fetchStrackrDeals({ fetcher = fetch } = {}) {
  *   AWIN_OFFERS_METHOD  GET par défaut, POST si l'API l'exige
  *   AWIN_OFFERS_BODY    corps JSON à envoyer quand la méthode est POST
  */
-const AWIN_OFFERS_URL_DEFAUT = "https://api.awin.com/publishers/{publisherId}/offers";
+// Point d'entrée « Retrieve Offers » de la documentation Awin. Les trois
+// parties comptent et aucune n'est intuitive : POST et non GET, « publisher »
+// au singulier, « promotions » et non « offers ». Une adresse approchante
+// répond 404 sans autre explication.
+const AWIN_OFFERS_URL_DEFAUT = "https://api.awin.com/publisher/{publisherId}/promotions";
+const AWIN_OFFERS_METHODE_DEFAUT = "POST";
+
+// Filtre par défaut : les promotions des annonceurs dont le programme est
+// accepté. L'API sait aussi rendre celles des annonceurs non rejoints, mais
+// leurs liens ne seraient pas suivis — afficher une offre dont on ne peut
+// pas tracer le clic n'a d'intérêt ni pour le site ni pour le marchand.
+// AWIN_OFFERS_BODY permet d'élargir (membership: "notJoined", exclusiveOnly,
+// advertiserIds, regionCodes) sans redéployer.
+const AWIN_OFFERS_BODY_DEFAUT = JSON.stringify({ filters: { membership: "joined" } });
 
 async function fetchAwinOffers({ fetcher = fetch } = {}) {
   const jeton = process.env.AWIN_API_TOKEN;
@@ -213,8 +226,8 @@ async function fetchAwinOffers({ fetcher = fetch } = {}) {
   if (!editeur) throw new Error("AWIN_PUBLISHER_ID manquant");
 
   const url = (process.env.AWIN_OFFERS_URL || AWIN_OFFERS_URL_DEFAUT).replace("{publisherId}", editeur);
-  const methode = (process.env.AWIN_OFFERS_METHOD || "GET").toUpperCase();
-  const corps = process.env.AWIN_OFFERS_BODY || null;
+  const methode = (process.env.AWIN_OFFERS_METHOD || AWIN_OFFERS_METHODE_DEFAUT).toUpperCase();
+  const corps = process.env.AWIN_OFFERS_BODY || AWIN_OFFERS_BODY_DEFAUT;
 
   const res = await fetcher(url, {
     method: methode,
