@@ -122,7 +122,63 @@ const { calculerBadges, prochainsBadges } = require("./badges");
 const { validerTexte, limiterFrequence, refuserDoublon } = require("./moderation");
 
 const app = express();
-app.use(cors());
+
+/* ── Origines autorisées ──────────────────────────────────────────
+   `cors()` sans argument autorise n'importe quel site à appeler cette API
+   depuis le navigateur d'un visiteur connecté. Tant que le site n'avait pas
+   d'adresse stable, restreindre n'était pas praticable ; maintenant qu'il y
+   en a une, la liste se ferme.
+
+   Trois familles restent acceptées :
+     - les domaines du site, en apex et en www, en .fr comme en .com ;
+     - les déploiements Vercel (production et prévisualisations, dont le
+       sous-domaine est tiré au hasard à chaque commit — d'où le motif) ;
+     - le développement local.
+
+   CORS_ORIGINS (séparées par des virgules) remplace entièrement cette liste
+   si elle est définie, pour ajouter un domaine sans redéployer le code.
+   ────────────────────────────────────────────────────────────────── */
+const ORIGINES_PAR_DEFAUT = [
+  "https://radarprix.fr",
+  "https://www.radarprix.fr",
+  "https://radarprix.com",
+  "https://www.radarprix.com",
+  "https://radarprix-frontend.vercel.app",
+];
+const MOTIF_PREVISUALISATION_VERCEL = /^https:\/\/[a-z0-9-]+\.vercel\.app$/i;
+const MOTIF_LOCAL = /^http:\/\/localhost(:\d+)?$/i;
+
+const originesConfigurees = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+const originesAutorisees = originesConfigurees.length > 0 ? originesConfigurees : ORIGINES_PAR_DEFAUT;
+
+function origineAutorisee(origin) {
+  // Pas d'en-tête Origin : appel hors navigateur (curl, sonde de santé de
+  // l'hébergeur, appel serveur à serveur). Ces requêtes ne relèvent pas du
+  // CORS et ne doivent pas être refusées ici, sous peine de faire échouer
+  // les vérifications de santé de Railway.
+  if (!origin) return true;
+  if (originesAutorisees.includes(origin)) return true;
+  // Les prévisualisations ne sont ouvertes que si aucune liste explicite
+  // n'a été configurée : définir CORS_ORIGINS doit vraiment tout fermer.
+  if (originesConfigurees.length === 0 && MOTIF_PREVISUALISATION_VERCEL.test(origin)) return true;
+  return MOTIF_LOCAL.test(origin);
+}
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (origineAutorisee(origin)) return callback(null, true);
+      // On refuse le partage sans lever d'erreur : le navigateur bloquera
+      // la lecture de la réponse, ce qui est le comportement voulu, alors
+      // qu'une exception ferait remonter une 500 dans les journaux à chaque
+      // robot de passage.
+      callback(null, false);
+    },
+  })
+);
 app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
