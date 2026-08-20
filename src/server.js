@@ -5,7 +5,10 @@ const express = require("express");
 const cors = require("cors");
 const { resolveDirectLink } = require("./serpapi");
 const { fetchLiveOffers } = require("./fetchOffers");
-const { analyzeOffers, filterRelevantOffers } = require("./algorithm");
+const {
+  analyzeOffers, filterRelevantOffers,
+  isAccessoryTitle, isUsedOrRefurbishedTitle, titleMatchesQuery,
+} = require("./algorithm");
 const {
   insertSnapshots,
   latestSnapshots,
@@ -59,6 +62,10 @@ const {
   suspensionEnCours,
   definirRole,
   epinglerDeal,
+  listScanRuns,
+  sourceHealth,
+  listEmailLog,
+  emailStats,
   submitCommunityDeal,
   getCommunityDeal,
   merchantReliability,
@@ -743,6 +750,86 @@ app.post("/api/admin/users/:id/role", requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true });
 });
 
+
+// ── Santé du site ────────────────────────────────────────────────
+
+// GET /api/admin/health — état des services extérieurs et du scan.
+app.get("/api/admin/health", requireAuth, requireModerator, (req, res) => {
+  const runs = listScanRuns(1);
+  res.json({
+    sources: sourceHealth(),
+    dernierScan: runs[0] || null,
+    emails: emailStats(),
+    cronActif: process.env.ENABLE_CRON !== "false",
+    // Ce que le serveur a réellement en main : une clé absente explique un
+    // service muet bien plus sûrement qu'une panne.
+    clesPresentes: {
+      serpapi: Boolean(process.env.SERPAPI_KEY),
+      brightdata: Boolean(process.env.BRIGHT_DATA_BROWSER_HOST),
+      resend: Boolean(process.env.RESEND_API_KEY),
+      adminEmail: Boolean(process.env.ADMIN_EMAIL),
+    },
+  });
+});
+
+// GET /api/admin/scans — historique des exécutions de scan.
+app.get("/api/admin/scans", requireAuth, requireModerator, (req, res) => {
+  res.json({ items: listScanRuns(Math.min(100, parseInt(req.query.limit, 10) || 30)) });
+});
+
+// GET /api/admin/emails — journal des emails envoyés.
+app.get("/api/admin/emails", requireAuth, requireModerator, (req, res) => {
+  res.json({ items: listEmailLog(Math.min(200, parseInt(req.query.limit, 10) || 50)), stats: emailStats() });
+});
+
+// POST /api/admin/diagnose  { query }
+// Rejoue un produit et montre le raisonnement complet : ce qui a été
+// récupéré, ce qui a été écarté et pour quelle raison, puis ce que
+// l'algorithme en a conclu. Le bouton de scan existant lançait le travail
+// sans jamais rien montrer, ce qui le rendait inutile pour comprendre un
+// mauvais résultat.
+app.post("/api/admin/diagnose", requireAuth, requireAdmin, async (req, res) => {
+  const query = String(req.body?.query || "").trim();
+  if (!query) return res.status(400).json({ error: "Indique un produit à diagnostiquer." });
+  const debit = limiterFrequence(req.user.sub, "diagnostic", 6, 600000);
+  if (!debit.ok) return res.status(429).json({ error: debit.error });
+
+  try {
+    const brutes = await fetchLiveOffers(query);
+    const retenues = filterRelevantOffers(brutes, query);
+    const gardees = new Set(retenues.map((o) => `${o.seller}|${o.name}|${o.price}`));
+
+    // Pour chaque offre écartée, la raison exacte — dans le même ordre que
+    // filterRelevantOffers les applique.
+    const ecartees = brutes
+      .filter((o) => !gardees.has(`${o.seller}|${o.name}|${o.price}`))
+      .map((o) => ({
+        name: o.name,
+        seller: o.seller,
+        price: o.price,
+        raison: isAccessoryTitle(o.name)
+          ? "accessoire (coque, câble, protection…)"
+          : isUsedOrRefurbishedTitle(o.name)
+          ? "occasion ou reconditionné"
+          : !titleMatchesQuery(o.name, query)
+          ? "titre trop éloigné du produit demandé"
+          : "écartée par le filtrage",
+      }));
+
+    const analysees = analyzeOffers(retenues).map(({ _token, ...o }) => o);
+    res.json({
+      query,
+      brutes: brutes.length,
+      retenues: retenues.map(({ _token, ...o }) => o),
+      ecartees,
+      analysees,
+      anomalies: analysees.filter((o) => o.verdict !== "normal").length,
+    });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
 app.get("/api/admin/stats", requireAuth, requireAdmin, (req, res) => {
   res.json({
     totalUsers: countUsers(),
@@ -766,7 +853,7 @@ app.post("/api/admin/trigger-scan", requireAuth, requireAdmin, async (req, res) 
   const debit = limiterFrequence(req.user.sub, "scan-manuel", 2, 900000);
   if (!debit.ok) return res.status(429).json({ error: debit.error });
   try {
-    const results = await runCatalogBatch(size);
+    const results = await runCatalogBatch(size, { source: "manuel", triggeredBy: req.user.sub });
     res.json({ scanned: results.length, results });
   } catch (e) {
     res.status(500).json({ error: e.message });

@@ -3,9 +3,12 @@
 // "lancer un scan maintenant" (à la demande), pour ne pas dupliquer la logique.
 const { fetchCatalogOffers } = require("./fetchOffers");
 const { filterRelevantOffers, analyzeOffers } = require("./algorithm");
-const { insertSnapshots, watchersFor, recordAlertSent } = require("./db");
+const {
+  insertSnapshots, watchersFor, recordAlertSent,
+  debuterScan, terminerScan, sourceHealth,
+} = require("./db");
 const { allProducts } = require("./catalog");
-const { sendPriceErrorAlert } = require("./email");
+const { sendPriceErrorAlert, sendAdminAlert } = require("./email");
 
 const PRODUCTS = allProducts();
 let cursor = 0;
@@ -14,13 +17,16 @@ let cursor = 0;
  * Scanne `size` produits du catalogue (rotation continue à chaque appel)
  * et les enregistre en base. Renvoie un résumé pour affichage/logs.
  */
-async function runCatalogBatch(size = 10) {
+async function runCatalogBatch(size = 10, { source = "cron", triggeredBy = null } = {}) {
   const batch = [];
   for (let i = 0; i < size; i++) {
     batch.push(PRODUCTS[cursor % PRODUCTS.length]);
     cursor++;
   }
 
+  // Chaque exécution laisse une ligne : c'est ce qui permet de répondre à
+  // "le scan tourne-t-il encore ?" sans lire les journaux de l'hébergeur.
+  const runId = debuterScan(source, size, triggeredBy);
   const results = [];
   for (const { name, category } of batch) {
     try {
@@ -43,7 +49,57 @@ async function runCatalogBatch(size = 10) {
     }
     await new Promise((r) => setTimeout(r, 1500)); // pause entre deux requêtes
   }
+
+  const okCount = results.filter((r) => r.ok).length;
+  const echecs = results.filter((r) => !r.ok);
+  terminerScan(runId, {
+    okCount,
+    failCount: echecs.length,
+    offersCount: results.reduce((n, r) => n + (r.offersFound || 0), 0),
+    // On retient le premier message d'erreur : ils sont presque toujours
+    // identiques (même source en panne), le détail complet est dans les
+    // évènements de source.
+    error: echecs.length > 0 ? echecs[0].error : null,
+  });
+  await previenirSiPanne(results, echecs);
   return results;
+}
+
+// Une alerte par panne, pas une par scan : sans ce garde-fou, un service
+// tombé le vendredi soir enverrait un email toutes les heures jusqu'au lundi.
+let panneDejaSignalee = false;
+
+/**
+ * Prévient l'administrateur quand un scan échoue entièrement. Une panne de
+ * source ne se découvrait jusqu'ici qu'en constatant un catalogue vide,
+ * parfois plusieurs jours plus tard.
+ */
+async function previenirSiPanne(results, echecs) {
+  const totalEchec = results.length > 0 && echecs.length === results.length;
+
+  if (!totalEchec) {
+    panneDejaSignalee = false; // le service est revenu : on réarme l'alerte
+    return;
+  }
+  if (panneDejaSignalee) return;
+  panneDejaSignalee = true;
+
+  const etat = sourceHealth()
+    .filter((s) => s.etat !== "inconnu")
+    .map((s) => `• ${s.source} : ${s.etat} (${s.serieEchecs} échec(s) d'affilée)`)
+    .join("\n");
+
+  try {
+    await sendAdminAlert(
+      "Le scan ne trouve plus rien",
+      `Les ${results.length} produits du dernier scan ont tous échoué.\n\n` +
+        `Première erreur rencontrée :\n${echecs[0].error}\n\n` +
+        `État des sources :\n${etat}\n\n` +
+        `Cette alerte n'est envoyée qu'une fois : la suivante attendra que le service soit revenu puis retombé.`
+    );
+  } catch (e) {
+    console.error(`[scanBatch] alerte admin non envoyée : ${e.message}`);
+  }
 }
 
 /**

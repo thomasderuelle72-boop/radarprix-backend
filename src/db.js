@@ -178,6 +178,49 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_modlog_date ON moderation_log(created_at);
+
+  -- ── Santé du site ─────────────────────────────────────────────
+  -- Les pannes (quota SerpApi épuisé, Bright Data en échec, cron muet) ne
+  -- se lisaient que dans les journaux de l'hébergeur. Rien ne les remontait
+  -- dans le site, alors que ce sont elles qui laissent le catalogue vide.
+
+  -- Une ligne par exécution de scan, planifiée ou manuelle.
+  CREATE TABLE IF NOT EXISTS scan_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,              -- cron | manuel
+    triggered_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    size INTEGER NOT NULL,
+    ok_count INTEGER NOT NULL DEFAULT 0,
+    fail_count INTEGER NOT NULL DEFAULT 0,
+    offers_count INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_scan_runs_date ON scan_runs(id);
+
+  -- Succès et échecs des services extérieurs, pour en donner l'état sans
+  -- avoir à ouvrir les journaux de l'hébergeur.
+  CREATE TABLE IF NOT EXISTS source_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source TEXT NOT NULL,              -- serpapi | brightdata | resend
+    ok INTEGER NOT NULL,               -- 1 = succès, 0 = échec
+    detail TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_source_events ON source_events(source, id);
+
+  -- Emails envoyés : si une alerte ne part pas, personne ne le savait.
+  CREATE TABLE IF NOT EXISTS email_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    to_email TEXT NOT NULL,
+    subject TEXT,
+    motif TEXT,                        -- erreur | seuil | admin
+    ok INTEGER NOT NULL,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_email_log_date ON email_log(id);
 `);
 
 // Catégories de forum par défaut — insérées une seule fois (slug UNIQUE).
@@ -1274,8 +1317,131 @@ function epinglerDeal(adminId, dealId, epingle) {
   return { ok: true };
 }
 
+
+// ── Santé du site : scans, sources extérieures, emails ───────────
+//
+// Ces trois journaux ne servent qu'à répondre à une question : « pourquoi
+// le site ne trouve-t-il rien en ce moment ? ». Ils sont volontairement
+// bornés (purge des lignes anciennes) : ce sont des indicateurs, pas des
+// archives, et la base tient dans un fichier.
+
+const RETENTION_JOURS = 30;
+
+/** Ouvre une exécution de scan et renvoie son identifiant. */
+function debuterScan(source, size, triggeredBy) {
+  const info = db
+    .prepare("INSERT INTO scan_runs (source, triggered_by, size) VALUES (?, ?, ?)")
+    .run(source, triggeredBy || null, size);
+  return info.lastInsertRowid;
+}
+
+/** Referme une exécution avec son bilan. */
+function terminerScan(runId, { okCount = 0, failCount = 0, offersCount = 0, error = null } = {}) {
+  if (!runId) return;
+  db.prepare(
+    `UPDATE scan_runs SET ok_count = ?, fail_count = ?, offers_count = ?, error = ?,
+            finished_at = datetime('now') WHERE id = ?`
+  ).run(okCount, failCount, offersCount, error, runId);
+  purgerJournaux();
+}
+
+function listScanRuns(limit = 30) {
+  return db
+    .prepare(
+      `SELECT r.*, COALESCE(NULLIF(u.pseudo, ''), u.email) AS lance_par
+       FROM scan_runs r LEFT JOIN users u ON u.id = r.triggered_by
+       ORDER BY r.id DESC LIMIT ?`
+    )
+    .all(limit);
+}
+
+/** Consigne un appel à un service extérieur. */
+function logSourceEvent(source, ok, detail) {
+  db.prepare("INSERT INTO source_events (source, ok, detail) VALUES (?, ?, ?)")
+    .run(source, ok ? 1 : 0, detail ? String(detail).slice(0, 300) : null);
+}
+
+/**
+ * État de chaque service : dernier succès, dernier échec, et surtout la
+ * série d'échecs en cours — c'est elle qui distingue un hoquet passager
+ * d'une panne installée.
+ */
+function sourceHealth() {
+  const sources = ["serpapi", "brightdata", "resend"];
+  return sources.map((source) => {
+    const dernier = (ok) =>
+      db.prepare("SELECT created_at, detail FROM source_events WHERE source = ? AND ok = ? ORDER BY id DESC LIMIT 1")
+        .get(source, ok);
+    const recents = db
+      .prepare("SELECT ok FROM source_events WHERE source = ? ORDER BY id DESC LIMIT 50")
+      .all(source);
+    let serieEchecs = 0;
+    for (const e of recents) {
+      if (e.ok === 1) break;
+      serieEchecs++;
+    }
+    const sur24h = db
+      .prepare(
+        `SELECT SUM(ok) AS succes, COUNT(*) AS total FROM source_events
+         WHERE source = ? AND created_at > datetime('now', '-1 day')`
+      )
+      .get(source);
+    const succes = dernier(1);
+    const echec = dernier(0);
+    return {
+      source,
+      dernierSucces: succes?.created_at || null,
+      dernierEchec: echec?.created_at || null,
+      dernierMessage: echec?.detail || null,
+      serieEchecs,
+      // "aucune donnée" est un état à part entière : ne rien avoir tenté
+      // n'est pas la même chose qu'avoir échoué.
+      etat: recents.length === 0 ? "inconnu" : serieEchecs === 0 ? "ok" : serieEchecs >= 5 ? "panne" : "instable",
+      appels24h: sur24h?.total || 0,
+      succes24h: sur24h?.succes || 0,
+    };
+  });
+}
+
+/** Consigne un envoi d'email, réussi ou non. */
+function logEmail({ to, subject, motif, ok, error }) {
+  db.prepare("INSERT INTO email_log (to_email, subject, motif, ok, error) VALUES (?, ?, ?, ?, ?)")
+    .run(to, subject || null, motif || null, ok ? 1 : 0, error ? String(error).slice(0, 300) : null);
+}
+
+function listEmailLog(limit = 50) {
+  return db.prepare("SELECT * FROM email_log ORDER BY id DESC LIMIT ?").all(limit);
+}
+
+function emailStats() {
+  const r = db
+    .prepare(
+      `SELECT COUNT(*) AS total, SUM(ok) AS envoyes FROM email_log
+       WHERE created_at > datetime('now', '-7 day')`
+    )
+    .get();
+  return { total7j: r.total || 0, envoyes7j: r.envoyes || 0, echecs7j: (r.total || 0) - (r.envoyes || 0) };
+}
+
+/** Supprime les lignes de journal trop anciennes pour être utiles. */
+function purgerJournaux() {
+  const limite = `-${RETENTION_JOURS} day`;
+  db.prepare("DELETE FROM source_events WHERE created_at < datetime('now', ?)").run(limite);
+  db.prepare("DELETE FROM email_log WHERE created_at < datetime('now', ?)").run(limite);
+  db.prepare("DELETE FROM scan_runs WHERE started_at < datetime('now', ?)").run(limite);
+}
+
 module.exports = {
   db,
+  debuterScan,
+  terminerScan,
+  listScanRuns,
+  logSourceEvent,
+  sourceHealth,
+  logEmail,
+  listEmailLog,
+  emailStats,
+  purgerJournaux,
   TYPES_CONTENU,
   lireContenu,
   supprimerContenu,

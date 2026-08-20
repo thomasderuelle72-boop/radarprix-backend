@@ -8,15 +8,29 @@
 // récurrent, seulement un filet de sécurité.
 const { fetchShoppingResults } = require("./serpapi");
 const { fetchShoppingResultsBrightData } = require("./brightdata");
+const { logSourceEvent } = require("./db");
 
 async function fetchWithFallback(query, label) {
+  // Chaque appel est consigné : c'est ce qui permet au tableau de bord de
+  // dire "SerpApi en panne depuis 14 h" sans aller lire les journaux de
+  // l'hébergeur, où ces pannes ne se voyaient qu'à la main.
   try {
-    return await fetchShoppingResults(query);
+    const offers = await fetchShoppingResults(query);
+    logSourceEvent("serpapi", true, `${offers.length} offre(s) — ${query}`);
+    return offers;
   } catch (e) {
     console.error(`[fetchOffers] SerpApi a échoué pour "${query}" (${label}) : ${e.message}`);
+    logSourceEvent("serpapi", false, e.message);
     if (!process.env.BRIGHT_DATA_BROWSER_HOST) throw e;
     console.error(`[fetchOffers] repli sur Bright Data Browser API pour "${query}"`);
-    return fetchShoppingResultsBrightData(query);
+    try {
+      const offers = await fetchShoppingResultsBrightData(query);
+      logSourceEvent("brightdata", true, `${offers.length} offre(s) — ${query}`);
+      return offers;
+    } catch (e2) {
+      logSourceEvent("brightdata", false, e2.message);
+      throw e2;
+    }
   }
 }
 
