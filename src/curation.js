@@ -24,6 +24,19 @@ const BONUS_TYPE = {
 };
 
 /**
+ * Remise d'un deal, qu'elle soit déclarée par la source ou déduite du couple
+ * prix/référence. Une seule règle, partagée par le score et la décision de
+ * publication — sinon les deux peuvent diverger sur le même deal.
+ */
+function remiseEffective(deal) {
+  if (Number.isFinite(deal.discountPct)) return deal.discountPct;
+  const prix = Number.isFinite(deal.price) ? deal.price : null;
+  const ref = Number.isFinite(deal.referencePrice) ? deal.referencePrice : null;
+  if (prix == null || ref == null || ref <= 0) return null;
+  return Math.round((1 - prix / ref) * 100);
+}
+
+/**
  * Score de désirabilité, de 0 à 100.
  *
  * Trois signaux combinés, choisis pour être robustes à ce que les marchands
@@ -56,10 +69,7 @@ function scoreDesirabilite(deal, { fiabiliteMarchand = null } = {}) {
   // ── 1. Profondeur de la remise ────────────────────────────────
   // Plafonnée à 80 % : au-delà, l'écart en dit davantage sur la qualité de
   // la référence que sur la qualité de l'affaire.
-  let pct = Number.isFinite(deal.discountPct) ? deal.discountPct : null;
-  if (pct == null && prix != null && ref != null && ref > 0) {
-    pct = Math.round((1 - prix / ref) * 100);
-  }
+  const pct = remiseEffective(deal);
   if (pct != null && pct > 0) score += Math.min(pct, 80) * 0.375; // max 30
 
   // ── 2. Montant économisé ──────────────────────────────────────
@@ -99,12 +109,39 @@ function scoreDesirabilite(deal, { fiabiliteMarchand = null } = {}) {
 // et bloquer les « −5 % » qui composent le gros des flux d'affiliation.
 const SEUIL_PUBLICATION = 30;
 
+// Seuils propres aux offres dont on ne connaît QUE la remise annoncée.
+const SEUIL_REMISE_DECLAREE = 20;
+// Un code promo est retenu plus bas : il est directement actionnable, se
+// cumule souvent avec une promotion en cours, et 10 % au panier est un
+// avantage que les acheteurs utilisent réellement.
+const SEUIL_REMISE_CODE = 10;
+
 /**
  * Un deal mérite-t-il d'être publié automatiquement ?
  *
- * Les sources déterministes (D2 : un jeu est offert ou non) court-circuitent
- * le seuil : il n'y a rien à juger, et les faire passer par un score les
- * ferait disparaître pour un prix habituel non renseigné.
+ * La règle dépend de ce qu'on peut réellement savoir du deal — d'où trois
+ * branches plutôt qu'un seuil unique :
+ *
+ *  • D2 (gratuit) : déterministe. Un jeu est offert ou il ne l'est pas ; il
+ *    n'y a rien à juger, et passer par un score le ferait disparaître au
+ *    seul motif que son prix habituel n'est pas renseigné.
+ *
+ *  • D1 (promotions, codes promo) : un flux d'affiliation ne fournit ni prix
+ *    ni référence observée. Le score, qui repose surtout là-dessus, vaut donc
+ *    presque zéro pour ces offres — l'appliquer tel quel bloquait la
+ *    TOTALITÉ du détecteur, c'est-à-dire précisément la source de volume du
+ *    site. On juge donc sur la seule information disponible : la profondeur
+ *    de la remise annoncée. Le plafond de score reste, lui, en place : il
+ *    gouverne le CLASSEMENT, et garde ces offres derrière les anomalies
+ *    réellement mesurées.
+ *
+ *  • D3/D4 (anomalies mesurées) : le score complet s'applique, puisque toute
+ *    l'information est là.
+ *
+ * Limite assumée : une offre non chiffrée (« livraison offerte dès 25 € »)
+ * n'est pas publiée automatiquement. Faute de pouvoir la comparer à quoi que
+ * ce soit, mieux vaut la laisser de côté que remplir le flux d'offres qu'on
+ * ne sait pas classer.
  */
 function meritePublication(deal, score = null) {
   if (deal.detector === "D2") return true;
@@ -113,8 +150,22 @@ function meritePublication(deal, score = null) {
   // son score — c'est le premier motif de déception d'un site de bons plans.
   if (deal.expiresAt && new Date(deal.expiresAt) <= new Date()) return false;
 
+  if (deal.detector === "D1") {
+    const pct = remiseEffective(deal);
+    if (pct == null) return false;
+    return pct >= (deal.type === "code" ? SEUIL_REMISE_CODE : SEUIL_REMISE_DECLAREE);
+  }
+
   const s = score == null ? scoreDesirabilite(deal) : score;
   return s >= SEUIL_PUBLICATION;
 }
 
-module.exports = { scoreDesirabilite, meritePublication, SEUIL_PUBLICATION, BONUS_TYPE };
+module.exports = {
+  scoreDesirabilite,
+  meritePublication,
+  remiseEffective,
+  SEUIL_PUBLICATION,
+  SEUIL_REMISE_DECLAREE,
+  SEUIL_REMISE_CODE,
+  BONUS_TYPE,
+};

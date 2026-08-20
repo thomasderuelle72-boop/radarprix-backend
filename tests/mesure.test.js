@@ -242,6 +242,38 @@ describe("curation — le garde-fou du flux", () => {
 
   it("bloque les micro-remises qui composent le gros des flux", () => {
     expect(curation.meritePublication({ detector: "D1", type: "promo", price: 95, referencePrice: 100 })).toBe(false);
+    expect(curation.meritePublication({ detector: "D1", type: "promo", discountPct: 3 })).toBe(false);
+  });
+
+  it("publie une promotion d'affiliation sur sa remise annoncée", () => {
+    // Un flux d'affiliation ne fournit ni prix ni référence : juger ces
+    // offres au score bloquait la totalité du détecteur D1, c'est-à-dire la
+    // source de volume du site.
+    expect(curation.meritePublication({ detector: "D1", type: "promo", discountPct: 25 })).toBe(true);
+    expect(curation.meritePublication({ detector: "D1", type: "promo", discountPct: 19 })).toBe(false);
+  });
+
+  it("retient un code promo à un seuil plus bas qu'une promotion", () => {
+    // Un code est directement actionnable et se cumule souvent.
+    expect(curation.meritePublication({ detector: "D1", type: "code", discountPct: 15 })).toBe(true);
+    expect(curation.meritePublication({ detector: "D1", type: "promo", discountPct: 15 })).toBe(false);
+  });
+
+  it("ne publie pas une offre non chiffrée, faute de pouvoir la classer", () => {
+    // « Livraison offerte dès 25 € » : limite assumée.
+    expect(curation.meritePublication({ detector: "D1", type: "promo" })).toBe(false);
+  });
+
+  it("une anomalie mesurée passe toujours devant une promotion annoncée", () => {
+    const mesuree = curation.scoreDesirabilite({ detector: "D3", type: "erreur", price: 27.9, referencePrice: 279 });
+    const annoncee = curation.scoreDesirabilite({ detector: "D1", type: "promo", discountPct: 70 });
+    expect(mesuree).toBeGreaterThan(annoncee);
+  });
+
+  it("calcule la remise depuis la source ou depuis le couple prix/référence", () => {
+    expect(curation.remiseEffective({ discountPct: 42 })).toBe(42);
+    expect(curation.remiseEffective({ price: 50, referencePrice: 200 })).toBe(75);
+    expect(curation.remiseEffective({ price: 50 })).toBeNull();
   });
 
   it("tient compte de la fiabilité du marchand", () => {
