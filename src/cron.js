@@ -18,6 +18,7 @@ const { collecterTout } = require("./sources");
 const { purgerDeals } = require("./dealsStore");
 const { surveiller } = require("./watch");
 const { sauvegarderMaintenant } = require("./db");
+const { peupler } = require("./peuplement");
 
 const BATCH_SIZE = parseInt(process.env.CRON_BATCH_SIZE || "10", 10);
 const SCHEDULE = process.env.CRON_SCHEDULE || "0 */2 * * *"; // toutes les 2h par défaut
@@ -43,6 +44,13 @@ const SCHEDULE_WATCH = process.env.CRON_WATCH_SCHEDULE || "*/15 * * * *";
 // Une copie par nuit, à une heure creuse choisie hors des minutes rondes pour
 // ne pas tomber en même temps que le reste.
 const SCHEDULE_BACKUP = process.env.CRON_BACKUP_SCHEDULE || "37 4 * * *";
+
+// Découverte de nouvelles fiches chez les marchands, par petits lots. Plus
+// lente que la surveillance : une fiche découverte le reste, alors qu'un prix
+// doit être relu souvent. Deux enseignes par passage, en rotation — avaler un
+// sitemap entier saturerait la base et ressemblerait à une attaque vue du
+// marchand.
+const SCHEDULE_DECOUVERTE = process.env.CRON_DECOUVERTE_SCHEDULE || "23 */3 * * *";
 
 async function tick() {
   const results = await runCatalogBatch(BATCH_SIZE);
@@ -87,6 +95,20 @@ async function tickWatch() {
   }
 }
 
+/** Découverte automatique de fiches produits via les sitemaps marchands. */
+async function tickDecouverte() {
+  try {
+    const resultats = await peupler();
+    for (const r of resultats) {
+      if (r.ignore) console.log(`[${new Date().toISOString()}] découverte ignorée : ${r.motif}`);
+      else if (r.ok) console.log(`[${new Date().toISOString()}] découverte ${r.enseigne} : ${r.ajoutees} fiche(s) ajoutée(s)`);
+      else console.error(`[${new Date().toISOString()}] découverte ${r.enseigne} en échec :`, r.erreur);
+    }
+  } catch (e) {
+    console.error(`[${new Date().toISOString()}] découverte en échec :`, e.message);
+  }
+}
+
 /** Copie de sécurité de la base, indépendante des redéploiements. */
 function tickBackup() {
   try {
@@ -103,17 +125,20 @@ function startCron() {
   cron.schedule(SCHEDULE_FLUX, tickFlux);
   cron.schedule(SCHEDULE_WATCH, tickWatch);
   cron.schedule(SCHEDULE_BACKUP, tickBackup);
+  cron.schedule(SCHEDULE_DECOUVERTE, tickDecouverte);
   console.log(`Cron RadarPrix démarré — ${BATCH_SIZE} produits toutes les exécutions (${SCHEDULE}).`);
   console.log(`Collecte des flux gratuits/promotions : ${SCHEDULE_FLUX}.`);
   console.log(`Surveillance des fiches marchandes : ${SCHEDULE_WATCH}.`);
   console.log(`Sauvegarde de la base : ${SCHEDULE_BACKUP}.`);
+  console.log(`Découverte de fiches marchandes : ${SCHEDULE_DECOUVERTE}.`);
   console.log(`Catalogue total : ${PRODUCTS.length} produits.`);
   tick(); // premier lot immédiat au démarrage
   tickFlux();
   tickWatch();
+  tickDecouverte(); // premier peuplement immédiat : le site ne doit pas rester vide
 }
 
-module.exports = { startCron, tick, tickFlux, tickWatch };
+module.exports = { startCron, tick, tickFlux, tickWatch, tickDecouverte };
 
 // Lancé directement (`npm run cron`), et seulement dans ce cas : pas d'effet
 // de bord au simple require() par server.js.

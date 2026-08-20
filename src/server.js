@@ -111,6 +111,7 @@ const {
   surveiller: surveillerFiches,
 } = require("./watch");
 const { amorcerDepuisSnapshots } = require("./watchSeed");
+const { peupler, enseignes } = require("./peuplement");
 const { indicateurs, manquees, noterDeal, ingererVeriteTerrain } = require("./mesure");
 const { classement: classementMarchands } = require("./reputation");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
@@ -488,6 +489,23 @@ app.post("/api/admin/watch/amorcer", requireAuth, requireAdmin, (req, res) => {
         toutMarchand: Boolean(req.body?.toutMarchand),
       })
     );
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Découverte automatique : lit les sitemaps des enseignes et met les fiches
+// trouvées sous surveillance. C'est ce qui remplit le site sans saisie ni
+// clé d'API, et sans attendre l'acceptation d'un programme d'affiliation.
+app.post("/api/admin/watch/peupler", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    res.json({
+      resultats: await peupler({
+        enseignesParPassage: parseInt(req.body?.enseignes, 10) || undefined,
+        fichesParEnseigne: parseInt(req.body?.fiches, 10) || undefined,
+      }),
+      enseignesConnues: enseignes().map((e) => e.nom),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

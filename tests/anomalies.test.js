@@ -490,3 +490,119 @@ describe("récupération d'une page marchande", () => {
     await expect(fp.recupererPage("https://a.fr/1", { fetcher })).rejects.toThrow(/directe : HTTP 403.*repli : Bright Data a répondu 502/);
   });
 });
+
+describe("découverte automatique de fiches", () => {
+  const d = require("../src/decouverte.js");
+  const zlib = require("node:zlib");
+
+  it("distingue une fiche produit d'une page de catégorie", () => {
+    for (const url of [
+      "https://www.cdiscount.com/informatique/f-1070-abc.html",
+      "https://www.fnac.com/a12345678/casque",
+      "https://www.boulanger.com/ref/1183624",
+      "https://www.decathlon.fr/p/chaussures/_/R-p-309819",
+      "https://www.amazon.fr/dp/B08N5WRWNW",
+    ]) {
+      expect(d.ressembleAFiche(url)).toBe(true);
+    }
+    for (const url of [
+      "https://www.cdiscount.com/informatique/",
+      "https://www.fnac.com/aide/livraison",
+      "https://www.darty.com/nav/achat/gros_electromenager/",
+      "https://www.sephora.fr/marques/",
+    ]) {
+      expect(d.ressembleAFiche(url)).toBe(false);
+    }
+  });
+
+  it("lit les sitemaps déclarés dans robots.txt plutôt que de les deviner", async () => {
+    const fetcher = async (url) => {
+      expect(url).toBe("https://www.exemple.fr/robots.txt");
+      return {
+        ok: true,
+        text: async () => "User-agent: *\nDisallow: /panier\nSitemap: https://www.exemple.fr/sitemap-produits.xml\nSitemap: https://www.exemple.fr/sitemap-2.xml.gz\n",
+      };
+    };
+    const sitemaps = await d.sitemapsDe("www.exemple.fr", { fetcher });
+    expect(sitemaps).toEqual([
+      "https://www.exemple.fr/sitemap-produits.xml",
+      "https://www.exemple.fr/sitemap-2.xml.gz",
+    ]);
+  });
+
+  it("se rabat sur l'emplacement conventionnel si robots.txt est illisible", async () => {
+    const fetcher = async () => ({ ok: false, status: 404, text: async () => "" });
+    expect(await d.sitemapsDe("www.exemple.fr", { fetcher })).toEqual(["https://www.exemple.fr/sitemap.xml"]);
+  });
+
+  it("sépare un index de sitemaps des pages qu'il référence", () => {
+    const index = `<?xml version="1.0"?>
+      <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <sitemap><loc>https://x.fr/s1.xml</loc></sitemap>
+        <sitemap><loc>https://x.fr/s2.xml</loc></sitemap>
+      </sitemapindex>`;
+    expect(d.lireSitemap(index).index).toHaveLength(2);
+    expect(d.lireSitemap(index).pages).toHaveLength(0);
+
+    const pages = `<?xml version="1.0"?>
+      <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+        <url><loc>https://x.fr/p/abc</loc></url>
+      </urlset>`;
+    expect(d.lireSitemap(pages).pages).toEqual(["https://x.fr/p/abc"]);
+  });
+
+  it("décompresse un sitemap gzippé, comme le sont la plupart", () => {
+    const xml = "<urlset><url><loc>https://x.fr/p/abc</loc></url></urlset>";
+    const compresse = zlib.gzipSync(Buffer.from(xml));
+    expect(d.texteDe(compresse)).toBe(xml);
+    // Et laisse passer un texte déjà clair.
+    expect(d.texteDe(xml)).toBe(xml);
+  });
+
+  it("descend dans l'index puis ne retient que les fiches", async () => {
+    const reponses = {
+      "https://www.exemple.fr/robots.txt": "Sitemap: https://www.exemple.fr/index.xml",
+      "https://www.exemple.fr/index.xml": `<sitemapindex><sitemap><loc>https://www.exemple.fr/produits.xml</loc></sitemap></sitemapindex>`,
+      "https://www.exemple.fr/produits.xml": `<urlset>
+        <url><loc>https://www.exemple.fr/p/casque-pro</loc></url>
+        <url><loc>https://www.exemple.fr/p/clavier-abc</loc></url>
+        <url><loc>https://www.exemple.fr/aide/contact</loc></url>
+        <url><loc>https://www.exemple.fr/categories/audio</loc></url>
+      </urlset>`,
+    };
+    const fetcher = async (url) => ({ ok: true, status: 200, text: async () => reponses[url] ?? "" });
+
+    const r = await d.decouvrirFiches("www.exemple.fr", { limite: 50, fetcher });
+    expect(r.urls).toEqual([
+      "https://www.exemple.fr/p/casque-pro",
+      "https://www.exemple.fr/p/clavier-abc",
+    ]);
+    expect(r.urls.some((u) => u.includes("/aide/"))).toBe(false);
+  });
+
+  it("s'arrête à la limite demandée sans parcourir tout le sitemap", async () => {
+    const beaucoup = Array.from({ length: 500 }, (_, i) => `<url><loc>https://x.fr/p/produit-${i}</loc></url>`).join("");
+    const reponses = {
+      "https://x.fr/robots.txt": "Sitemap: https://x.fr/s.xml",
+      "https://x.fr/s.xml": `<urlset>${beaucoup}</urlset>`,
+    };
+    const fetcher = async (url) => ({ ok: true, status: 200, text: async () => reponses[url] ?? "" });
+    const r = await d.decouvrirFiches("x.fr", { limite: 25, fetcher });
+    expect(r.urls).toHaveLength(25);
+  });
+
+  it("signale les sitemaps illisibles sans abandonner les autres", async () => {
+    const reponses = {
+      "https://x.fr/robots.txt": "Sitemap: https://x.fr/casse.xml\nSitemap: https://x.fr/bon.xml",
+      "https://x.fr/bon.xml": `<urlset><url><loc>https://x.fr/p/ok</loc></url></urlset>`,
+    };
+    const fetcher = async (url) =>
+      url === "https://x.fr/casse.xml"
+        ? { ok: false, status: 500, text: async () => "" }
+        : { ok: true, status: 200, text: async () => reponses[url] ?? "" };
+
+    const r = await d.decouvrirFiches("x.fr", { limite: 10, fetcher });
+    expect(r.urls).toEqual(["https://x.fr/p/ok"]);
+    expect(r.erreurs.length).toBeGreaterThan(0);
+  });
+});
