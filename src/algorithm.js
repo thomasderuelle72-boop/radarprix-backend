@@ -4,8 +4,8 @@
 //     produit sont comparées à leur médiane (dispo dès le 1er scan).
 //  2) Comparaison "historique" : le prix est comparé à la moyenne des
 //     prix déjà vus pour ce produit exact (s'améliore avec le temps).
-const { priceHistoryFor, reglages, offreBannie } = require("./db");
-const { significantWords } = require("./productKey.js");
+const { priceHistoryFor, priceHistoryDetailed, priceHistoryBatch, reglages, offreBannie } = require("./db");
+const { significantWords, estMarqueurVariante, productKey } = require("./productKey.js");
 
 // Titres à écarter d'office : ce sont presque toujours des accessoires
 // (coque, chargeur...) qui portent le nom du produit recherché mais coûtent
@@ -56,11 +56,17 @@ function titleMatchesQuery(title, query) {
   if (queryWords.length === 0) return true; // requête trop vague pour filtrer, on ne bloque rien
   const titleWords = new Set(significantWords(title));
 
-  const numericWords = queryWords.filter((w) => /\d/.test(w));
-  const textWords = queryWords.filter((w) => !/\d/.test(w));
+  // Jetons décisifs : les nombres (modèle, génération, capacité) ET les
+  // suffixes de gamme (Ti, Pro, Ultra…). Ces derniers manquaient : ils ne
+  // portent pas de chiffre, donc rien n'empêchait de confondre une RTX 4060
+  // avec une RTX 4060 Ti. Comme sameProduct applique cette fonction dans les
+  // deux sens, exiger les jetons décisifs de la requête suffit à rendre la
+  // séparation symétrique.
+  const decisiveWords = queryWords.filter((w) => /\d/.test(w) || estMarqueurVariante(w));
+  const textWords = queryWords.filter((w) => !/\d/.test(w) && !estMarqueurVariante(w));
 
-  const allNumbersPresent = numericWords.every((w) => titleWords.has(w));
-  if (!allNumbersPresent) return false;
+  const allDecisivePresent = decisiveWords.every((w) => titleWords.has(w));
+  if (!allDecisivePresent) return false;
 
   if (textWords.length === 0) return true;
   const matches = textWords.filter((w) => titleWords.has(w)).length;
@@ -72,17 +78,34 @@ function titleMatchesQuery(title, query) {
  * les produits qui ne correspondent manifestement pas à la recherche, avant
  * toute analyse de prix.
  */
-function filterRelevantOffers(offers, query) {
+function filterRelevantOffers(offers, query, { inclureReconditionne = false } = {}) {
   return offers.filter(
     (o) =>
       !isAccessoryTitle(o.name) &&
-      !isUsedOrRefurbishedTitle(o.name) &&
+      (inclureReconditionne || !estReconditionne(o)) &&
       titleMatchesQuery(o.name, query) &&
       // Liste noire tenue à la main : elle rattrape ce que les règles
       // automatiques laissent passer — une gamme d'accessoires dont le nom
       // ressemble trop au produit, un marchand systématiquement trompeur.
       !offreBannie(o)
   );
+}
+
+/**
+ * Sépare un lot en offres neuves et offres reconditionnées.
+ *
+ * Le reconditionné était purement et simplement jeté. Maintenant qu'il
+ * dispose de sa propre section, l'écarter du calcul de la référence du neuf
+ * reste indispensable — mais le perdre serait dommage : c'est un marché à
+ * part entière, avec ses propres bonnes affaires, qu'il suffit de comparer
+ * à lui-même.
+ */
+function separerOffres(offers, query) {
+  const pertinentes = filterRelevantOffers(offers, query, { inclureReconditionne: true });
+  return {
+    neuf: pertinentes.filter((o) => !estReconditionne(o)),
+    reconditionne: pertinentes.filter((o) => estReconditionne(o)),
+  };
 }
 
 // "Même produit" = correspondance dans les deux sens (contrairement à
@@ -164,7 +187,155 @@ function coefficientOfVariation(nums) {
   return Math.sqrt(variance) / m;
 }
 
+/**
+ * Écart absolu médian, remis à l'échelle d'un écart-type.
+ *
+ * C'est le remplaçant robuste de l'écart-type pour juger si un prix sort de
+ * la distribution. Un seuil en pourcentage fixe — −60 % vaut « erreur » —
+ * ignore la dispersion réelle : sur des petits prix, cet écart survient
+ * constamment ; sur du gros électroménager, jamais. Rapporté au MAD, le même
+ * seuil s'adapte de lui-même à chaque produit, sans réglage par catégorie.
+ *
+ * Le facteur 1,4826 est la constante qui rend le MAD comparable à un
+ * écart-type sur une distribution normale.
+ */
+function madNormalise(nums) {
+  if (!nums || nums.length < 3) return 0;
+  const med = median(nums);
+  const ecarts = nums.map((n) => Math.abs(n - med));
+  return median(ecarts) * 1.4826;
+}
+
+/**
+ * Combine deux références en les pondérant par leur fiabilité respective.
+ *
+ * Remplace `histRef || peerRef`, qui faisait toujours gagner l'historique dès
+ * qu'il existait — donc systématiquement le signal le moins sûr. Quand une
+ * seule des deux références est disponible, elle est renvoyée telle quelle.
+ */
+function combinerReferences(a, b) {
+  const valides = [a, b].filter((r) => r && Number.isFinite(r.valeur) && r.valeur > 0 && r.poids > 0);
+  if (valides.length === 0) return null;
+  if (valides.length === 1) return valides[0].valeur;
+  const total = valides.reduce((s, r) => s + r.poids, 0);
+  return valides.reduce((s, r) => s + r.valeur * r.poids, 0) / total;
+}
+
+/**
+ * L'offre porte-t-elle un état autre que neuf ?
+ *
+ * Deux sources d'information, et il faut les deux : le champ structuré de la
+ * source quand il existe, et le titre en repli. Ne regarder que le titre —
+ * ce que faisait le code — laissait passer toutes les annonces
+ * reconditionnées dont le titre ne le mentionne pas, c'est-à-dire la plupart
+ * de celles des plateformes spécialisées.
+ */
+function estReconditionne(offre) {
+  if (offre.itemCondition && offre.itemCondition !== "neuf") return true;
+  return isUsedOrRefurbishedTitle(offre.name);
+}
+
+/** Clé produit d'un titre — réexportée depuis productKey pour lisibilité locale. */
+function cleProduit(nom) {
+  return productKey(nom);
+}
+
 const BIG_SELLERS = ["amazon", "cdiscount", "fnac", "ldlc", "darty", "boulanger", "materiel.net", "rakuten", "leclerc", "carrefour"];
+
+// Une place de marché n'est pas l'enseigne qui l'héberge. « Cdiscount
+// Marketplace » contient « cdiscount », donc le test d'inclusion brut le
+// classait vendeur de confiance et lui accordait +15 au score et +10 à la
+// confiance — alors qu'un vendeur tiers est précisément le cas le moins
+// fiable. Le fichier test-algorithm.js du dépôt utilise lui-même
+// « Cdiscount Marketplace » comme exemple d'offre douteuse.
+const MARKETPLACE_MARKERS = ["marketplace", "market place", "vendu par", "vendeur "];
+
+function isMarketplaceSeller(seller) {
+  const s = (seller || "").toLowerCase();
+  return MARKETPLACE_MARKERS.some((m) => s.includes(m));
+}
+
+/** Enseigne connue vendant en son nom propre — pas un vendeur tiers hébergé. */
+function isTrustedSeller(seller) {
+  if (isMarketplaceSeller(seller)) return false;
+  const s = (seller || "").toLowerCase();
+  return BIG_SELLERS.some((b) => s.includes(b));
+}
+
+/**
+ * Prix réellement payé, frais de port compris.
+ *
+ * Une offre à 200 € plus 40 € de port n'est pas une affaire face à 220 €
+ * livrés — et c'est le vecteur classique des places de marché trompeuses :
+ * afficher un prix bas et se rattraper sur la livraison. Le champ existait
+ * dans les réponses de la source mais n'était pas lu, ce qui produisait
+ * mécaniquement de faux positifs.
+ */
+function prixTotal(offre) {
+  const port = Number.isFinite(offre.delivery) ? offre.delivery : 0;
+  return offre.price + port;
+}
+
+/**
+ * Référence historique d'un produit, robuste au temps ET aux marchands.
+ *
+ * L'ancienne version prenait la moyenne des 200 derniers prix enregistrés,
+ * tous marchands et toutes dates confondus. Quatre défauts se superposaient :
+ * une moyenne se déplace avec un seul intrus ; mélanger marchands et dates
+ * dans un seul nombre perd les deux dimensions ; un prix d'il y a trois mois
+ * pesait autant qu'un prix d'hier, ce qui rend la référence structurellement
+ * trop haute sur du matériel qui se déprécie et fabrique de faux « deals » en
+ * continu ; et 200 lignes ne représentent qu'une vingtaine d'heures sur un
+ * produit actif.
+ *
+ * On procède donc en deux temps : une médiane pondérée par la récence pour
+ * chaque marchand, puis la médiane de ces médianes. Un marchand qui publie
+ * beaucoup d'offres ne pèse ainsi pas plus qu'un autre.
+ *
+ * @param {Array} rows - [{price, seller, scraped_at}, …]
+ * @param {Date} [maintenant]
+ * @param {number} [demiVieJours] - au bout de combien de jours un prix pèse moitié moins
+ */
+function referenceHistorique(rows, maintenant = new Date(), demiVieJours = 14) {
+  if (!rows || rows.length === 0) return null;
+
+  const parMarchand = new Map();
+  for (const r of rows) {
+    if (!Number.isFinite(r.price) || r.price <= 0) continue;
+    const cle = (r.seller || "inconnu").toLowerCase();
+    if (!parMarchand.has(cle)) parMarchand.set(cle, []);
+    const ageJours = Math.max(0, (maintenant - parseDateSql(r.scraped_at)) / 86400000);
+    parMarchand.get(cle).push({ prix: r.price, poids: Math.pow(0.5, ageJours / demiVieJours) });
+  }
+  if (parMarchand.size === 0) return null;
+
+  const medianesMarchands = [];
+  for (const points of parMarchand.values()) {
+    const m = medianePonderee(points);
+    if (m != null) medianesMarchands.push(m);
+  }
+  return medianesMarchands.length > 0 ? median(medianesMarchands) : null;
+}
+
+/** Médiane pondérée : la valeur où la moitié du poids total est atteinte. */
+function medianePonderee(points) {
+  const tries = [...points].sort((a, b) => a.prix - b.prix);
+  const total = tries.reduce((s, p) => s + p.poids, 0);
+  if (total <= 0) return null;
+  let cumul = 0;
+  for (const p of tries) {
+    cumul += p.poids;
+    if (cumul >= total / 2) return p.prix;
+  }
+  return tries[tries.length - 1].prix;
+}
+
+/** Date SQLite ("YYYY-MM-DD HH:MM:SS", UTC) en objet Date. */
+function parseDateSql(s) {
+  if (!s) return new Date(0);
+  const d = new Date(String(s).replace(" ", "T") + (String(s).endsWith("Z") ? "" : "Z"));
+  return Number.isNaN(d.getTime()) ? new Date(0) : d;
+}
 
 /**
  * Analyse un lot d'offres fraîchement scannées pour un même produit/requête.
@@ -196,54 +367,77 @@ function analyzeOffers(offers) {
   // des modèles différents remontés par une recherche large hériteraient
   // tous d'une médiane qui ne correspond à aucun d'entre eux. On garde aussi
   // la taille du cluster et la dispersion des prix, utiles au Confidence Score.
+  // Le prix comparé est toujours le prix livré : sans les frais de port, on
+  // compare ce qui est affiché plutôt que ce qui est payé.
   const peerRefByOffer = new Map();
   const peerStatsByOffer = new Map();
   for (const cluster of clusterByProduct(offers)) {
-    if (cluster.length < R.minPairs) continue; // pas assez de pairs comparables dans ce lot
-    const prices = stripGrossOutliers(cluster.map((o) => o.price));
+    // Les offres reconditionnées ne servent jamais à établir la référence du
+    // neuf : elles sont légitimement moins chères, et les inclure abaisserait
+    // la médiane au point de masquer les vraies anomalies.
+    const comparables = cluster.filter((o) => !estReconditionne(o));
+    if (comparables.length < R.minPairs) continue;
+    const prices = stripGrossOutliers(comparables.map(prixTotal));
     const ref = trimmedMedian(prices);
-    const stats = { size: prices.length, cv: coefficientOfVariation(prices) };
+    const stats = {
+      size: prices.length,
+      cv: coefficientOfVariation(prices),
+      mad: madNormalise(prices),
+    };
     for (const o of cluster) {
       peerRefByOffer.set(o, ref);
       peerStatsByOffer.set(o, stats);
     }
   }
 
+  // Un seul aller-retour en base pour tout le lot, au lieu d'un par offre.
+  const historiques = priceHistoryBatch(offers.map((o) => o.name));
+  const maintenant = new Date();
+
   return offers.map((o) => {
-    // Référence historique propre à ce produit, si elle existe. priceHistoryFor
-    // indexe par product_key (voir productKey.js) plutôt que par titre exact,
-    // pour que des formulations différentes du même produit partagent leur
-    // historique — o.name est canonicalisé en interne.
-    const history = priceHistoryFor(o.name, 0).filter((p) => p !== o.price);
-    const histRef = history.length >= R.minHistorique ? mean(history) : null;
+    const total = prixTotal(o);
+    const lignes = (historiques.get(cleProduit(o.name)) || []).filter((r) => r.price !== o.price);
+
+    // Référence historique robuste : médiane pondérée par la récence, par
+    // marchand, puis médiane de ces médianes. Voir referenceHistorique.
+    const marchandsVus = new Set(lignes.map((r) => (r.seller || "inconnu").toLowerCase()));
+    const histRef =
+      lignes.length >= R.minHistorique ? referenceHistorique(lignes, maintenant) : null;
 
     // "Prix le plus bas jamais vu" : vrai seulement s'il y a un historique
     // pour comparer (sinon toute première observation serait trivialement "la plus basse").
-    const allTimeLow = history.length >= R.minHistorique && o.price < Math.min(...history);
+    const allTimeLow =
+      lignes.length >= R.minHistorique && total < Math.min(...lignes.map((r) => r.price));
 
-    // On prend la référence la plus fiable disponible : l'historique du
-    // produit s'il y en a assez, sinon la médiane rognée entre pairs du
-    // même produit dans ce scan. Sans l'un ou l'autre, aucune base de
-    // comparaison fiable n'existe : on ne peut pas affirmer une anomalie.
     const peerStats = peerStatsByOffer.get(o) || null;
     const peerRef = peerRefByOffer.get(o) || null;
-    const refPrice = histRef || peerRef;
+
+    // Combinaison pondérée plutôt que `histRef || peerRef`.
+    // L'ancienne écriture faisait toujours gagner l'historique dès qu'il
+    // existait — c'est-à-dire le signal le moins fiable des deux, puisqu'il
+    // agrégeait des marchands et des dates sans distinction. On pondère
+    // désormais chaque référence par ce qui la rend digne de confiance : le
+    // nombre de marchands distincts pour l'historique, le nombre de pairs
+    // comparables pour la médiane du jour.
+    const refPrice = combinerReferences(
+      { valeur: histRef, poids: Math.min(marchandsVus.size, 5) },
+      { valeur: peerRef, poids: Math.min(peerStats?.size || 0, 5) }
+    );
     if (!refPrice) {
-      return { ...o, refPrice: null, pct: 0, verdict: "normal", score: 0, confidence: null, allTimeLow: false };
+      return { ...o, priceTotal: total, refPrice: null, pct: 0, verdict: "normal", score: 0, confidence: null, allTimeLow: false };
     }
-    const pct = Math.round((1 - o.price / refPrice) * 100);
+    const pct = Math.round((1 - total / refPrice) * 100);
 
     let verdict = "normal";
     if (pct >= R.seuilErreur) verdict = "erreur";
     else if (pct >= R.seuilDeal) verdict = "deal";
 
-    const sellerLower = (o.seller || "").toLowerCase();
-    const isTrustedSeller = BIG_SELLERS.some((b) => sellerLower.includes(b));
+    const vendeurSur = isTrustedSeller(o.seller);
 
     // Deal Score : uniquement l'attractivité du prix.
     let score = Math.min(Math.max(pct, 0), 70);
     if (verdict === "erreur") score += 15;
-    if (isTrustedSeller) score += 15;
+    if (vendeurSur) score += 15;
     if (histRef) score += 5; // référence historique = plus fiable qu'une simple comparaison du jour
     score = Math.min(score, 100);
 
@@ -258,7 +452,10 @@ function analyzeOffers(offers) {
     if (histRef) confidence += 20; // confirmé par l'historique du produit, pas seulement le scan du jour
     if (pct >= 80) confidence -= 20; // écart énorme = plus probablement une erreur de rapprochement
     else if (pct >= 60) confidence -= 10;
-    if (isTrustedSeller) confidence += 10;
+    if (vendeurSur) confidence += 10;
+    // Une place de marché tierce mérite l'inverse d'un bonus : c'est là que
+    // se concentrent les annonces trompeuses.
+    if (isMarketplaceSeller(o.seller)) confidence -= 15;
     confidence = Math.max(0, Math.min(100, Math.round(confidence)));
 
     // Plancher de confiance : au-delà d'un certain doute, mieux vaut ne rien
@@ -266,8 +463,45 @@ function analyzeOffers(offers) {
     // d'origine), ce filtre ne retire rien.
     if (verdict !== "normal" && confidence < R.confianceMin) verdict = "normal";
 
-    return { ...o, refPrice: Math.round(refPrice), pct, verdict, score, confidence, allTimeLow };
+    return {
+      ...o,
+      priceTotal: total,
+      refPrice: Math.round(refPrice),
+      pct,
+      verdict,
+      score,
+      confidence,
+      allTimeLow,
+      // Écart exprimé en unités de dispersion du produit lui-même. Contrairement
+      // au pourcentage, il est comparable d'une catégorie à l'autre : −22 % sur
+      // un marché où tout le monde est à ±1 % est bien plus anormal que −60 %
+      // sur un marché où les prix vont du simple au triple. Sert de socle au
+      // détecteur d'erreur de prix (voir anomalies.js).
+      zScore: peerStats?.mad > 0 ? Number(((refPrice - total) / peerStats.mad).toFixed(2)) : null,
+    };
   });
 }
 
-module.exports = { analyzeOffers, filterRelevantOffers, median, mean, trimmedMedian, stripGrossOutliers, coefficientOfVariation, isAccessoryTitle, isUsedOrRefurbishedTitle, titleMatchesQuery, sameProduct, clusterByProduct };
+module.exports = {
+  analyzeOffers,
+  filterRelevantOffers,
+  separerOffres,
+  median,
+  mean,
+  trimmedMedian,
+  stripGrossOutliers,
+  coefficientOfVariation,
+  madNormalise,
+  isAccessoryTitle,
+  isUsedOrRefurbishedTitle,
+  estReconditionne,
+  titleMatchesQuery,
+  sameProduct,
+  clusterByProduct,
+  isTrustedSeller,
+  isMarketplaceSeller,
+  prixTotal,
+  referenceHistorique,
+  medianePonderee,
+  combinerReferences,
+};

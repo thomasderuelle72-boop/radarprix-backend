@@ -313,6 +313,15 @@ for (const stmt of [
   // On garde désormais le libellé d'origine, sans toucher à la clé qui
   // reste ce sur quoi la comparaison se fait.
   "ALTER TABLE rejected_offers ADD COLUMN label TEXT",
+  // Frais de port : une offre à 200 € plus 40 € de livraison n'est pas une
+  // affaire face à 220 € livrés. La source renvoyait l'information depuis le
+  // début, elle n'était simplement pas lue.
+  "ALTER TABLE snapshots ADD COLUMN delivery REAL",
+  // État de l'article, tel que la source le déclare dans un champ structuré.
+  // Le filtre par mots-clés ne regardait que le titre : une annonce
+  // reconditionnée intitulée « iPhone 15 128 Go Bleu » le traversait sans
+  // encombre et se faisait scorer comme une bonne affaire sur du neuf.
+  "ALTER TABLE snapshots ADD COLUMN item_condition TEXT",
 ]) {
   try {
     db.exec(stmt);
@@ -353,8 +362,8 @@ try {
 /** Enregistre une liste d'offres observées lors d'un scan. */
 function insertSnapshots(query, category, offers) {
   const stmt = db.prepare(`
-    INSERT INTO snapshots (query, category, name, product_key, seller, price, url, img)
-    VALUES (@query, @category, @name, @product_key, @seller, @price, @url, @img)
+    INSERT INTO snapshots (query, category, name, product_key, seller, price, url, img, delivery, item_condition)
+    VALUES (@query, @category, @name, @product_key, @seller, @price, @url, @img, @delivery, @item_condition)
   `);
   const insertMany = db.transaction((rows) => {
     for (const row of rows) stmt.run(row);
@@ -369,6 +378,8 @@ function insertSnapshots(query, category, offers) {
       price: o.price,
       url: o.url || null,
       img: o.img || null,
+      delivery: Number.isFinite(o.delivery) ? o.delivery : null,
+      item_condition: o.itemCondition || null,
     }))
   );
 }
@@ -392,6 +403,56 @@ function priceHistoryFor(nameOrKey, excludeLastMinutes = 0) {
     )
     .all(...(excludeLastMinutes ? [key, `-${excludeLastMinutes} minutes`] : [key]));
   return rows.map((r) => r.price);
+}
+
+/**
+ * Historique détaillé : le prix, mais aussi QUI le pratiquait et QUAND.
+ *
+ * priceHistoryFor ne renvoie qu'une liste de nombres, ce qui perd les deux
+ * dimensions dont dépend une référence honnête — le marchand et la date. Sans
+ * elles, impossible de pondérer par la récence ni d'empêcher un marchand très
+ * bavard de peser plus lourd que les autres (voir referenceHistorique dans
+ * algorithm.js). La fenêtre par défaut est en jours, non en nombre de lignes :
+ * sur un produit scanné souvent, 200 lignes ne couvraient qu'une vingtaine
+ * d'heures — l'« historique » n'existait pas.
+ */
+function priceHistoryDetailed(nameOrKey, { jours = 60, limit = 800 } = {}) {
+  const key = productKey(nameOrKey);
+  return db
+    .prepare(
+      `SELECT price, seller, scraped_at FROM snapshots
+       WHERE product_key = ? AND scraped_at > datetime('now', ?)
+       ORDER BY scraped_at DESC LIMIT ?`
+    )
+    .all(key, `-${jours} days`, limit);
+}
+
+/**
+ * Même chose pour plusieurs produits d'un coup.
+ *
+ * analyzeOffers appelait l'historique une fois par offre : sur la route
+ * publique /api/deals, cela produisait quelques milliers de requêtes SQL
+ * synchrones par visiteur, exécutées dans le thread principal. Une seule
+ * requête pour tout le lot supprime ce coût.
+ *
+ * @returns {Map<string, Array>} product_key → lignes d'historique
+ */
+function priceHistoryBatch(namesOrKeys, { jours = 60 } = {}) {
+  const cles = [...new Set(namesOrKeys.map((n) => productKey(n)))].filter(Boolean);
+  const parCle = new Map(cles.map((c) => [c, []]));
+  if (cles.length === 0) return parCle;
+
+  const rows = db
+    .prepare(
+      `SELECT product_key, price, seller, scraped_at FROM snapshots
+       WHERE product_key IN (${cles.map(() => "?").join(",")})
+         AND scraped_at > datetime('now', ?)
+       ORDER BY scraped_at DESC`
+    )
+    .all(...cles, `-${jours} days`);
+
+  for (const r of rows) parCle.get(r.product_key)?.push(r);
+  return parCle;
 }
 
 /** Dernier scan (les offres les plus récentes) pour une requête donnée. */
@@ -1968,6 +2029,8 @@ module.exports = {
   pseudoDejaPris,
   insertSnapshots,
   priceHistoryFor,
+  priceHistoryDetailed,
+  priceHistoryBatch,
   priceHistoryByDay,
   latestSnapshots,
   createUser,

@@ -6,9 +6,10 @@ const cors = require("cors");
 const { resolveDirectLink } = require("./serpapi");
 const { fetchLiveOffers } = require("./fetchOffers");
 const {
-  analyzeOffers, filterRelevantOffers,
+  analyzeOffers, filterRelevantOffers, separerOffres,
   isAccessoryTitle, isUsedOrRefurbishedTitle, titleMatchesQuery,
 } = require("./algorithm");
+const { enregistrerDetections, enregistrerReconditionne } = require("./detections");
 const {
   insertSnapshots,
   latestSnapshots,
@@ -128,9 +129,18 @@ async function scanQuery(query, category = "tout") {
   const rawOffers = await fetchLiveOffers(query);
   // On écarte les accessoires et hors-sujet AVANT toute analyse de prix :
   // sinon une coque à 15€ fausse la médiane de référence du vrai produit.
-  const offers = filterRelevantOffers(rawOffers, query);
-  insertSnapshots(query.toLowerCase(), category, offers);
-  const analyzed = analyzeOffers(offers)
+  // Le reconditionné part vers sa propre section plutôt qu'à la poubelle.
+  const { neuf, reconditionne } = separerOffres(rawOffers, query);
+  insertSnapshots(query.toLowerCase(), category, [...neuf, ...reconditionne]);
+
+  const analysees = analyzeOffers(neuf);
+  // Les anomalies alimentent le flux unifié au passage : une recherche à la
+  // demande enrichit le site pour tout le monde, au lieu de ne servir que
+  // son auteur.
+  enregistrerDetections(category, analysees);
+  enregistrerReconditionne(category, reconditionne);
+
+  const analyzed = analysees
     .filter((o) => o.verdict !== "normal")
     .sort((a, b) => b.score - a.score);
 

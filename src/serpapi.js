@@ -29,19 +29,62 @@ async function fetchShoppingResults(query) {
   const data = await res.json();
   const results = data.shopping_results || [];
 
-  return results
-    .map((r) => ({
-      name: r.title,
-      price: parsePrice(r.price || r.extracted_price),
-      seller: r.source || null,
-      // Repli : la page Google (pas le marchand). Remplacé par resolveDirectLink
-      // quand c'est possible — ne jamais compter dessus comme lien final.
-      url: r.product_link || null,
-      img: r.thumbnail || null,
-      // Token permettant de retrouver le vrai lien marchand.
-      _token: r.immersive_product_page_token || null,
-    }))
-    .filter((o) => o.name && o.price > 0);
+  return results.map(normaliserResultat).filter((o) => o.name && o.price > 0);
+}
+
+/**
+ * Traduit un résultat brut en offre normalisée.
+ *
+ * Deux champs renvoyés par la source étaient ignorés jusqu'ici, et leur
+ * absence provoquait exactement les deux défauts les plus visibles du site :
+ *
+ *  - `second_hand_condition` : l'état de l'article. Le filtrage du
+ *    reconditionné ne s'appuyait que sur des mots-clés cherchés dans le
+ *    titre. Une annonce intitulée « iPhone 15 128 Go Bleu » sans mention
+ *    d'état traversait le filtre et se retrouvait comparée à du neuf, donc
+ *    présentée comme une affaire exceptionnelle.
+ *  - `delivery` : les frais de port, sans lesquels le prix comparé n'est pas
+ *    celui que paie l'acheteur.
+ *
+ * Fonction pure, testable sans réseau.
+ */
+function normaliserResultat(r) {
+  return {
+    name: r.title,
+    price: parsePrice(r.price || r.extracted_price),
+    seller: r.source || null,
+    // Repli : la page Google (pas le marchand). Remplacé par resolveDirectLink
+    // quand c'est possible — ne jamais compter dessus comme lien final.
+    url: r.product_link || null,
+    img: r.thumbnail || null,
+    delivery: parseDelivery(r.delivery),
+    itemCondition: parseCondition(r.second_hand_condition),
+    // Token permettant de retrouver le vrai lien marchand.
+    _token: r.immersive_product_page_token || null,
+  };
+}
+
+/**
+ * Frais de port en euros. "Livraison gratuite", "Free delivery" et les
+ * formulations équivalentes valent zéro — les traiter comme inconnus
+ * reviendrait à ne jamais pouvoir comparer un prix livré.
+ */
+function parseDelivery(raw) {
+  if (raw == null) return null;
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  const t = String(raw).toLowerCase();
+  if (/gratuit|free|offerte?s?|inclus/.test(t)) return 0;
+  const n = parsePrice(t);
+  return n > 0 ? n : null;
+}
+
+/** Ramène l'état déclaré au vocabulaire du modèle de deals. */
+function parseCondition(raw) {
+  if (!raw) return null;
+  const t = String(raw).toLowerCase();
+  if (/reconditionn|refurb/.test(t)) return "reconditionne";
+  if (/occasion|used|seconde main|pre.?owned/.test(t)) return "occasion";
+  return null;
 }
 
 /**
@@ -106,4 +149,12 @@ function parsePrice(raw) {
   return Number.isFinite(n) ? n : 0;
 }
 
-module.exports = { fetchShoppingResults, resolveDirectLink, pickBestStore };
+module.exports = {
+  fetchShoppingResults,
+  resolveDirectLink,
+  pickBestStore,
+  normaliserResultat,
+  parseDelivery,
+  parseCondition,
+  parsePrice,
+};

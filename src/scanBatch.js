@@ -2,7 +2,8 @@
 // Utilisé à la fois par cron.js (planifié) et par la route admin
 // "lancer un scan maintenant" (à la demande), pour ne pas dupliquer la logique.
 const { fetchCatalogOffers } = require("./fetchOffers");
-const { filterRelevantOffers, analyzeOffers } = require("./algorithm");
+const { separerOffres, analyzeOffers } = require("./algorithm");
+const { enregistrerDetections, enregistrerReconditionne } = require("./detections");
 const {
   insertSnapshots, watchersFor, recordAlertSent,
   debuterScan, terminerScan, sourceHealth, catalogItemsActifs,
@@ -48,15 +49,26 @@ async function runCatalogBatch(size = 10, { source = "cron", triggeredBy = null 
       // écarte accessoires et hors-sujet AVANT insertion, sinon l'historique
       // automatique du cron se fait polluer par de mauvaises offres que la
       // recherche directe, elle, filtre déjà.
-      const offers = filterRelevantOffers(rawOffers, name);
-      insertSnapshots(name.toLowerCase(), category, offers);
+      //
+      // Le reconditionné n'est plus jeté mais dirigé vers sa propre section :
+      // il ne doit pas entrer dans la référence du neuf, ce qui ne veut pas
+      // dire qu'il n'a aucune valeur.
+      const { neuf, reconditionne } = separerOffres(rawOffers, name);
+      insertSnapshots(name.toLowerCase(), category, [...neuf, ...reconditionne]);
+
+      // Le verdict est calculé et écrit ici, une fois, plutôt que recalculé
+      // à chaque visiteur sur la route publique.
+      const analysees = analyzeOffers(neuf);
+      enregistrerDetections(category, analysees);
+      enregistrerReconditionne(category, reconditionne);
+
       try {
-        await notifyWatchers(name, offers);
+        await notifyWatchers(name, neuf);
       } catch (e) {
         // Un échec d'envoi d'alerte ne doit jamais faire échouer le scan lui-même.
         console.error(`[scanBatch] notifyWatchers a échoué pour "${name}": ${e.message}`);
       }
-      results.push({ name, category, offersFound: offers.length, ok: true });
+      results.push({ name, category, offersFound: neuf.length, reconditionnes: reconditionne.length, ok: true });
     } catch (e) {
       results.push({ name, category, error: e.message, ok: false });
     }
