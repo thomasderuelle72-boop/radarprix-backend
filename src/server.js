@@ -288,196 +288,75 @@ function requireModerator(req, res, next) {
 }
 
 // GET /api/deals?category=gaming&page=1&pageSize=15&q=pc
-// Lit tous les deals déjà repérés en base (par le cron ou des scans précédents),
-// groupés par produit, analysés, fusionnés, triés par score, puis paginés.
-// AUCUN appel SerpApi ici : réponse instantanée, gratuite, appelable sans limite.
-// Le paramètre optionnel "q" filtre par mot-clé sur des deals DÉJÀ validés
-// individuellement (chacun comparé à ses propres pairs/historique) : une
-// recherche large comme "pc" peut ainsi parcourir tout ce qui a été détecté
-// sur des PC, sans jamais comparer entre eux des produits différents (voir
-// analyzeOffers/clusterByProduct) — contrairement à un scan en direct sur un
-// terme aussi vague, qui n'a par nature aucune base de comparaison fiable.
+// Sert les anomalies déjà détectées, en lecture paginée directe.
+//
+// Cette route recalculait auparavant TOUT à chaque visite : pour chaque
+// produit du catalogue elle refiltrait les offres puis les réanalysait, et
+// analyzeOffers interroge la base une fois par offre pour retrouver son
+// historique — soit plusieurs centaines de requêtes SQL par chargement de
+// page. Invisible sur un petit catalogue avec un seul visiteur, c'était le
+// premier plafond de charge du site.
+//
+// Le calcul a désormais lieu une fois par scan (voir detections.js, appelé
+// par scanBatch) et non une fois par visiteur. La forme de la réponse est
+// inchangée : le frontend consomme les mêmes champs qu'avant.
+//
+// Le paramètre optionnel "q" filtre par mot-clé sur des anomalies DÉJÀ
+// qualifiées individuellement — chacune comparée à ses propres pairs au
+// moment du scan. Une recherche large comme "pc" parcourt donc ce qui a été
+// détecté sur des PC sans jamais comparer entre eux des produits différents.
 app.get("/api/deals", (req, res) => {
   const category = req.query.category || "tout";
-  const q = foldAccents((req.query.q || "").trim());
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize, 10) || 15));
 
-  const batches = latestBatchPerProduct(category);
-  const allFlagged = [];
-  for (const { query, offers } of batches) {
-    if (offers.length === 0) continue;
-    const relevant = filterRelevantOffers(offers, query);
-    // Les anomalies écartées à la main par la modération ne sont plus
-    // publiées : un faux positif visible en ligne devait pouvoir être retiré
-    // sans attendre un correctif de l'algorithme.
-    const analyzed = analyzeOffers(relevant)
-      .filter((o) => o.verdict !== "normal")
-      .filter((o) => !offreRejetee(o));
-    allFlagged.push(...analyzed);
-  }
-  const matching = q ? allFlagged.filter((o) => foldAccents(o.name).includes(q)) : allFlagged;
-  matching.sort((a, b) => b.score - a.score);
-
-  const total = matching.length;
-  const start = (page - 1) * pageSize;
-  const pageItems = matching.slice(start, start + pageSize).map(({ _token, ...clean }) => clean);
+  const { total, hasMore, items } = listDealsUnifies({
+    // D3 seulement : les promotions d'affiliation (D1) et les jeux offerts
+    // (D2) ont leur propre flux. Cette route reste celle des anomalies de
+    // prix mesurées par RadarPrix.
+    detector: "D3",
+    category,
+    q: req.query.q || null,
+    page,
+    pageSize,
+  });
 
   res.json({
     category,
     page,
     pageSize,
     total,
-    hasMore: start + pageSize < total,
-    items: pageItems,
+    hasMore,
+    items: items.map(enFormeHeritee),
   });
 });
 
-// ── Flux unifié des bons plans ──────────────────────────────────
-// GET /api/feed?type=gratuit&category=gaming&page=1
-//
-// Sert les quatre détecteurs à travers une seule route : anomalies de prix
-// (D3), promotions et codes promo (D1), gratuit (D2). Simple lecture
-// paginée d'une table déjà calculée — contrairement à /api/deals qui
-// réanalyse tout à chaque visiteur (voir dealsStore).
-app.get("/api/feed", (req, res) => {
-  const { type, category, detector } = req.query;
-  if (type && !TYPES_DEAL.includes(type)) {
-    return res.status(400).json({ error: `Type inconnu. Attendus : ${TYPES_DEAL.join(", ")}.` });
-  }
-  res.json(
-    listDealsUnifies({
-      type: type || null,
-      category: category || "tout",
-      detector: detector || null,
-      page: parseInt(req.query.page, 10) || 1,
-      pageSize: parseInt(req.query.pageSize, 10) || 20,
-    })
-  );
-});
-
-// GET /api/feed/occasion — section dédiée au reconditionné et à l'occasion.
-// Séparée du flux principal par choix : une offre reconditionnée est
-// légitimement moins chère qu'un produit neuf, la mélanger au reste
-// reviendrait à présenter en permanence de fausses bonnes affaires.
-app.get("/api/feed/occasion", (req, res) => {
-  res.json(
-    listDealsUnifies({
-      itemCondition: req.query.etat === "occasion" ? "occasion" : "reconditionne",
-      category: req.query.category || "tout",
-      page: parseInt(req.query.page, 10) || 1,
-      pageSize: parseInt(req.query.pageSize, 10) || 20,
-    })
-  );
-});
-
-// GET /api/feed/types — ce que le front peut proposer comme filtres, sans
-// avoir à dupliquer la liste des types côté client.
-app.get("/api/feed/types", (req, res) => res.json({ types: TYPES_DEAL }));
-
-// ── Mesure : les deux chiffres qui pilotent le réglage ──────────
-// Précision (parmi ce qu'on publie, quelle part est fausse) et rappel (parmi
-// les vraies erreurs de prix, quelle part on trouve). Sans eux, les seuils du
-// détecteur ne peuvent être ajustés qu'à l'intuition.
-app.get("/api/admin/indicateurs", requireAuth, requireModerator, (req, res) => {
-  res.json(indicateurs({ jours: parseInt(req.query.jours, 10) || 30 }));
-});
-
-// Les erreurs de prix connues que RadarPrix n'a PAS vues : la liste de
-// travail la plus utile du tableau de bord.
-app.get("/api/admin/manquees", requireAuth, requireModerator, (req, res) => {
-  res.json({ manquees: manquees({ limit: parseInt(req.query.limit, 10) || 50 }) });
-});
-
-// Jugement d'un modérateur sur un deal publié automatiquement. C'est cette
-// étiquette qui alimente à la fois la précision et la réputation marchand.
-app.post("/api/admin/feed/:id/juger", requireAuth, requireModerator, (req, res) => {
-  const deal = getDealUnifie(parseInt(req.params.id, 10));
-  if (!deal) return res.status(404).json({ error: "Deal introuvable." });
-  try {
-    noterDeal(deal.id, req.body?.verdict, { motif: req.body?.motif || null, userId: req.user.sub });
-    // Un faux positif quitte le flux immédiatement : le signaler sans le
-    // retirer laisserait le membre tomber dessus malgré tout.
-    if (req.body?.verdict === "faux_positif") depublierDeal(deal.id);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-app.post("/api/admin/verite-terrain", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    res.json(await ingererVeriteTerrain());
-  } catch (e) {
-    res.status(502).json({ error: e.message });
-  }
-});
-
-app.get("/api/admin/marchands", requireAuth, requireModerator, (req, res) => {
-  res.json({ marchands: classementMarchands({ limit: parseInt(req.query.limit, 10) || 50 }) });
-});
-
-// ── Surveillance des fiches marchandes (détecteur D3) ───────────
-// C'est ce qui remplace la recherche large : au lieu d'interroger un
-// agrégateur une fois toutes les seize heures, on relit des fiches précises
-// toutes les quinze minutes, pour un coût en bande passante.
-app.get("/api/admin/watch", requireAuth, requireModerator, (req, res) => {
-  res.json({ urls: listerUrlsSurveillees({ actives: req.query.toutes !== "1" }) });
-});
-
-app.post("/api/admin/watch", requireAuth, requireAdmin, (req, res) => {
-  const { url, label, merchant, category, produit } = req.body || {};
-  if (!url) return res.status(400).json({ error: "Paramètre 'url' requis." });
-  try {
-    res.json({ url: ajouterUrlSurveillee({ url, label, merchant, category, produit }) });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-app.delete("/api/admin/watch/:id", requireAuth, requireAdmin, (req, res) => {
-  retirerUrlSurveillee(parseInt(req.params.id, 10));
-  res.json({ ok: true });
-});
-
-app.post("/api/admin/watch/run", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    const resultats = await surveillerFiches({ taille: parseInt(req.body?.taille, 10) || undefined });
-    res.json({ verifiees: resultats.length, resultats });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ── Administration du flux ──────────────────────────────────────
-app.post("/api/admin/collecte", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    const resultats = await collecterTout({ detecteur: req.body?.detecteur || null });
-    res.json({ resultats });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get("/api/admin/feed/stats", requireAuth, requireModerator, (req, res) => {
-  res.json({ stats: statsDeals() });
-});
-
-// Un deal collecté automatiquement mais jugé sans intérêt doit pouvoir être
-// retiré du flux sans attendre un correctif du score de désirabilité.
-app.post("/api/admin/feed/:id/publier", requireAuth, requireModerator, (req, res) => {
-  const deal = getDealUnifie(parseInt(req.params.id, 10));
-  if (!deal) return res.status(404).json({ error: "Deal introuvable." });
-  publierDeal(deal.id);
-  res.json({ ok: true, deal: getDealUnifie(deal.id) });
-});
-
-app.delete("/api/admin/feed/:id/publier", requireAuth, requireModerator, (req, res) => {
-  const deal = getDealUnifie(parseInt(req.params.id, 10));
-  if (!deal) return res.status(404).json({ error: "Deal introuvable." });
-  depublierDeal(deal.id);
-  res.json({ ok: true, deal: getDealUnifie(deal.id) });
-});
+/**
+ * Traduit un deal du flux unifié vers les noms de champs qu'attend le
+ * frontend historique (DealCard, ProductDetailView...).
+ *
+ * Renommer côté client aurait touché une dizaine de composants pour un gain
+ * nul : la correspondance vit ici, à la frontière, et le stockage garde ses
+ * propres noms.
+ */
+function enFormeHeritee(d) {
+  return {
+    id: d.id,
+    name: d.title,
+    price: d.price,
+    seller: d.merchant,
+    url: d.url,
+    img: d.imageUrl,
+    refPrice: d.referencePrice,
+    pct: d.discountPct,
+    // Le stockage distingue « erreur » et « promo » ; le frontend parle de
+    // « erreur » et « deal » depuis l'origine.
+    verdict: d.type === "erreur" ? "erreur" : "deal",
+    score: d.score,
+    confidence: d.confidence,
+    allTimeLow: Boolean(d.payload && d.payload.allTimeLow),
+  };
+}
 
 // POST /api/scan  { query?: "PS5 slim", category?: "gaming" }
 // Si "query" est fourni, on scanne exactement ce produit.

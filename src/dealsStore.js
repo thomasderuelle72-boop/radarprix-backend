@@ -270,12 +270,25 @@ function markMissingAsRemoved(source, externalIdsVus) {
  * non expirés — la lecture n'a aucun calcul à faire, contrairement à
  * l'ancienne route /api/deals qui réanalysait tout à chaque visiteur.
  */
+/* Recherche insensible aux accents. SQLite ne sait pas les ignorer nativement
+   et `LIKE` ne gère la casse que pour l'ASCII : sans cette fonction, chercher
+   « beaute » ne trouverait pas « beauté ». Enregistrée une fois ici plutôt
+   que d'imposer à chaque appelant de plier sa chaîne lui-même — c'est côté
+   base que la comparaison a lieu. */
+db.function("sans_accent", (texte) =>
+  (texte || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+);
+
 function listDeals({
   type = null,
   types = null,
   category = "tout",
   itemCondition = null,
   detector = null,
+  q = null,
   page = 1,
   pageSize = 20,
   includeUnpublished = false,
@@ -314,6 +327,14 @@ function listDeals({
   if (detector) {
     where.push("d.detector = ?");
     params.push(detector);
+  }
+  if (q && q.trim()) {
+    // Filtre par mot-clé sur des offres DÉJÀ qualifiées individuellement :
+    // une recherche large comme « pc » parcourt ainsi tout ce qui a été
+    // détecté sur des PC, sans jamais comparer entre eux des produits
+    // différents — la comparaison a eu lieu au moment du scan.
+    where.push("sans_accent(d.title) LIKE '%' || sans_accent(?) || '%'");
+    params.push(q.trim());
   }
 
   const clause = where.join(" AND ");
@@ -363,7 +384,23 @@ function enJson(row) {
     expiresAt: row.expires_at,
     publishedAt: row.published_at,
     firstSeenAt: row.first_seen_at,
+    // Détails propres au détecteur : prix affiché hors port, frais de port,
+    // score z, « plus bas prix jamais vu »… Ce sont des informations que
+    // l'interface affiche (le badge « au plus bas », par exemple), pas des
+    // données internes — les garder ici obligeait chaque appelant à relire
+    // la ligne brute pour y accéder.
+    payload: décoderPayload(row.payload),
   };
+}
+
+/** Le payload est stocké en JSON ; une ligne corrompue ne doit rien casser. */
+function décoderPayload(brut) {
+  if (!brut) return null;
+  try {
+    return JSON.parse(brut);
+  } catch {
+    return null;
+  }
 }
 
 /** Publie un deal (le rend visible dans le flux public). */
