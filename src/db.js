@@ -4,11 +4,14 @@ const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
 const { productKey } = require("./productKey.js");
+const { preparerBase, sauvegarderBase, listerSauvegardes } = require("./persistance.js");
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "..", "data", "radarprix.sqlite");
-// Le dossier data/ n'existe pas toujours après un déploiement (Git ne suit pas
-// les dossiers vides) : on le crée nous-mêmes pour éviter un crash au démarrage.
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+
+// Crée le dossier au besoin, annonce où l'on écrit, et restaure une
+// sauvegarde si la base a disparu ou est repartie vide. Doit tourner AVANT
+// l'ouverture : voir src/persistance.js.
+preparerBase(DB_PATH);
 
 const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
@@ -343,6 +346,29 @@ try {
   );
 } catch (e) {
   console.warn("[db] index d'unicité des pseudos non créé :", e.message);
+}
+
+// Le schéma est en place : on peut compter les comptes et prendre une copie
+// de l'état courant, à côté de la base, dans le volume.
+const persistance = sauvegarderBase(db, DB_PATH);
+
+/** État de la persistance, pour le panneau « Santé du site ». Les sauvegardes
+ *  sont relues à chaque appel : celle prise au démarrage n'est plus la seule
+ *  dès le deuxième redéploiement. */
+function etatPersistance() {
+  const surVolume = !DB_PATH.startsWith(path.join(__dirname, ".."));
+  return {
+    chemin: DB_PATH,
+    dbPathDefini: Boolean(process.env.DB_PATH),
+    // Le chemin par défaut se résout sous le dossier de l'application. Il
+    // tombe juste tant que le volume est monté exactement là — mais rien ne
+    // le garantit, et c'est précisément ce qui a coûté les comptes.
+    cheminExplicite: Boolean(process.env.DB_PATH) || surVolume,
+    tailleOctets: fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH).size : 0,
+    comptesAuDemarrage: persistance.comptes,
+    comptes: db.prepare("SELECT COUNT(*) AS n FROM users").get().n,
+    sauvegardes: listerSauvegardes(DB_PATH).map(({ fichier, taille, date }) => ({ fichier, taille, date })),
+  };
 }
 
 // Backfill : les lignes enregistrées avant l'ajout de product_key n'ont pas
@@ -1975,6 +2001,7 @@ module.exports = {
   exportMembres,
   exportDeals,
   REGLAGES_DEFAUT,
+  etatPersistance,
   reglages,
   reglagesDetailles,
   definirReglage,

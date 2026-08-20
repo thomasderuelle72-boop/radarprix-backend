@@ -63,7 +63,7 @@ const {
   suspensionEnCours,
   definirRole,
   epinglerDeal,
-  listScanRuns,
+  listScanRuns, etatPersistance,
   sourceHealth,
   listEmailLog,
   emailStats,
@@ -1009,6 +1009,10 @@ app.get("/api/admin/health", requireAuth, requireModerator, (req, res) => {
     sources: sourceHealth(),
     dernierScan: runs[0] || null,
     emails: emailStats(),
+    // Où la base est écrite et ce qu'elle contient. C'est la réponse à
+    // « est-ce que les comptes vont survivre au prochain déploiement ? »,
+    // qui exigeait jusqu'ici d'aller lire les journaux de l'hébergeur.
+    persistance: etatPersistance(),
     cronActif: process.env.ENABLE_CRON !== "false",
     // Ce que le serveur a réellement en main : une clé absente explique un
     // service muet bien plus sûrement qu'une panne.
