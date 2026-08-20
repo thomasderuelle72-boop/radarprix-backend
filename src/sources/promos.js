@@ -127,13 +127,41 @@ function normaliserDealStrackr(raw) {
  * d'annonceurs auxquels l'éditeur n'est pas encore affilié, ce qui permet de
  * couvrir large avant d'être accepté par chaque programme.
  */
+/* ── Offres qui ne s'adressent pas à un acheteur ──────────────────
+   Un réseau d'affiliation sert deux publics avec le même flux : les
+   consommateurs, et les éditeurs qu'il cherche à recruter. Les secondes
+   remontaient telles quelles sur le site — « Professor Whytes Affiliate
+   Program : AFFILIATE 25% » n'est pas un bon plan, c'est une offre de
+   parrainage adressée à des gens comme nous, pas comme nos visiteurs.
+
+   On les écarte à la collecte plutôt qu'à la publication : elles n'ont
+   aucune valeur à aucun stade, pas même en réserve pour la modération.
+   ────────────────────────────────────────────────────────────────── */
+const MOTIFS_HORS_SUJET = [
+  /\baffiliate\b/i,
+  /\baffiliation\b/i,
+  /\bpartner\s*program/i,
+  /\bprogramme\s*partenaire/i,
+  /\bpublisher\b/i,
+  /\brecruit/i,
+  /\bcommission\b/i,
+  /\bsign\s*up\s*bonus/i,
+];
+
+function offreHorsSujet(titre, marchand) {
+  const texte = `${titre || ""} ${marchand || ""}`;
+  return MOTIFS_HORS_SUJET.some((m) => m.test(texte));
+}
+
 function normaliserOffreAwin(raw) {
   const id = champ(raw, "promotionId", "id");
   const titre = champ(raw, "title", "description", "name");
   if (!id || !titre) return null;
 
+  const nomMarchand = raw?.advertiser?.name || champ(raw, "advertiserName", "advertiser");
+  if (offreHorsSujet(titre, nomMarchand)) return null;
+
   const code = champ(raw, "voucherCode", "code");
-  const marchand = raw?.advertiser?.name || champ(raw, "advertiserName", "advertiser");
   const description = champ(raw, "description", "terms");
 
   return {
@@ -145,7 +173,7 @@ function normaliserOffreAwin(raw) {
     description,
     url: raw?.urlTracking || champ(raw, "url", "deepLink", "landingPage"),
     imageUrl: champ(raw, "imageUrl", "image"),
-    merchant: marchand,
+    merchant: nomMarchand,
     category: categoriser(champ(raw, "categories", "category"), titre, description),
     voucherCode: code,
     price: null,

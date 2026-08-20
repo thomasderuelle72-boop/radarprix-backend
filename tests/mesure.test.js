@@ -249,14 +249,49 @@ describe("curation — le garde-fou du flux", () => {
     // Un flux d'affiliation ne fournit ni prix ni référence : juger ces
     // offres au score bloquait la totalité du détecteur D1, c'est-à-dire la
     // source de volume du site.
-    expect(curation.meritePublication({ detector: "D1", type: "promo", discountPct: 25 })).toBe(true);
-    expect(curation.meritePublication({ detector: "D1", type: "promo", discountPct: 19 })).toBe(false);
+    const chez = (discountPct, type = "promo") => ({ detector: "D1", type, discountPct, merchant: "Cdiscount" });
+    expect(curation.meritePublication(chez(25))).toBe(true);
+    expect(curation.meritePublication(chez(19))).toBe(false);
   });
 
   it("retient un code promo à un seuil plus bas qu'une promotion", () => {
     // Un code est directement actionnable et se cumule souvent.
-    expect(curation.meritePublication({ detector: "D1", type: "code", discountPct: 15 })).toBe(true);
-    expect(curation.meritePublication({ detector: "D1", type: "promo", discountPct: 15 })).toBe(false);
+    expect(curation.meritePublication({ detector: "D1", type: "code", discountPct: 15, merchant: "Fnac" })).toBe(true);
+    expect(curation.meritePublication({ detector: "D1", type: "promo", discountPct: 15, merchant: "Fnac" })).toBe(false);
+  });
+
+  it("ne publie aucune promotion d'une enseigne inconnue, si généreuse soit-elle", () => {
+    // Le cas rencontré en production : « 15% discount » chez Luna Gourmet
+    // passait le seuil de remise et s'affichait à côté des erreurs de prix.
+    // Le pourcentage était juste ; l'offre n'avait aucun rapport avec ce que
+    // le site promet à un acheteur français.
+    expect(curation.meritePublication({ detector: "D1", type: "code", discountPct: 15, merchant: "Luna Gourmet" })).toBe(false);
+    expect(curation.meritePublication({ detector: "D1", type: "promo", discountPct: 80, merchant: "Sim Local" })).toBe(false);
+    expect(curation.meritePublication({ detector: "D1", type: "code", discountPct: 50 })).toBe(false);
+  });
+
+  it("reconnaît une enseigne malgré la casse, les accents et les variantes de nom", () => {
+    // Les réseaux écrivent « Fnac.com », « FNAC » ou « Fnac Darty » pour la
+    // même enseigne : une comparaison stricte les manquerait toutes sauf une.
+    for (const nom of ["Fnac", "FNAC.com", "Fnac Darty", "fnac darty FR"]) {
+      expect(curation.marchandRetenu(nom)).toBe(true);
+    }
+    expect(curation.marchandRetenu("Leroy Merlin France")).toBe(true);
+    expect(curation.marchandRetenu("Professor Whytes")).toBe(false);
+    expect(curation.marchandRetenu(null)).toBe(false);
+  });
+
+  it("laisse remplacer la liste d'enseignes sans redéployer", () => {
+    const avant = process.env.MARCHANDS_RETENUS;
+    process.env.MARCHANDS_RETENUS = "luna gourmet, sim local";
+    try {
+      // La liste configurée remplace la liste par défaut, elle ne s'y ajoute pas.
+      expect(curation.marchandRetenu("Luna Gourmet")).toBe(true);
+      expect(curation.marchandRetenu("Cdiscount")).toBe(false);
+    } finally {
+      if (avant === undefined) delete process.env.MARCHANDS_RETENUS;
+      else process.env.MARCHANDS_RETENUS = avant;
+    }
   });
 
   it("ne publie pas une offre non chiffrée, faute de pouvoir la classer", () => {

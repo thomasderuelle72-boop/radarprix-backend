@@ -99,8 +99,9 @@ const { randomProductFor, allProducts: allCatalogProducts } = require("./catalog
 const { runCatalogBatch } = require("./scanBatch");
 const {
   listDeals: listDealsUnifies, statsDeals, getDeal: getDealUnifie,
-  publierDeal, depublierDeal, TYPES_DEAL,
+  publierDeal, depublierDeal, TYPES_DEAL, reappliquerRegles,
 } = require("./dealsStore");
+const { meritePublication } = require("./curation");
 const { collecterTout } = require("./sources");
 const {
   ajouterUrl: ajouterUrlSurveillee,
@@ -464,7 +465,13 @@ app.post("/api/admin/watch/run", requireAuth, requireAdmin, async (req, res) => 
 app.post("/api/admin/collecte", requireAuth, requireAdmin, async (req, res) => {
   try {
     const resultats = await collecterTout({ detecteur: req.body?.detecteur || null });
-    res.json({ resultats });
+    // Les règles de publication ne valent que pour ce qui vient d'être
+    // collecté : une offre déjà en ligne a été jugée à la règle en vigueur ce
+    // jour-là. Sans ce repassage, durcir un filtre ne retire jamais ce qu'il
+    // aurait refusé — les promotions de marchands inconnus restaient donc
+    // visibles alors même que le filtre qui les écarte était déployé.
+    const menage = reappliquerRegles((deal) => meritePublication(deal, deal.score));
+    res.json({ resultats, menage });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

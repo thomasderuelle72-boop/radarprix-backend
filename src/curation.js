@@ -151,6 +151,18 @@ function meritePublication(deal, score = null) {
   if (deal.expiresAt && new Date(deal.expiresAt) <= new Date()) return false;
 
   if (deal.detector === "D1") {
+    /* Le seul pourcentage ne suffit pas, et la mise en production l'a montré
+       brutalement : « 15% discount » chez Luna Gourmet passait le seuil et
+       s'affichait à côté des erreurs de prix. Le chiffre était juste ;
+       l'offre n'avait aucun rapport avec ce que le site promet.
+
+       Un réseau d'affiliation est mondial : sans filtre, il rapporte surtout
+       des micro-marchands anglophones dont personne ici n'a entendu parler.
+       On exige donc que l'enseigne soit reconnue avant toute publication
+       automatique. Une section vide vaut mieux qu'une section pleine de noms
+       inconnus, qui coûte la crédibilité de tout le reste du site. */
+    if (!marchandRetenu(deal.merchant)) return false;
+
     const pct = remiseEffective(deal);
     if (pct == null) return false;
     return pct >= (deal.type === "code" ? SEUIL_REMISE_CODE : SEUIL_REMISE_DECLAREE);
@@ -160,10 +172,62 @@ function meritePublication(deal, score = null) {
   return s >= SEUIL_PUBLICATION;
 }
 
+/* ── Enseignes dont une promotion mérite la page d'accueil ────────
+   Liste explicite plutôt qu'un critère calculé : à ce stade, aucune donnée
+   ne permet de distinguer automatiquement une enseigne que le public
+   français reconnaît d'un marchand confidentiel. Le nombre de programmes
+   Awin, la taille du catalogue, l'ancienneté — rien de tout cela ne le dit.
+
+   MARCHANDS_RETENUS (variable d'environnement, noms séparés par des
+   virgules) remplace entièrement cette liste : ajouter une enseigne après
+   avoir rejoint son programme ne demande donc pas de redéploiement.
+
+   La comparaison est souple — accents et casse ignorés, correspondance
+   partielle — parce que les réseaux écrivent « Fnac.com », « FNAC » ou
+   « Fnac Darty » pour la même enseigne.
+   ────────────────────────────────────────────────────────────────── */
+const MARCHANDS_RETENUS_DEFAUT = [
+  "amazon", "cdiscount", "fnac", "darty", "boulanger", "ldlc", "materiel.net",
+  "rakuten", "carrefour", "leclerc", "auchan", "intermarche", "casino",
+  "decathlon", "go sport", "intersport",
+  "leroy merlin", "castorama", "brico depot", "ikea", "conforama", "but",
+  "sephora", "nocibe", "marionnaud", "yves rocher",
+  "zalando", "asos", "kiabi", "la redoute", "vertbaudet", "celio", "jules",
+  "norauto", "feu vert", "oscaro", "mister auto",
+  "back market", "materiel", "top achat", "grosbill",
+  "micromania", "king jouet", "oxybul", "nature et decouvertes",
+  "sncf", "fdj", "cultura", "gibert",
+];
+
+function plier(texte) {
+  return (texte || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .trim();
+}
+
+function marchandsRetenus() {
+  const configures = (process.env.MARCHANDS_RETENUS || "")
+    .split(",")
+    .map((m) => plier(m))
+    .filter(Boolean);
+  return configures.length > 0 ? configures : MARCHANDS_RETENUS_DEFAUT;
+}
+
+/** L'enseigne fait-elle partie de celles dont on publie les promotions ? */
+function marchandRetenu(marchand) {
+  if (!marchand) return false;
+  const nom = plier(marchand);
+  return marchandsRetenus().some((retenu) => nom.includes(retenu));
+}
+
 module.exports = {
   scoreDesirabilite,
   meritePublication,
   remiseEffective,
+  marchandRetenu,
+  MARCHANDS_RETENUS_DEFAUT,
   SEUIL_PUBLICATION,
   SEUIL_REMISE_DECLAREE,
   SEUIL_REMISE_CODE,
