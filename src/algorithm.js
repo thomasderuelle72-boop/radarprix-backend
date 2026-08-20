@@ -4,7 +4,7 @@
 //     produit sont comparées à leur médiane (dispo dès le 1er scan).
 //  2) Comparaison "historique" : le prix est comparé à la moyenne des
 //     prix déjà vus pour ce produit exact (s'améliore avec le temps).
-const { priceHistoryFor, priceHistoryDetailed, priceHistoryBatch, reglages, offreBannie } = require("./db");
+const { priceHistoryBatch, reglages, offreBannie } = require("./db");
 const { significantWords, estMarqueurVariante, productKey } = require("./productKey.js");
 
 // Titres à écarter d'office : ce sont presque toujours des accessoires

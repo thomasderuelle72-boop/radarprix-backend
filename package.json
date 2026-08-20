@@ -8,7 +8,8 @@
     "cron": "node src/cron.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:legacy": "node test-algorithm.js"
+    "test:legacy": "node test-algorithm.js",
+    "lint": "eslint ."
   },
   "keywords": [],
   "author": "",
@@ -26,6 +27,9 @@
     "puppeteer-core": "^25.8.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^17.11.0",
     "playwright": "^1.49.1",
     "vitest": "^4.1.11"
   }

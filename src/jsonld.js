@@ -66,7 +66,12 @@ function lirePrix(v) {
   // Les séparateurs de milliers varient selon la locale du marchand. On
   // retire les espaces (y compris insécables), puis on tranche entre virgule
   // décimale et virgule de milliers d'après la position du dernier séparateur.
-  const nettoye = v.replace(/[\s  ]/g, "").replace(/[^\d,.-]/g, "");
+  // \u00a0 = espace insécable, \u202f = espace fine insécable : les deux
+  // servent de séparateur de milliers en français ("1 299,00 €"). Elles
+  // étaient écrites littéralement ici, donc invisibles à la relecture et
+  // fragiles au moindre passage d'outil ; les échappements disent la même
+  // chose sans dépendre de caractères qu'on ne voit pas.
+  const nettoye = v.replace(/[\s\u00a0\u202f]/g, "").replace(/[^\d,.-]/g, "");
   const dernierePoint = nettoye.lastIndexOf(".");
   const derniereVirgule = nettoye.lastIndexOf(",");
   let normalise = nettoye;
