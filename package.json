@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node src/server.js",
     "cron": "node src/cron.js",
-    "test": "node test-algorithm.js"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:legacy": "node test-algorithm.js"
   },
   "keywords": [],
   "author": "",
@@ -23,6 +25,7 @@
     "puppeteer-core": "^25.8.0"
   },
   "devDependencies": {
-    "playwright": "^1.49.1"
+    "playwright": "^1.49.1",
+    "vitest": "^4.1.11"
   }
 }

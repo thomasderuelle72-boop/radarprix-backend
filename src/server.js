@@ -102,6 +102,11 @@ const {
 } = require("./db");
 const { randomProductFor, allProducts: allCatalogProducts } = require("./catalog");
 const { runCatalogBatch } = require("./scanBatch");
+const {
+  listDeals: listDealsUnifies, statsDeals, getDeal: getDealUnifie,
+  publierDeal, depublierDeal, TYPES_DEAL,
+} = require("./dealsStore");
+const { collecterTout } = require("./sources");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
 const { hotScore } = require("./ranking");
 const { calculerBadges, prochainsBadges } = require("./badges");
@@ -221,6 +226,78 @@ app.get("/api/deals", (req, res) => {
     hasMore: start + pageSize < total,
     items: pageItems,
   });
+});
+
+// ── Flux unifié des bons plans ──────────────────────────────────
+// GET /api/feed?type=gratuit&category=gaming&page=1
+//
+// Sert les quatre détecteurs à travers une seule route : anomalies de prix
+// (D3), promotions et codes promo (D1), gratuit (D2). Simple lecture
+// paginée d'une table déjà calculée — contrairement à /api/deals qui
+// réanalyse tout à chaque visiteur (voir dealsStore).
+app.get("/api/feed", (req, res) => {
+  const { type, category, detector } = req.query;
+  if (type && !TYPES_DEAL.includes(type)) {
+    return res.status(400).json({ error: `Type inconnu. Attendus : ${TYPES_DEAL.join(", ")}.` });
+  }
+  res.json(
+    listDealsUnifies({
+      type: type || null,
+      category: category || "tout",
+      detector: detector || null,
+      page: parseInt(req.query.page, 10) || 1,
+      pageSize: parseInt(req.query.pageSize, 10) || 20,
+    })
+  );
+});
+
+// GET /api/feed/occasion — section dédiée au reconditionné et à l'occasion.
+// Séparée du flux principal par choix : une offre reconditionnée est
+// légitimement moins chère qu'un produit neuf, la mélanger au reste
+// reviendrait à présenter en permanence de fausses bonnes affaires.
+app.get("/api/feed/occasion", (req, res) => {
+  res.json(
+    listDealsUnifies({
+      itemCondition: req.query.etat === "occasion" ? "occasion" : "reconditionne",
+      category: req.query.category || "tout",
+      page: parseInt(req.query.page, 10) || 1,
+      pageSize: parseInt(req.query.pageSize, 10) || 20,
+    })
+  );
+});
+
+// GET /api/feed/types — ce que le front peut proposer comme filtres, sans
+// avoir à dupliquer la liste des types côté client.
+app.get("/api/feed/types", (req, res) => res.json({ types: TYPES_DEAL }));
+
+// ── Administration du flux ──────────────────────────────────────
+app.post("/api/admin/collecte", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const resultats = await collecterTout({ detecteur: req.body?.detecteur || null });
+    res.json({ resultats });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/admin/feed/stats", requireAuth, requireModerator, (req, res) => {
+  res.json({ stats: statsDeals() });
+});
+
+// Un deal collecté automatiquement mais jugé sans intérêt doit pouvoir être
+// retiré du flux sans attendre un correctif du score de désirabilité.
+app.post("/api/admin/feed/:id/publier", requireAuth, requireModerator, (req, res) => {
+  const deal = getDealUnifie(parseInt(req.params.id, 10));
+  if (!deal) return res.status(404).json({ error: "Deal introuvable." });
+  publierDeal(deal.id);
+  res.json({ ok: true, deal: getDealUnifie(deal.id) });
+});
+
+app.delete("/api/admin/feed/:id/publier", requireAuth, requireModerator, (req, res) => {
+  const deal = getDealUnifie(parseInt(req.params.id, 10));
+  if (!deal) return res.status(404).json({ error: "Deal introuvable." });
+  depublierDeal(deal.id);
+  res.json({ ok: true, deal: getDealUnifie(deal.id) });
 });
 
 // POST /api/scan  { query?: "PS5 slim", category?: "gaming" }
