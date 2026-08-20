@@ -3,6 +3,7 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const { resolveDirectLink } = require("./serpapi");
 const { fetchLiveOffers } = require("./fetchOffers");
 const {
@@ -100,6 +101,7 @@ const {
   createForumThread,
   listForumReplies,
   addForumReply,
+  fermerBase,
 } = require("./db");
 const { randomProductFor, allProducts: allCatalogProducts } = require("./catalog");
 const { runCatalogBatch } = require("./scanBatch");
@@ -122,6 +124,35 @@ const { calculerBadges, prochainsBadges } = require("./badges");
 const { validerTexte, limiterFrequence, refuserDoublon } = require("./moderation");
 
 const app = express();
+
+/* Railway sert le backend derrière son propre répartiteur de charge. Sans
+   ce réglage, req.ip vaut l'adresse du répartiteur pour TOUS les visiteurs :
+   le freinage par IP des routes d'authentification mettrait alors tout le
+   monde dans le même compteur, et un seul attaquant bloquerait le site
+   entier. On ne fait confiance qu'au premier maillon (le répartiteur), pas
+   à une chaîne d'en-têtes X-Forwarded-For que n'importe qui peut forger. */
+app.set("trust proxy", 1);
+
+/* ── En-têtes de sécurité ─────────────────────────────────────────
+   Sans eux, le site pouvait être chargé dans une iframe invisible chez un
+   tiers pour détourner les clics d'un membre connecté, et rien n'interdisait
+   au navigateur de deviner le type des réponses.
+
+   La politique de sécurité du contenu reste désactivée pour l'instant : le
+   frontend pose ses styles en ligne, une CSP stricte le casserait d'un bloc.
+   C'est un chantier à part, à mener en mode rapport avant d'appliquer. Tout
+   le reste d'helmet s'applique.
+
+   crossOriginResourcePolicy est ouvert parce que l'API est appelée depuis un
+   domaine différent du sien (radarprix.fr → Railway) : la valeur par défaut
+   d'helmet bloquerait ces réponses.
+   ────────────────────────────────────────────────────────────────── */
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
 
 /* ── Origines autorisées ──────────────────────────────────────────
    `cors()` sans argument autorise n'importe quel site à appeler cette API
@@ -475,7 +506,37 @@ app.get("/api/latest", (req, res) => {
 // ── Comptes utilisateurs ────────────────────────────────────────
 
 // POST /api/auth/register  { email, password }
-app.post("/api/auth/register", async (req, res) => {
+/* ── Freinage des routes d'authentification ───────────────────────
+   `limiterFrequence` protégeait déjà les commentaires, le salon et les
+   messages privés — mais pas la connexion, la seule route qu'un attaquant
+   ait intérêt à marteler. Sans elle, un script pouvait essayer des milliers
+   de mots de passe, ou créer des comptes en masse.
+
+   Deux différences avec les autres usages :
+     - la clé est l'adresse IP et non l'identifiant du membre, qui n'existe
+       pas encore au moment où l'on se connecte ;
+     - la fenêtre est large (10 tentatives par quart d'heure) : il s'agit
+       d'arrêter une machine, pas de gêner quelqu'un qui cherche son mot de
+       passe de bonne foi.
+
+   Le hachage bcrypt rend déjà chaque tentative lente — ce qui, sans frein,
+   se retourne contre le serveur : chaque essai lui coûte du processeur.
+   ────────────────────────────────────────────────────────────────── */
+function freinerAuth(action, max, fenetreMs) {
+  return (req, res, next) => {
+    // `trust proxy` est actif (voir plus bas) : req.ip porte alors l'adresse
+    // réelle du client et non celle du répartiteur de charge.
+    const debit = limiterFrequence(`ip:${req.ip}`, action, max, fenetreMs);
+    if (!debit.ok) {
+      return res.status(429).json({
+        error: "Trop de tentatives depuis cette adresse. Réessaie dans quelques minutes.",
+      });
+    }
+    next();
+  };
+}
+
+app.post("/api/auth/register", freinerAuth("register", 5, 900000), async (req, res) => {
   const { email, password } = req.body || {};
   if (!isValidEmail(email)) return res.status(400).json({ error: "Adresse email invalide." });
   if (!password || password.length < 8) {
@@ -498,7 +559,7 @@ app.post("/api/auth/register", async (req, res) => {
 });
 
 // POST /api/auth/login  { email, password }
-app.post("/api/auth/login", async (req, res) => {
+app.post("/api/auth/login", freinerAuth("login", 10, 900000), async (req, res) => {
   const { email, password } = req.body || {};
   const row = email && findUserByEmail(email);
   const ok = row && (await verifyPassword(password || "", row.password_hash));
@@ -1275,7 +1336,7 @@ app.post("/api/admin/trigger-scan", requireAuth, requireAdmin, async (req, res) 
 app.get("/api/health", (req, res) => res.json({ ok: true }));
 
 if (require.main === module) {
-  app.listen(PORT, () => console.log(`RadarPrix backend en écoute sur le port ${PORT}`));
+  const serveur = app.listen(PORT, () => console.log(`RadarPrix backend en écoute sur le port ${PORT}`));
 
   // Sur un hébergeur qui ne fait tourner qu'un seul service (ex: Railway sur
   // le plan actuel), il n'y a personne d'autre pour exécuter `npm run cron` :
@@ -1284,6 +1345,48 @@ if (require.main === module) {
   // quota SerpApi par surprise en local/dev.
   if (process.env.ENABLE_CRON === "true") {
     require("./cron").startCron();
+  }
+
+  /* ── Arrêt propre ───────────────────────────────────────────────
+     À chaque redéploiement, l'hébergeur envoie SIGTERM puis tue le
+     processus. Sans ce gestionnaire, les requêtes en cours étaient coupées
+     net et le journal WAL de SQLite restait non consolidé — un fichier de
+     base laissé dans un état qui, à la longue, finit par coûter cher.
+
+     L'ordre compte : on cesse d'accepter des connexions, on laisse finir
+     celles en cours, PUIS on consolide et on ferme la base. Fermer la base
+     d'abord ferait échouer les requêtes encore en vol.
+
+     Le délai de grâce évite qu'une connexion maintenue ouverte (requête
+     longue, client qui ne raccroche pas) empêche indéfiniment l'arrêt :
+     l'hébergeur, lui, ne patientera pas.
+     ────────────────────────────────────────────────────────────── */
+  let arretEnCours = false;
+  for (const signal of ["SIGTERM", "SIGINT"]) {
+    process.on(signal, () => {
+      if (arretEnCours) return; // un second signal ne relance pas la séquence
+      arretEnCours = true;
+      console.log(`[${signal}] arrêt demandé — fermeture en cours…`);
+
+      let dejaFermee = false;
+      const terminer = () => {
+        if (dejaFermee) return; // le délai de grâce et serveur.close() peuvent tous deux arriver
+        dejaFermee = true;
+        try {
+          fermerBase();
+          console.log("Base consolidée et fermée proprement.");
+        } catch (e) {
+          console.error("Fermeture de la base en échec :", e.message);
+        }
+        process.exit(0);
+      };
+
+      serveur.close(terminer);
+      setTimeout(() => {
+        console.warn("Délai de grâce dépassé — fermeture forcée.");
+        terminer();
+      }, 8000).unref();
+    });
   }
 }
 

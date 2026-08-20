@@ -17,6 +17,7 @@ const { runCatalogBatch, PRODUCTS } = require("./scanBatch");
 const { collecterTout } = require("./sources");
 const { purgerDeals } = require("./dealsStore");
 const { surveiller } = require("./watch");
+const { sauvegarderMaintenant } = require("./db");
 
 const BATCH_SIZE = parseInt(process.env.CRON_BATCH_SIZE || "10", 10);
 const SCHEDULE = process.env.CRON_SCHEDULE || "0 */2 * * *"; // toutes les 2h par défaut
@@ -34,6 +35,14 @@ const SCHEDULE_FLUX = process.env.CRON_FLUX_SCHEDULE || "*/30 * * * *"; // toute
 // à un ordre de grandeur tout autre — et cela ne coûte que de la bande
 // passante, puisqu'on lit les fiches et non une API facturée à la requête.
 const SCHEDULE_WATCH = process.env.CRON_WATCH_SCHEDULE || "*/15 * * * *";
+
+// La sauvegarde de la base ne tournait qu'à l'ouverture du fichier, donc en
+// pratique une fois par déploiement. Un service qui tient trois semaines sans
+// redéploiement n'avait donc qu'une copie vieille de trois semaines — ce qui
+// répond mal à la seule question qui compte le jour où on en a besoin.
+// Une copie par nuit, à une heure creuse choisie hors des minutes rondes pour
+// ne pas tomber en même temps que le reste.
+const SCHEDULE_BACKUP = process.env.CRON_BACKUP_SCHEDULE || "37 4 * * *";
 
 async function tick() {
   const results = await runCatalogBatch(BATCH_SIZE);
@@ -78,13 +87,26 @@ async function tickWatch() {
   }
 }
 
+/** Copie de sécurité de la base, indépendante des redéploiements. */
+function tickBackup() {
+  try {
+    const { sauvegardes } = sauvegarderMaintenant();
+    console.log(`[${new Date().toISOString()}] sauvegarde effectuée — ${sauvegardes.length} copie(s) conservée(s)`);
+  } catch (e) {
+    // Comme au démarrage : une sauvegarde ratée ne doit rien interrompre.
+    console.error(`[${new Date().toISOString()}] sauvegarde en échec :`, e.message);
+  }
+}
+
 function startCron() {
   cron.schedule(SCHEDULE, tick);
   cron.schedule(SCHEDULE_FLUX, tickFlux);
   cron.schedule(SCHEDULE_WATCH, tickWatch);
+  cron.schedule(SCHEDULE_BACKUP, tickBackup);
   console.log(`Cron RadarPrix démarré — ${BATCH_SIZE} produits toutes les exécutions (${SCHEDULE}).`);
   console.log(`Collecte des flux gratuits/promotions : ${SCHEDULE_FLUX}.`);
   console.log(`Surveillance des fiches marchandes : ${SCHEDULE_WATCH}.`);
+  console.log(`Sauvegarde de la base : ${SCHEDULE_BACKUP}.`);
   console.log(`Catalogue total : ${PRODUCTS.length} produits.`);
   tick(); // premier lot immédiat au démarrage
   tickFlux();

@@ -1992,8 +1992,38 @@ function exportDeals() {
     .all();
 }
 
+/**
+ * Déclenche une copie de sécurité de la base à chaud.
+ *
+ * `sauvegarderBase` tourne déjà à l'ouverture du fichier, donc une fois par
+ * déploiement. Cette fonction permet au cron de la rejouer chaque nuit : un
+ * service qui tient trois semaines sans redéploiement n'avait sinon qu'une
+ * copie vieille de trois semaines.
+ *
+ * Le chemin de la base ne quitte pas ce module : le cron n'a pas à le
+ * connaître pour demander une sauvegarde.
+ */
+function sauvegarderMaintenant() {
+  return sauvegarderBase(db, DB_PATH);
+}
+
+/**
+ * Consolide le journal WAL dans le fichier principal puis ferme la base.
+ * Appelée à l'arrêt du serveur (voir le gestionnaire SIGTERM de server.js).
+ *
+ * Le checkpoint TRUNCATE est ce qui distingue un arrêt propre d'une simple
+ * fermeture : sans lui, les dernières écritures restent dans le fichier
+ * annexe `-wal`, que rien ne garantit de retrouver côté sauvegarde.
+ */
+function fermerBase() {
+  db.pragma("wal_checkpoint(TRUNCATE)");
+  db.close();
+}
+
 module.exports = {
   db,
+  fermerBase,
+  sauvegarderMaintenant,
   listUsersAdmin,
   userAdminSheet,
   seriesQuotidiennes,
