@@ -12,12 +12,18 @@
 // dans db.js), et le niveau atteint est le nombre de paliers franchis. La
 // date d'obtention n'est pas inventée : c'est celle de l'évènement qui a
 // fait franchir le palier.
+//
+// `icone` désigne un tracé de components/Icon.jsx côté site. Les six
+// familles ont chacune leur dessin propre (badgeTag, badgeBinoculars…) :
+// elles réutilisaient auparavant des icônes d'interface, si bien que le
+// badge "Flair reconnu" portait la flamme de l'onglet Gros deals et le
+// badge "Pilier" le bouclier du rôle administrateur.
 
 const FAMILLES = [
   {
     cle: "chasseur",
     nom: "Chasseur",
-    icone: "radar",
+    icone: "badgeTag",
     source: "deals",
     paliers: [1, 5, 25, 100],
     texte: (n) =>
@@ -28,7 +34,7 @@ const FAMILLES = [
   {
     cle: "eclaireur",
     nom: "Éclaireur",
-    icone: "search",
+    icone: "badgeBinoculars",
     source: "votes",
     paliers: [1, 10, 50, 200],
     texte: (n) =>
@@ -39,7 +45,7 @@ const FAMILLES = [
   {
     cle: "voix",
     nom: "Voix de la communauté",
-    icone: "message",
+    icone: "badgeVoice",
     source: "commentaires",
     paliers: [1, 25, 100, 500],
     texte: (n) =>
@@ -50,7 +56,7 @@ const FAMILLES = [
   {
     cle: "animateur",
     nom: "Animateur",
-    icone: "users",
+    icone: "badgeMic",
     source: "forum",
     paliers: [1, 10, 50],
     texte: (n) =>
@@ -61,7 +67,7 @@ const FAMILLES = [
   {
     cle: "populaire",
     nom: "Flair reconnu",
-    icone: "flame",
+    icone: "badgeThumb",
     source: "votesRecus",
     paliers: [10, 100, 1000],
     texte: (n) => `Vos deals ont récolté ${n} votes positifs. Vos trouvailles font mouche.`,
@@ -69,7 +75,7 @@ const FAMILLES = [
   {
     cle: "pilier",
     nom: "Pilier",
-    icone: "shield",
+    icone: "badgeColumn",
     source: "anciennete",
     paliers: [1, 2, 3], // 1 mois, 6 mois, 1 an — voir datesAnciennete()
     texte: (n) => ["Membre depuis un mois.", "Membre depuis six mois.", "Membre depuis un an."][n - 1],
