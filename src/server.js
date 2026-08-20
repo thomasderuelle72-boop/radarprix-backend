@@ -114,6 +114,8 @@ const {
   listerUrls: listerUrlsSurveillees,
   surveiller: surveillerFiches,
 } = require("./watch");
+const { indicateurs, manquees, noterDeal, ingererVeriteTerrain } = require("./mesure");
+const { classement: classementMarchands } = require("./reputation");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
 const { hotScore } = require("./ranking");
 const { calculerBadges, prochainsBadges } = require("./badges");
@@ -285,6 +287,48 @@ app.get("/api/feed/occasion", (req, res) => {
 // GET /api/feed/types — ce que le front peut proposer comme filtres, sans
 // avoir à dupliquer la liste des types côté client.
 app.get("/api/feed/types", (req, res) => res.json({ types: TYPES_DEAL }));
+
+// ── Mesure : les deux chiffres qui pilotent le réglage ──────────
+// Précision (parmi ce qu'on publie, quelle part est fausse) et rappel (parmi
+// les vraies erreurs de prix, quelle part on trouve). Sans eux, les seuils du
+// détecteur ne peuvent être ajustés qu'à l'intuition.
+app.get("/api/admin/indicateurs", requireAuth, requireModerator, (req, res) => {
+  res.json(indicateurs({ jours: parseInt(req.query.jours, 10) || 30 }));
+});
+
+// Les erreurs de prix connues que RadarPrix n'a PAS vues : la liste de
+// travail la plus utile du tableau de bord.
+app.get("/api/admin/manquees", requireAuth, requireModerator, (req, res) => {
+  res.json({ manquees: manquees({ limit: parseInt(req.query.limit, 10) || 50 }) });
+});
+
+// Jugement d'un modérateur sur un deal publié automatiquement. C'est cette
+// étiquette qui alimente à la fois la précision et la réputation marchand.
+app.post("/api/admin/feed/:id/juger", requireAuth, requireModerator, (req, res) => {
+  const deal = getDealUnifie(parseInt(req.params.id, 10));
+  if (!deal) return res.status(404).json({ error: "Deal introuvable." });
+  try {
+    noterDeal(deal.id, req.body?.verdict, { motif: req.body?.motif || null, userId: req.user.sub });
+    // Un faux positif quitte le flux immédiatement : le signaler sans le
+    // retirer laisserait le membre tomber dessus malgré tout.
+    if (req.body?.verdict === "faux_positif") depublierDeal(deal.id);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/api/admin/verite-terrain", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    res.json(await ingererVeriteTerrain());
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+app.get("/api/admin/marchands", requireAuth, requireModerator, (req, res) => {
+  res.json({ marchands: classementMarchands({ limit: parseInt(req.query.limit, 10) || 50 }) });
+});
 
 // ── Surveillance des fiches marchandes (détecteur D3) ───────────
 // C'est ce qui remplace la recherche large : au lieu d'interroger un

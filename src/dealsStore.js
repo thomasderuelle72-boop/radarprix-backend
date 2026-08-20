@@ -88,6 +88,23 @@ db.exec(`
     UNIQUE(source, external_id)
   );
 
+  -- Jugements de la modération sur les deals publiés automatiquement.
+  --
+  -- La table vit ici, avec les deals qu'elle qualifie, et non dans le module
+  -- de mesure qui l'alimente : reputation.js la lit sans rien savoir de la
+  -- mesure, et faire dépendre son existence de l'ordre des require() est le
+  -- genre de fragilité qui ne se manifeste qu'en production, le jour où un
+  -- module cesse d'être chargé.
+  CREATE TABLE IF NOT EXISTS deal_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id INTEGER NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+    verdict TEXT NOT NULL, -- 'faux_positif' | 'valide'
+    motif TEXT,
+    user_id INTEGER,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(deal_id)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_deals_feed
     ON deals(published_at, score);
   CREATE INDEX IF NOT EXISTS idx_deals_type ON deals(type);

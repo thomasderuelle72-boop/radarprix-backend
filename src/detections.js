@@ -10,6 +10,7 @@ const { upsertDeal } = require("./dealsStore");
 const { scoreDesirabilite, meritePublication } = require("./curation");
 const { analyzeOffers } = require("./algorithm");
 const { productKey } = require("./productKey");
+const { fiabilite } = require("./reputation");
 
 /**
  * Identifiant stable d'une détection.
@@ -67,7 +68,7 @@ function enregistrerDetections(category, analysees) {
       },
     };
 
-    const score = scoreDesirabilite(deal);
+    const score = scoreDesirabilite(deal, { fiabiliteMarchand: fiabilite(deal.merchant) });
     const publier = meritePublication(deal, score);
     upsertDeal({
       ...deal,
@@ -121,7 +122,7 @@ function enregistrerReconditionne(category, offresReconditionnees) {
       payload: { zScore: o.zScore ?? null },
     };
 
-    const score = scoreDesirabilite(deal);
+    const score = scoreDesirabilite(deal, { fiabiliteMarchand: fiabilite(deal.merchant) });
     // Le seuil de publication reste le même : une offre reconditionnée sans
     // intérêt n'a pas plus sa place dans sa section que dans le flux principal.
     const publier = meritePublication(deal, score);

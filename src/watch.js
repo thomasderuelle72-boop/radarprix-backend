@@ -29,6 +29,7 @@ const { productKey } = require("./productKey");
 const { upsertDeal } = require("./dealsStore");
 const { scoreDesirabilite, meritePublication } = require("./curation");
 const { logSourceEvent } = require("./db");
+const { fiabilite } = require("./reputation");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS watched_urls (
@@ -266,7 +267,7 @@ function publierAnomalie(fiche, offre, reference, evaluation) {
     },
   };
 
-  const score = scoreDesirabilite(deal);
+  const score = scoreDesirabilite(deal, { fiabiliteMarchand: fiabilite(fiche.merchant) });
   const publier = meritePublication(deal, score);
   upsertDeal({
     ...deal,

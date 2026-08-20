@@ -60,15 +60,21 @@ function scoreDesirabilite(deal, { fiabiliteMarchand = null } = {}) {
   if (pct == null && prix != null && ref != null && ref > 0) {
     pct = Math.round((1 - prix / ref) * 100);
   }
-  if (pct != null && pct > 0) score += Math.min(pct, 80) * 0.5; // max 40
+  if (pct != null && pct > 0) score += Math.min(pct, 80) * 0.375; // max 30
 
   // ── 2. Montant économisé ──────────────────────────────────────
+  // Pèse volontairement PLUS que le pourcentage, et c'est le point le moins
+  // intuitif du barème. Un premier réglage donnait 40 points au pourcentage
+  // contre 30 à l'économie : −60 % sur un câble à 8 € (4,80 € gagnés)
+  // passait alors devant −20 % sur un lave-linge à 700 € (140 € gagnés).
+  // Aucun acheteur ne raisonne ainsi, et c'est exactement le travers qui
+  // remplit un site de bons plans d'offres sans intérêt.
+  //
   // log10 : chaque multiplication par dix de l'économie rapporte le même
-  // gain. 10 € → 10 pts, 100 € → 20, 1 000 € → 30, sans jamais écraser le
-  // reste du score.
+  // gain. 10 € → 21 pts, 100 € → 40, 1 000 € → 45 (plafond).
   if (prix != null && ref != null && ref > prix) {
     const economie = ref - prix;
-    score += Math.min(Math.log10(1 + economie) * 10, 30);
+    score += Math.min(Math.log10(1 + economie) * 20, 45);
   }
 
   // ── 3. Nature et marchand ─────────────────────────────────────

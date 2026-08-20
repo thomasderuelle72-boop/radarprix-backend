@@ -11,7 +11,8 @@ const { fetchEpicFreeGames } = require("./epic");
 const { fetchStrackrDeals, fetchAwinOffers } = require("./promos");
 const { upsertDeal, markMissingAsRemoved } = require("../dealsStore");
 const { scoreDesirabilite, meritePublication } = require("../curation");
-const { logSourceEvent, db } = require("../db");
+const { logSourceEvent } = require("../db");
+const { fiabilite } = require("../reputation");
 
 /**
  * Registre des sources.
@@ -46,25 +47,17 @@ const SOURCES = [
 ];
 
 /**
- * Fiabilité d'un marchand, entre 0 et 1, telle que la communauté l'a jugée.
- * Renvoie null si le marchand est inconnu — le score de désirabilité traite
- * alors le marchand comme neutre plutôt que de lui inventer une réputation.
+ * Fiabilité d'un marchand, entre 0 et 1. Déléguée à reputation.js, qui mêle
+ * jugements de modération, votes communautaires et a priori — plutôt qu'une
+ * liste de noms écrite en dur.
  */
 function fiabiliteDe(marchand) {
   if (!marchand) return null;
   try {
-    const row = db
-      .prepare(
-        `SELECT AVG(CASE WHEN v.value = 1 THEN 1.0 ELSE 0.0 END) AS taux, COUNT(*) AS n
-         FROM community_deals d
-         JOIN community_votes v ON v.deal_id = d.id
-         WHERE lower(d.seller) = lower(?)`
-      )
-      .get(marchand);
-    // En dessous de cinq votes, la moyenne est trop instable pour peser sur
-    // un classement : on préfère ne rien affirmer.
-    return row && row.n >= 5 ? row.taux : null;
+    return fiabilite(marchand);
   } catch {
+    // La réputation est un raffinement du classement, jamais un point de
+    // panne : si elle échoue, la collecte doit continuer sans elle.
     return null;
   }
 }
