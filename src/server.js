@@ -44,12 +44,6 @@ const {
   getWatchlist,
   addComment,
   listComments,
-  sendMessage,
-  listPublicMessages,
-  listConversation,
-  listConversationsFor,
-  markConversationRead,
-  countUnreadMessages,
   TYPES_CONTENU,
   supprimerContenu,
   journaliser,
@@ -91,15 +85,16 @@ const {
   voteCommunityDeal,
   removeCommunityVote,
   getUserVote,
-  listForumCategories,
-  getForumCategoryBySlug,
-  listForumThreads,
-  getForumThread,
-  createForumThread,
-  listForumReplies,
-  addForumReply,
   fermerBase,
 } = require("./db");
+const {
+  sendMessage, listPublicMessages, listConversation,
+  markConversationRead, countUnreadMessages, listConversationsFor,
+} = require("./messagerie");
+const {
+  listForumCategories, getForumCategoryBySlug, listForumThreads,
+  getForumThread, createForumThread, listForumReplies, addForumReply,
+} = require("./forum");
 const { randomProductFor, allProducts: allCatalogProducts } = require("./catalog");
 const { runCatalogBatch } = require("./scanBatch");
 const {

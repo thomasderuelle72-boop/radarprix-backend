@@ -608,116 +608,6 @@ function listComments(dealQuery, limit = 100) {
     .all(dealQuery.toLowerCase().trim(), limit);
 }
 
-// ── Messages : salon général public (to_user_id NULL) + messages privés ──
-function sendMessage(fromUserId, toUserId, body) {
-  const info = db
-    .prepare("INSERT INTO messages (from_user_id, to_user_id, body) VALUES (?, ?, ?)")
-    .run(fromUserId, toUserId || null, body);
-  return info.lastInsertRowid;
-}
-
-/**
- * Messages du salon général.
- *
- * afterId > 0 : les messages arrivés depuis, pour le sondage régulier.
- * afterId = 0 : le premier chargement. On renvoie alors les DERNIERS
- * messages, pas les premiers — sinon, passé une centaine de messages, un
- * visiteur qui arrive découvrait l'historique le plus ancien du salon et
- * devait attendre autant de sondages qu'il y a de pages pour rattraper la
- * conversation en cours.
- */
-function listPublicMessages(afterId = 0, limit = 100) {
-  if (afterId > 0) {
-    return db
-      .prepare(
-        `SELECT m.id, m.body, m.created_at, u.id AS user_id,
-                COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
-         FROM messages m JOIN users u ON u.id = m.from_user_id
-         WHERE m.to_user_id IS NULL AND m.id > ?
-         ORDER BY m.id ASC LIMIT ?`
-      )
-      .all(afterId, limit);
-  }
-  // Les N derniers, remis dans l'ordre chronologique pour l'affichage.
-  return db
-    .prepare(
-      `SELECT * FROM (
-         SELECT m.id, m.body, m.created_at, u.id AS user_id,
-                COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
-         FROM messages m JOIN users u ON u.id = m.from_user_id
-         WHERE m.to_user_id IS NULL
-         ORDER BY m.id DESC LIMIT ?
-       ) ORDER BY id ASC`
-    )
-    .all(limit);
-}
-
-function listConversation(userId, otherUserId, limit = 200) {
-  return db
-    .prepare(
-      `SELECT m.id, m.body, m.created_at, m.from_user_id, m.read_at,
-              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
-       FROM messages m JOIN users u ON u.id = m.from_user_id
-       WHERE (m.from_user_id = ? AND m.to_user_id = ?)
-          OR (m.from_user_id = ? AND m.to_user_id = ?)
-       ORDER BY m.id ASC LIMIT ?`
-    )
-    .all(userId, otherUserId, otherUserId, userId, limit);
-}
-
-/**
- * Marque comme lus les messages qu'un membre vient de recevoir dans une
- * conversation. Appelé à l'ouverture du fil : c'est le seul moment où l'on
- * sait de façon fiable que le destinataire les a sous les yeux.
- */
-function markConversationRead(userId, otherUserId) {
-  const info = db
-    .prepare(
-      `UPDATE messages SET read_at = datetime('now')
-       WHERE to_user_id = ? AND from_user_id = ? AND read_at IS NULL`
-    )
-    .run(userId, otherUserId);
-  return info.changes;
-}
-
-/** Total de messages privés en attente, toutes conversations confondues. */
-function countUnreadMessages(userId) {
-  return db
-    .prepare("SELECT COUNT(*) AS n FROM messages WHERE to_user_id = ? AND read_at IS NULL")
-    .get(userId).n;
-}
-
-/** Liste des conversations privées d'un utilisateur, avec le dernier message de chacune. */
-function listConversationsFor(userId) {
-  return db
-    .prepare(
-      `SELECT
-         other.id AS user_id,
-         COALESCE(NULLIF(other.pseudo, ''), 'Membre #' || other.id) AS display_name,
-         other.avatar_url,
-         last_msg.body AS last_body,
-         last_msg.created_at AS last_at,
-         last_msg.from_user_id AS last_from,
-         (SELECT COUNT(*) FROM messages nl
-           WHERE nl.from_user_id = other.id AND nl.to_user_id = ? AND nl.read_at IS NULL) AS non_lus
-       FROM (
-         SELECT DISTINCT CASE WHEN from_user_id = ? THEN to_user_id ELSE from_user_id END AS other_id
-         FROM messages
-         WHERE to_user_id IS NOT NULL AND (from_user_id = ? OR to_user_id = ?)
-       ) AS convo
-       JOIN users other ON other.id = convo.other_id
-       JOIN messages last_msg ON last_msg.id = (
-         SELECT id FROM messages
-         WHERE (from_user_id = ? AND to_user_id = other.id) OR (from_user_id = other.id AND to_user_id = ?)
-         ORDER BY id DESC LIMIT 1
-       )
-       -- Sur l'identifiant du dernier message, pas sur sa date : les dates
-       -- SQLite s'arrêtent à la seconde, et deux conversations actives dans
-       -- la même seconde se seraient classées au hasard.
-       ORDER BY last_msg.id DESC`
-    )
-    .all(userId, userId, userId, userId, userId, userId);
-}
 
 // ── Historique de prix agrégé par jour (pour un mini-graphique) ──
 function priceHistoryByDay(query, days = 30) {
@@ -935,105 +825,6 @@ function getUserVote(dealId, userId) {
   return row ? row.value : null;
 }
 
-// ── Forum : catégories, sujets, réponses ─────────────────────────
-/**
- * Catégories du forum, avec de quoi montrer si l'endroit est vivant :
- * nombre de sujets, nombre total de réponses, et le dernier sujet actif
- * (titre, auteur, date). Sans ces informations, la liste des catégories
- * n'affichait qu'un compteur de sujets — impossible de savoir si quelqu'un
- * y écrit encore.
- */
-function listForumCategories() {
-  return db
-    .prepare(
-      `SELECT c.*,
-              (SELECT COUNT(*) FROM forum_threads t WHERE t.category_id = c.id) AS thread_count,
-              (SELECT COUNT(*) FROM forum_replies r
-                 JOIN forum_threads t ON t.id = r.thread_id
-                WHERE t.category_id = c.id) AS reply_count,
-              last.title AS last_title,
-              last.id AS last_thread_id,
-              last.activity_at AS last_activity_at,
-              last.author AS last_author
-       FROM forum_categories c
-       LEFT JOIN (
-         SELECT t.category_id,
-                t.id,
-                t.title,
-                COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author,
-                COALESCE((SELECT MAX(r.created_at) FROM forum_replies r WHERE r.thread_id = t.id), t.created_at) AS activity_at
-           FROM forum_threads t
-           JOIN users u ON u.id = t.user_id
-       ) AS last
-         ON last.category_id = c.id
-        AND last.activity_at = (
-              SELECT MAX(COALESCE((SELECT MAX(r2.created_at) FROM forum_replies r2 WHERE r2.thread_id = t2.id), t2.created_at))
-                FROM forum_threads t2 WHERE t2.category_id = c.id
-            )
-       GROUP BY c.id
-       ORDER BY c.sort_order ASC`
-    )
-    .all();
-}
-
-function getForumCategoryBySlug(slug) {
-  return db.prepare("SELECT * FROM forum_categories WHERE slug = ?").get(slug);
-}
-
-/** Sujets d'une catégorie, avec auteur, nombre de réponses et date de dernière activité. */
-function listForumThreads(categoryId, limit = 50) {
-  return db
-    .prepare(
-      `SELECT t.id, t.title, t.created_at, t.user_id,
-              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url,
-              (SELECT COUNT(*) FROM forum_replies r WHERE r.thread_id = t.id) AS reply_count,
-              COALESCE(
-                (SELECT MAX(r.created_at) FROM forum_replies r WHERE r.thread_id = t.id),
-                t.created_at
-              ) AS last_activity_at
-       FROM forum_threads t JOIN users u ON u.id = t.user_id
-       WHERE t.category_id = ?
-       ORDER BY last_activity_at DESC
-       LIMIT ?`
-    )
-    .all(categoryId, limit);
-}
-
-function getForumThread(threadId) {
-  return db
-    .prepare(
-      `SELECT t.*, c.slug AS category_slug, c.name AS category_name,
-              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
-       FROM forum_threads t
-       JOIN users u ON u.id = t.user_id
-       JOIN forum_categories c ON c.id = t.category_id
-       WHERE t.id = ?`
-    )
-    .get(threadId);
-}
-
-function createForumThread(categoryId, userId, title, body) {
-  const info = db
-    .prepare("INSERT INTO forum_threads (category_id, user_id, title, body) VALUES (?, ?, ?, ?)")
-    .run(categoryId, userId, title, body);
-  return getForumThread(info.lastInsertRowid);
-}
-
-function listForumReplies(threadId) {
-  return db
-    .prepare(
-      `SELECT r.id, r.body, r.created_at, r.user_id,
-              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS author, u.avatar_url
-       FROM forum_replies r JOIN users u ON u.id = r.user_id
-       WHERE r.thread_id = ? ORDER BY r.created_at ASC`
-    )
-    .all(threadId);
-}
-
-function addForumReply(threadId, userId, body) {
-  db.prepare("INSERT INTO forum_replies (thread_id, user_id, body) VALUES (?, ?, ?)").run(threadId, userId, body);
-  return listForumReplies(threadId);
-}
 
 // ── Profils publics de membres ───────────────────────────────────
 //
@@ -2111,12 +1902,6 @@ module.exports = {
   recordAlertSent,
   addComment,
   listComments,
-  sendMessage,
-  listPublicMessages,
-  listConversation,
-  listConversationsFor,
-  markConversationRead,
-  countUnreadMessages,
   submitCommunityDeal,
   getCommunityDeal,
   merchantReliability,
@@ -2124,11 +1909,4 @@ module.exports = {
   voteCommunityDeal,
   removeCommunityVote,
   getUserVote,
-  listForumCategories,
-  getForumCategoryBySlug,
-  listForumThreads,
-  getForumThread,
-  createForumThread,
-  listForumReplies,
-  addForumReply,
 };
