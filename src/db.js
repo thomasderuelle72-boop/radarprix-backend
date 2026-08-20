@@ -141,6 +141,43 @@ db.exec(`
     PRIMARY KEY (follower_id, followed_id)
   );
   CREATE INDEX IF NOT EXISTS idx_follows_followed ON follows(followed_id);
+
+  -- ── Modération ────────────────────────────────────────────────
+  -- Jusqu'ici aucun contenu n'était supprimable, par personne : il fallait
+  -- ouvrir le fichier SQLite à la main. moderation.js bloque le spam en
+  -- amont, mais rien ne rattrapait ce qui passait au travers.
+
+  -- Signalements déposés par les membres.
+  CREATE TABLE IF NOT EXISTS reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reporter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    content_type TEXT NOT NULL,   -- comment | message | deal | thread | reply
+    content_id INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    note TEXT,
+    status TEXT NOT NULL DEFAULT 'ouvert', -- ouvert | traite | rejete
+    handled_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    handled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    -- Un membre ne signale un même contenu qu'une fois : sans ça, dix clics
+    -- agacés rempliraient la file de dix lignes identiques.
+    UNIQUE(reporter_id, content_type, content_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at);
+
+  -- Journal des actions de modération : une suppression est irréversible,
+  -- elle doit au moins laisser une trace de qui, quoi et quand.
+  CREATE TABLE IF NOT EXISTS moderation_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    action TEXT NOT NULL,
+    content_type TEXT,
+    content_id INTEGER,
+    target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    detail TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_modlog_date ON moderation_log(created_at);
 `);
 
 // Catégories de forum par défaut — insérées une seule fois (slug UNIQUE).
@@ -171,6 +208,14 @@ for (const stmt of [
   // ça, impossible de distinguer un message lu d'un message en attente :
   // la liste des conversations ne pouvait signaler aucune nouveauté.
   "ALTER TABLE messages ADD COLUMN read_at TEXT",
+  // Suspension : empêcher un membre de publier sans supprimer son compte.
+  // La seule action possible était jusqu'ici la suppression, qui effaçait
+  // aussi tout son historique — c'était tout ou rien.
+  "ALTER TABLE users ADD COLUMN suspended_until TEXT",
+  "ALTER TABLE users ADD COLUMN suspension_reason TEXT",
+  // Mise en avant d'un deal communautaire, sans avoir à le supprimer pour
+  // le sortir de la une ni à trafiquer ses votes pour l'y faire monter.
+  "ALTER TABLE community_deals ADD COLUMN pinned_at TEXT",
 ]) {
   try {
     db.exec(stmt);
@@ -1034,8 +1079,216 @@ function dealsFromFollowed(followerId, limit = 30) {
     .all(followerId, limit);
 }
 
+
+// ── Modération ───────────────────────────────────────────────────
+//
+// Les contenus publiables sont de cinq natures, chacune dans sa table. On
+// les décrit une fois ici plutôt que d'écrire cinq fois la même fonction
+// de suppression et de lecture — et ça garantit qu'un nouveau type de
+// contenu ne sera pas oublié par la file de signalements.
+const CONTENUS = {
+  comment: { table: "comments", auteur: "user_id", texte: "body", libelle: "Commentaire" },
+  message: { table: "messages", auteur: "from_user_id", texte: "body", libelle: "Message" },
+  deal: { table: "community_deals", auteur: "user_id", texte: "title", libelle: "Deal communautaire" },
+  thread: { table: "forum_threads", auteur: "user_id", texte: "title", libelle: "Sujet du forum" },
+  reply: { table: "forum_replies", auteur: "user_id", texte: "body", libelle: "Réponse du forum" },
+};
+
+const TYPES_CONTENU = Object.keys(CONTENUS);
+
+/** Le contenu visé existe-t-il ? Renvoie son auteur et un extrait, ou null. */
+function lireContenu(type, id) {
+  const c = CONTENUS[type];
+  if (!c || !id) return null;
+  const row = db
+    .prepare(`SELECT id, ${c.auteur} AS auteur_id, ${c.texte} AS extrait, created_at FROM ${c.table} WHERE id = ?`)
+    .get(id);
+  if (!row) return null;
+  const auteur = db
+    .prepare("SELECT COALESCE(NULLIF(pseudo, ''), 'Membre #' || id) AS nom FROM users WHERE id = ?")
+    .get(row.auteur_id);
+  return {
+    type,
+    libelle: c.libelle,
+    id: row.id,
+    auteurId: row.auteur_id,
+    auteur: auteur ? auteur.nom : "compte supprimé",
+    extrait: String(row.extrait || "").slice(0, 240),
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Supprime un contenu, quel qu'il soit, et consigne l'action.
+ * @returns {{ok:true, contenu:object} | {ok:false, error:string}}
+ */
+function supprimerContenu(adminId, type, id, motif) {
+  const c = CONTENUS[type];
+  if (!c) return { ok: false, error: "Type de contenu inconnu." };
+  const contenu = lireContenu(type, id);
+  if (!contenu) return { ok: false, error: "Ce contenu n'existe plus." };
+
+  const tout = db.transaction(() => {
+    db.prepare(`DELETE FROM ${c.table} WHERE id = ?`).run(id);
+    // Les signalements qui visaient ce contenu n'ont plus d'objet.
+    db.prepare("UPDATE reports SET status = 'traite', handled_by = ?, handled_at = datetime('now') WHERE content_type = ? AND content_id = ? AND status = 'ouvert'")
+      .run(adminId, type, id);
+    journaliser(adminId, "suppression", {
+      contentType: type,
+      contentId: id,
+      targetUserId: contenu.auteurId,
+      detail: motif ? `${motif} — « ${contenu.extrait.slice(0, 120)} »` : `« ${contenu.extrait.slice(0, 120)} »`,
+    });
+  });
+  tout();
+  return { ok: true, contenu };
+}
+
+/** Écrit une ligne dans le journal de modération. */
+function journaliser(adminId, action, { contentType, contentId, targetUserId, detail } = {}) {
+  db.prepare(
+    `INSERT INTO moderation_log (admin_id, action, content_type, content_id, target_user_id, detail)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(adminId || null, action, contentType || null, contentId || null, targetUserId || null, detail || null);
+}
+
+/** Journal de modération, du plus récent au plus ancien. */
+function listModerationLog(limit = 100) {
+  return db
+    .prepare(
+      `SELECT l.*,
+              COALESCE(NULLIF(a.pseudo, ''), a.email) AS admin_nom,
+              COALESCE(NULLIF(t.pseudo, ''), 'Membre #' || t.id) AS cible_nom
+       FROM moderation_log l
+       LEFT JOIN users a ON a.id = l.admin_id
+       LEFT JOIN users t ON t.id = l.target_user_id
+       ORDER BY l.id DESC LIMIT ?`
+    )
+    .all(limit);
+}
+
+// ── Signalements ─────────────────────────────────────────────────
+function signalerContenu(reporterId, type, id, reason, note) {
+  if (!CONTENUS[type]) return { ok: false, error: "Type de contenu inconnu." };
+  const contenu = lireContenu(type, id);
+  if (!contenu) return { ok: false, error: "Ce contenu n'existe plus." };
+  if (contenu.auteurId === reporterId) return { ok: false, error: "Inutile de signaler son propre contenu." };
+  try {
+    db.prepare(
+      "INSERT INTO reports (reporter_id, content_type, content_id, reason, note) VALUES (?, ?, ?, ?, ?)"
+    ).run(reporterId, type, id, reason, note || null);
+  } catch (e) {
+    // Deuxième signalement du même contenu par la même personne : ce n'est
+    // pas une erreur de son point de vue, le signalement est déjà pris en compte.
+    if (/UNIQUE constraint/i.test(e.message)) return { ok: true, deja: true };
+    throw e;
+  }
+  return { ok: true };
+}
+
+/**
+ * File de signalements. Chaque ligne est enrichie du contenu visé — s'il a
+ * disparu entre-temps, on le dit plutôt que d'afficher une ligne vide.
+ */
+function listReports(statut = "ouvert", limit = 100) {
+  const rows = db
+    .prepare(
+      `SELECT r.*, COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS signale_par
+       FROM reports r JOIN users u ON u.id = r.reporter_id
+       WHERE (? = 'tous' OR r.status = ?)
+       ORDER BY r.id DESC LIMIT ?`
+    )
+    .all(statut, statut, limit);
+  return rows.map((r) => ({ ...r, contenu: lireContenu(r.content_type, r.content_id) }));
+}
+
+function countOpenReports() {
+  return db.prepare("SELECT COUNT(*) AS n FROM reports WHERE status = 'ouvert'").get().n;
+}
+
+/** Classe un signalement sans supprimer le contenu (fausse alerte). */
+function rejeterSignalement(adminId, reportId) {
+  const info = db
+    .prepare("UPDATE reports SET status = 'rejete', handled_by = ?, handled_at = datetime('now') WHERE id = ? AND status = 'ouvert'")
+    .run(adminId, reportId);
+  if (info.changes > 0) journaliser(adminId, "signalement rejeté", { contentId: reportId });
+  return info.changes > 0;
+}
+
+// ── Suspension d'un membre ───────────────────────────────────────
+/**
+ * Suspend un membre pour un nombre de jours donné. `jours = 0` lève la
+ * suspension. On ne touche pas à ses contenus : suspendre n'est pas punir
+ * rétroactivement, c'est empêcher de publier.
+ */
+function suspendreMembre(adminId, userId, jours, motif) {
+  const cible = db.prepare("SELECT id, role FROM users WHERE id = ?").get(userId);
+  if (!cible) return { ok: false, error: "Membre introuvable." };
+  if (cible.role === "admin") return { ok: false, error: "Un administrateur ne peut pas être suspendu." };
+
+  if (!jours || jours <= 0) {
+    db.prepare("UPDATE users SET suspended_until = NULL, suspension_reason = NULL WHERE id = ?").run(userId);
+    journaliser(adminId, "levée de suspension", { targetUserId: userId });
+    return { ok: true, jusquA: null };
+  }
+  const jusquA = new Date(Date.now() + jours * 86400000).toISOString().slice(0, 19).replace("T", " ");
+  db.prepare("UPDATE users SET suspended_until = ?, suspension_reason = ? WHERE id = ?")
+    .run(jusquA, motif || null, userId);
+  journaliser(adminId, "suspension", { targetUserId: userId, detail: `${jours} jour(s)${motif ? " — " + motif : ""}` });
+  return { ok: true, jusquA };
+}
+
+/** Suspension en cours d'un membre, ou null. Les suspensions expirées sont ignorées. */
+function suspensionEnCours(userId) {
+  const u = db.prepare("SELECT suspended_until, suspension_reason FROM users WHERE id = ?").get(userId);
+  if (!u || !u.suspended_until) return null;
+  const fin = new Date(u.suspended_until.replace(" ", "T") + "Z");
+  if (fin <= new Date()) return null;
+  return { jusquA: u.suspended_until, motif: u.suspension_reason };
+}
+
+// ── Rôles ────────────────────────────────────────────────────────
+const ROLES = ["user", "moderator", "admin"];
+
+/**
+ * Change le rôle d'un membre. Réservé aux administrateurs : un modérateur
+ * ne peut pas se promouvoir lui-même ni nommer quelqu'un.
+ */
+function definirRole(adminId, userId, role) {
+  if (!ROLES.includes(role)) return { ok: false, error: "Rôle inconnu." };
+  if (adminId === userId) return { ok: false, error: "On ne change pas son propre rôle." };
+  const cible = db.prepare("SELECT id FROM users WHERE id = ?").get(userId);
+  if (!cible) return { ok: false, error: "Membre introuvable." };
+  db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, userId);
+  journaliser(adminId, "changement de rôle", { targetUserId: userId, detail: role });
+  return { ok: true };
+}
+
+// ── Épinglage d'un deal ──────────────────────────────────────────
+function epinglerDeal(adminId, dealId, epingle) {
+  const deal = db.prepare("SELECT id FROM community_deals WHERE id = ?").get(dealId);
+  if (!deal) return { ok: false, error: "Deal introuvable." };
+  db.prepare("UPDATE community_deals SET pinned_at = ? WHERE id = ?")
+    .run(epingle ? new Date().toISOString().slice(0, 19).replace("T", " ") : null, dealId);
+  journaliser(adminId, epingle ? "deal épinglé" : "deal désépinglé", { contentType: "deal", contentId: dealId });
+  return { ok: true };
+}
+
 module.exports = {
   db,
+  TYPES_CONTENU,
+  lireContenu,
+  supprimerContenu,
+  journaliser,
+  listModerationLog,
+  signalerContenu,
+  listReports,
+  countOpenReports,
+  rejeterSignalement,
+  suspendreMembre,
+  suspensionEnCours,
+  definirRole,
+  epinglerDeal,
   SEUIL_DEAL_VALIDE,
   findUserByHandle,
   publicProfile,

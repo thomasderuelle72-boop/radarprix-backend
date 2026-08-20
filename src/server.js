@@ -46,6 +46,19 @@ const {
   listConversationsFor,
   markConversationRead,
   countUnreadMessages,
+  TYPES_CONTENU,
+  lireContenu,
+  supprimerContenu,
+  journaliser,
+  listModerationLog,
+  signalerContenu,
+  listReports,
+  countOpenReports,
+  rejeterSignalement,
+  suspendreMembre,
+  suspensionEnCours,
+  definirRole,
+  epinglerDeal,
   submitCommunityDeal,
   getCommunityDeal,
   merchantReliability,
@@ -112,6 +125,30 @@ async function scanQuery(query, category = "tout") {
 // et "reconditionne" (ou une saisie sans accent côté utilisateur) matchent.
 function foldAccents(s) {
   return (s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+
+/**
+ * Un membre suspendu peut continuer à lire le site, mais plus à y publier.
+ * Le contrôle vit ici plutôt que dans chaque route : il y a huit points de
+ * publication, en oublier un viderait la sanction de son sens.
+ */
+function refuserSiSuspendu(req, res, next) {
+  const s = suspensionEnCours(req.user.sub);
+  if (!s) return next();
+  const fin = new Date(s.jusquA.replace(" ", "T") + "Z").toLocaleDateString("fr-FR");
+  return res.status(403).json({
+    error: `Ton compte est suspendu jusqu'au ${fin}${s.motif ? " — " + s.motif : ""}.`,
+    suspendu: true,
+  });
+}
+
+/** Modérateur ou administrateur : accès aux outils de modération. */
+function requireModerator(req, res, next) {
+  if (req.user?.role !== "admin" && req.user?.role !== "moderator") {
+    return res.status(403).json({ error: "Accès réservé à la modération." });
+  }
+  next();
 }
 
 // GET /api/deals?category=gaming&page=1&pageSize=15&q=pc
@@ -321,7 +358,7 @@ app.get("/api/comments", (req, res) => {
   res.json({ items: listComments(query) });
 });
 
-app.post("/api/comments", requireAuth, (req, res) => {
+app.post("/api/comments", requireAuth, refuserSiSuspendu, (req, res) => {
   const { query, body } = req.body || {};
   if (!query) return res.status(400).json({ error: "Paramètre 'query' requis." });
   const texte = validerTexte(body, "comment");
@@ -432,7 +469,7 @@ app.get("/api/chat/public", (req, res) => {
   res.json({ items: listPublicMessages(afterId) });
 });
 
-app.post("/api/chat/public", requireAuth, (req, res) => {
+app.post("/api/chat/public", requireAuth, refuserSiSuspendu, (req, res) => {
   const texte = validerTexte(req.body?.body, "message");
   if (!texte.ok) return res.status(400).json({ error: texte.error });
   // Salon en direct : plafond plus haut qu'ailleurs, une conversation
@@ -463,7 +500,7 @@ app.get("/api/chat/with/:userId", requireAuth, (req, res) => {
   res.json({ items: listConversation(req.user.sub, otherId) });
 });
 
-app.post("/api/chat/with/:userId", requireAuth, (req, res) => {
+app.post("/api/chat/with/:userId", requireAuth, refuserSiSuspendu, (req, res) => {
   const otherId = parseInt(req.params.userId, 10);
   const { body } = req.body || {};
   if (!otherId) return res.status(400).json({ error: "Identifiant invalide." });
@@ -491,6 +528,13 @@ app.get("/api/community/deals", optionalAuth, (req, res) => {
   if (sort === "hot") {
     rows.sort((a, b) => hotScore(b.upvotes, b.downvotes, b.created_at) - hotScore(a.upvotes, a.downvotes, a.created_at));
   }
+  // Les deals épinglés passent devant, quel que soit le tri demandé : c'est
+  // tout l'intérêt de l'épinglage. Entre eux, le plus récemment épinglé
+  // d'abord ; le reste garde l'ordre déjà calculé.
+  rows.sort((a, b) => {
+    if (Boolean(a.pinned_at) === Boolean(b.pinned_at)) return 0;
+    return a.pinned_at ? -1 : 1;
+  });
   const total = rows.length;
   const start = (page - 1) * pageSize;
   const items = rows.slice(start, start + pageSize).map((d) => ({
@@ -517,7 +561,7 @@ function normaliserExpiration(valeur) {
 }
 
 // POST /api/community/deals  { title, description?, url?, price?, imageUrl?, category?, seller?, expiresAt? }
-app.post("/api/community/deals", requireAuth, (req, res) => {
+app.post("/api/community/deals", requireAuth, refuserSiSuspendu, (req, res) => {
   const { title, description, url, price, imageUrl, category, seller, expiresAt } = req.body || {};
   const titreOk = validerTexte(title, "dealTitle");
   if (!titreOk.ok) return res.status(400).json({ error: titreOk.error });
@@ -554,7 +598,7 @@ app.get("/api/merchants/reliability", (req, res) => {
 });
 
 // POST /api/community/deals/:id/vote  { value: 1 | -1 }
-app.post("/api/community/deals/:id/vote", requireAuth, (req, res) => {
+app.post("/api/community/deals/:id/vote", requireAuth, refuserSiSuspendu, (req, res) => {
   const dealId = parseInt(req.params.id, 10);
   const { value } = req.body || {};
   if (!dealId) return res.status(400).json({ error: "Identifiant invalide." });
@@ -587,7 +631,7 @@ app.get("/api/forum/categories/:slug/threads", (req, res) => {
 });
 
 // POST /api/forum/categories/:slug/threads  { title, body }
-app.post("/api/forum/categories/:slug/threads", requireAuth, (req, res) => {
+app.post("/api/forum/categories/:slug/threads", requireAuth, refuserSiSuspendu, (req, res) => {
   const cat = getForumCategoryBySlug(req.params.slug);
   if (!cat) return res.status(404).json({ error: "Catégorie introuvable." });
   const { title, body } = req.body || {};
@@ -610,7 +654,7 @@ app.get("/api/forum/threads/:id", (req, res) => {
 });
 
 // POST /api/forum/threads/:id/replies  { body }
-app.post("/api/forum/threads/:id/replies", requireAuth, (req, res) => {
+app.post("/api/forum/threads/:id/replies", requireAuth, refuserSiSuspendu, (req, res) => {
   const threadId = parseInt(req.params.id, 10);
   const thread = threadId && getForumThread(threadId);
   if (!thread) return res.status(404).json({ error: "Sujet introuvable." });
@@ -624,6 +668,80 @@ app.post("/api/forum/threads/:id/replies", requireAuth, (req, res) => {
 });
 
 // ── Administration (réservé au créateur du site) ────────────────
+
+
+// ── Signalement d'un contenu (côté membre) ──────────────────────
+
+const MOTIFS_SIGNALEMENT = ["spam", "arnaque", "offensant", "hors-sujet", "doublon", "autre"];
+
+// POST /api/reports  { type, id, reason, note? }
+app.post("/api/reports", requireAuth, (req, res) => {
+  const { type, id, reason, note } = req.body || {};
+  if (!TYPES_CONTENU.includes(type)) return res.status(400).json({ error: "Type de contenu inconnu." });
+  if (!MOTIFS_SIGNALEMENT.includes(reason)) return res.status(400).json({ error: "Motif invalide." });
+  if (note && String(note).length > 500) return res.status(400).json({ error: "Précision trop longue." });
+  // Un signalement coûte peu à envoyer et beaucoup à traiter : on plafonne.
+  const debit = limiterFrequence(req.user.sub, "report", 10, 600000);
+  if (!debit.ok) return res.status(429).json({ error: debit.error });
+
+  const r = signalerContenu(req.user.sub, type, parseInt(id, 10), reason, note);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.status(201).json({ ok: true, deja: Boolean(r.deja) });
+});
+
+// GET /api/reports/motifs — la liste que le formulaire doit proposer.
+app.get("/api/reports/motifs", (req, res) => res.json({ motifs: MOTIFS_SIGNALEMENT }));
+
+// ── Modération (modérateur ou administrateur) ────────────────────
+
+// GET /api/moderation/reports?status=ouvert
+app.get("/api/moderation/reports", requireAuth, requireModerator, (req, res) => {
+  const statut = ["ouvert", "traite", "rejete", "tous"].includes(req.query.status) ? req.query.status : "ouvert";
+  res.json({ items: listReports(statut), ouverts: countOpenReports() });
+});
+
+// DELETE /api/moderation/content/:type/:id  { motif? }
+app.delete("/api/moderation/content/:type/:id", requireAuth, requireModerator, (req, res) => {
+  const { type, id } = req.params;
+  const r = supprimerContenu(req.user.sub, type, parseInt(id, 10), req.body?.motif);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json({ ok: true, supprime: r.contenu, ouverts: countOpenReports() });
+});
+
+// POST /api/moderation/reports/:id/reject — fausse alerte, on classe sans suite.
+app.post("/api/moderation/reports/:id/reject", requireAuth, requireModerator, (req, res) => {
+  const fait = rejeterSignalement(req.user.sub, parseInt(req.params.id, 10));
+  if (!fait) return res.status(404).json({ error: "Signalement introuvable ou déjà traité." });
+  res.json({ ok: true, ouverts: countOpenReports() });
+});
+
+// POST /api/moderation/users/:id/suspend  { jours, motif? }  (jours = 0 : lever)
+app.post("/api/moderation/users/:id/suspend", requireAuth, requireModerator, (req, res) => {
+  const jours = Math.min(365, Math.max(0, parseInt(req.body?.jours, 10) || 0));
+  const r = suspendreMembre(req.user.sub, parseInt(req.params.id, 10), jours, req.body?.motif);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json({ ok: true, jusquA: r.jusquA });
+});
+
+// POST /api/moderation/deals/:id/pin  { epingle: true|false }
+app.post("/api/moderation/deals/:id/pin", requireAuth, requireModerator, (req, res) => {
+  const r = epinglerDeal(req.user.sub, parseInt(req.params.id, 10), Boolean(req.body?.epingle));
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json({ ok: true });
+});
+
+// GET /api/moderation/log — journal des actions.
+app.get("/api/moderation/log", requireAuth, requireModerator, (req, res) => {
+  res.json({ items: listModerationLog(Math.min(300, parseInt(req.query.limit, 10) || 100)) });
+});
+
+// ── Rôles (administrateur seulement) ─────────────────────────────
+// POST /api/admin/users/:id/role  { role }
+app.post("/api/admin/users/:id/role", requireAuth, requireAdmin, (req, res) => {
+  const r = definirRole(req.user.sub, parseInt(req.params.id, 10), req.body?.role);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json({ ok: true });
+});
 
 app.get("/api/admin/stats", requireAuth, requireAdmin, (req, res) => {
   res.json({
@@ -642,6 +760,11 @@ app.get("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
 // bouton à utiliser avec modération, pas pour un rafraîchissement en boucle.
 app.post("/api/admin/trigger-scan", requireAuth, requireAdmin, async (req, res) => {
   const size = Math.min(20, Math.max(1, parseInt(req.body?.size, 10) || 10));
+  // Chaque produit scanné consomme une requête SerpApi, et le quota est
+  // mensuel : quelques clics rapides pouvaient vider ce qui restait. Deux
+  // lancements par quart d'heure suffisent largement à un usage manuel.
+  const debit = limiterFrequence(req.user.sub, "scan-manuel", 2, 900000);
+  if (!debit.ok) return res.status(429).json({ error: debit.error });
   try {
     const results = await runCatalogBatch(size);
     res.json({ scanned: results.length, results });
