@@ -129,7 +129,16 @@ function calculerBadges(evenements, maintenant = new Date()) {
     }
   }
 
-  return obtenus.sort((a, b) => String(b.obtenuLe).localeCompare(String(a.obtenuLe)));
+  // Du plus récemment obtenu au plus ancien. À date égale — plusieurs
+  // paliers franchis dans la même seconde, ce qui arrive à un membre actif —
+  // on regroupe par famille et on classe du plus haut échelon au plus bas,
+  // sinon l'ordre dépendrait du hasard et changerait d'un affichage à l'autre.
+  return obtenus.sort(
+    (a, b) =>
+      String(b.obtenuLe).localeCompare(String(a.obtenuLe)) ||
+      a.famille.localeCompare(b.famille) ||
+      b.niveau - a.niveau
+  );
 }
 
 /**

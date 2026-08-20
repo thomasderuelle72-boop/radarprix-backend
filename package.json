@@ -21,5 +21,8 @@
     "jsonwebtoken": "^9.0.3",
     "node-cron": "^4.6.0",
     "puppeteer-core": "^25.8.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.1"
   }
 }
