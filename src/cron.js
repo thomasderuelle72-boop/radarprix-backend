@@ -16,6 +16,7 @@ const cron = require("node-cron");
 const { runCatalogBatch, PRODUCTS } = require("./scanBatch");
 const { collecterTout } = require("./sources");
 const { purgerDeals } = require("./dealsStore");
+const { surveiller } = require("./watch");
 
 const BATCH_SIZE = parseInt(process.env.CRON_BATCH_SIZE || "10", 10);
 const SCHEDULE = process.env.CRON_SCHEDULE || "0 */2 * * *"; // toutes les 2h par défaut
@@ -26,6 +27,13 @@ const SCHEDULE = process.env.CRON_SCHEDULE || "0 */2 * * *"; // toutes les 2h pa
 // même fréquence reviendrait à s'imposer la contrainte de la source la plus
 // chère sur des sources qui n'en ont aucune.
 const SCHEDULE_FLUX = process.env.CRON_FLUX_SCHEDULE || "*/30 * * * *"; // toutes les 30 min
+
+// La surveillance des fiches marchandes est la cadence qui compte vraiment :
+// c'est elle qui décide si une erreur de prix vivant vingt minutes est vue ou
+// manquée. Toutes les quinze minutes, la probabilité de capture passe de ~2 %
+// à un ordre de grandeur tout autre — et cela ne coûte que de la bande
+// passante, puisqu'on lit les fiches et non une API facturée à la requête.
+const SCHEDULE_WATCH = process.env.CRON_WATCH_SCHEDULE || "*/15 * * * *";
 
 async function tick() {
   const results = await runCatalogBatch(BATCH_SIZE);
@@ -53,17 +61,37 @@ async function tickFlux() {
   }
 }
 
+/** Surveillance des fiches marchandes (détecteur D3, erreurs de prix). */
+async function tickWatch() {
+  try {
+    const resultats = await surveiller();
+    if (resultats.length === 0) return; // aucune fiche surveillée pour l'instant
+    const anomalies = resultats.filter((r) => r.verdict && r.verdict !== "normal");
+    console.log(
+      `[${new Date().toISOString()}] surveillance : ${resultats.filter((r) => r.ok).length}/${resultats.length} fiche(s), ${anomalies.length} anomalie(s)`
+    );
+    for (const a of anomalies) {
+      console.log(`  → ${a.verdict.toUpperCase()} ${a.prix}€ (réf ${Math.round(a.reference)}€) ${a.url}`);
+    }
+  } catch (e) {
+    console.error(`[${new Date().toISOString()}] surveillance en échec :`, e.message);
+  }
+}
+
 function startCron() {
   cron.schedule(SCHEDULE, tick);
   cron.schedule(SCHEDULE_FLUX, tickFlux);
+  cron.schedule(SCHEDULE_WATCH, tickWatch);
   console.log(`Cron RadarPrix démarré — ${BATCH_SIZE} produits toutes les exécutions (${SCHEDULE}).`);
   console.log(`Collecte des flux gratuits/promotions : ${SCHEDULE_FLUX}.`);
+  console.log(`Surveillance des fiches marchandes : ${SCHEDULE_WATCH}.`);
   console.log(`Catalogue total : ${PRODUCTS.length} produits.`);
   tick(); // premier lot immédiat au démarrage
   tickFlux();
+  tickWatch();
 }
 
-module.exports = { startCron, tick, tickFlux };
+module.exports = { startCron, tick, tickFlux, tickWatch };
 
 // Lancé directement (`npm run cron`), et seulement dans ce cas : pas d'effet
 // de bord au simple require() par server.js.

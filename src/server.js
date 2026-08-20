@@ -108,6 +108,12 @@ const {
   publierDeal, depublierDeal, TYPES_DEAL,
 } = require("./dealsStore");
 const { collecterTout } = require("./sources");
+const {
+  ajouterUrl: ajouterUrlSurveillee,
+  retirerUrl: retirerUrlSurveillee,
+  listerUrls: listerUrlsSurveillees,
+  surveiller: surveillerFiches,
+} = require("./watch");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
 const { hotScore } = require("./ranking");
 const { calculerBadges, prochainsBadges } = require("./badges");
@@ -279,6 +285,38 @@ app.get("/api/feed/occasion", (req, res) => {
 // GET /api/feed/types — ce que le front peut proposer comme filtres, sans
 // avoir à dupliquer la liste des types côté client.
 app.get("/api/feed/types", (req, res) => res.json({ types: TYPES_DEAL }));
+
+// ── Surveillance des fiches marchandes (détecteur D3) ───────────
+// C'est ce qui remplace la recherche large : au lieu d'interroger un
+// agrégateur une fois toutes les seize heures, on relit des fiches précises
+// toutes les quinze minutes, pour un coût en bande passante.
+app.get("/api/admin/watch", requireAuth, requireModerator, (req, res) => {
+  res.json({ urls: listerUrlsSurveillees({ actives: req.query.toutes !== "1" }) });
+});
+
+app.post("/api/admin/watch", requireAuth, requireAdmin, (req, res) => {
+  const { url, label, merchant, category, produit } = req.body || {};
+  if (!url) return res.status(400).json({ error: "Paramètre 'url' requis." });
+  try {
+    res.json({ url: ajouterUrlSurveillee({ url, label, merchant, category, produit }) });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete("/api/admin/watch/:id", requireAuth, requireAdmin, (req, res) => {
+  retirerUrlSurveillee(parseInt(req.params.id, 10));
+  res.json({ ok: true });
+});
+
+app.post("/api/admin/watch/run", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const resultats = await surveillerFiches({ taille: parseInt(req.body?.taille, 10) || undefined });
+    res.json({ verifiees: resultats.length, resultats });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ── Administration du flux ──────────────────────────────────────
 app.post("/api/admin/collecte", requireAuth, requireAdmin, async (req, res) => {
