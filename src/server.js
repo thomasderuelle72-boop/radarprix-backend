@@ -79,6 +79,12 @@ const {
   ajouterCatalogItem,
   basculerCatalogItem,
   supprimerCatalogItem,
+  listUsersAdmin,
+  userAdminSheet,
+  seriesQuotidiennes,
+  membresActifs,
+  exportMembres,
+  exportDeals,
   submitCommunityDeal,
   getCommunityDeal,
   merchantReliability,
@@ -934,11 +940,84 @@ app.delete("/api/admin/catalog/:id", requireAuth, requireAdmin, (req, res) => {
   res.json({ ok: true, ajoutes: listCatalogItems() });
 });
 
-app.get("/api/admin/stats", requireAuth, requireAdmin, (req, res) => {
+
+// ── Membres et statistiques ──────────────────────────────────────
+
+/**
+ * Met une valeur au format CSV : guillemets doublés, champ entouré si
+ * nécessaire. Sans ça, un titre de deal contenant une virgule ou un
+ * point-virgule décalerait toutes les colonnes suivantes du fichier.
+ */
+function champCsv(v) {
+  if (v === null || v === undefined) return "";
+  const s = String(v);
+  return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function versCsv(lignes) {
+  if (lignes.length === 0) return "";
+  const colonnes = Object.keys(lignes[0]);
+  const corps = lignes.map((l) => colonnes.map((c) => champCsv(l[c])).join(";"));
+  // Point-virgule et BOM : c'est ce qu'attend Excel en français, sinon les
+  // accents sortent en charabia et tout tient dans une seule colonne.
+  return "\uFEFF" + [colonnes.join(";"), ...corps].join("\r\n");
+}
+
+// GET /api/admin/members?recherche=&filtre=&tri=&page=
+app.get("/api/admin/members", requireAuth, requireModerator, (req, res) => {
+  const pageSize = Math.min(100, Math.max(10, parseInt(req.query.pageSize, 10) || 40));
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const items = listUsersAdmin({
+    recherche: req.query.recherche || "",
+    filtre: req.query.filtre || "tous",
+    tri: req.query.tri || "recent",
+    limit: pageSize + 1, // une de plus pour savoir s'il reste une page
+    offset: (page - 1) * pageSize,
+  });
+  res.json({ items: items.slice(0, pageSize), hasMore: items.length > pageSize, page, pageSize });
+});
+
+// GET /api/admin/members/:id — fiche complète.
+app.get("/api/admin/members/:id", requireAuth, requireModerator, (req, res) => {
+  const fiche = userAdminSheet(parseInt(req.params.id, 10));
+  if (!fiche) return res.status(404).json({ error: "Membre introuvable." });
+  res.json(fiche);
+});
+
+// GET /api/admin/activity?jours=30 — séries quotidiennes pour les courbes.
+app.get("/api/admin/activity", requireAuth, requireModerator, (req, res) => {
+  const jours = Math.min(90, Math.max(7, parseInt(req.query.jours, 10) || 30));
+  res.json({
+    jours,
+    series: seriesQuotidiennes(jours),
+    membresActifs: membresActifs(jours),
+    totalMembres: countUsers(),
+  });
+});
+
+// GET /api/admin/export/:quoi.csv  (membres | deals)
+app.get("/api/admin/export/:quoi", requireAuth, requireAdmin, (req, res) => {
+  const quoi = String(req.params.quoi).replace(/\.csv$/, "");
+  const sources = { membres: exportMembres, deals: exportDeals };
+  if (!sources[quoi]) return res.status(404).json({ error: "Export inconnu." });
+
+  const csv = versCsv(sources[quoi]());
+  const jour = new Date().toISOString().slice(0, 10);
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="radarprix-${quoi}-${jour}.csv"`);
+  journaliser(req.user.sub, "export", { detail: quoi });
+  res.send(csv);
+});
+
+app.get("/api/admin/stats", requireAuth, requireModerator, (req, res) => {
   res.json({
     totalUsers: countUsers(),
     totalScans: countScans(),
     topProducts: topScannedProducts(10),
+    // Deux chiffres qui appellent une action, là où les deux compteurs
+    // d'origine ne disaient rien de ce qu'il y avait à faire.
+    signalementsOuverts: countOpenReports(),
+    membresActifs30j: membresActifs(30),
   });
 });
 

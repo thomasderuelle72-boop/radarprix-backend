@@ -1716,8 +1716,197 @@ function catalogItemsActifs() {
   return db.prepare("SELECT name, category FROM catalog_items WHERE actif = 1").all();
 }
 
+
+// ── Administration des membres ───────────────────────────────────
+
+/**
+ * Liste des membres avec recherche, filtre et tri. L'ancienne version
+ * renvoyait 200 lignes brutes triées par date, sans même un champ de
+ * recherche : retrouver quelqu'un demandait de parcourir la page à l'œil.
+ *
+ * Chaque ligne est accompagnée de ses compteurs et de son état, pour que la
+ * décision de modération se prenne depuis la liste, sans ouvrir dix fiches.
+ */
+function listUsersAdmin({ recherche = "", filtre = "tous", tri = "recent", limit = 100, offset = 0 } = {}) {
+  const q = `%${String(recherche || "").trim().toLowerCase()}%`;
+  // Ces expressions s'appliquent au résultat de la sous-requête, où l'alias
+  // `u` n'existe plus : elles portent sur les colonnes déjà projetées.
+  const tris = {
+    // Départage par identifiant : les dates SQLite s'arrêtent à la seconde,
+    // et plusieurs inscriptions dans la même seconde se classeraient sinon
+    // au hasard, l'ordre changeant d'un affichage à l'autre.
+    recent: "created_at DESC, id DESC",
+    ancien: "created_at ASC, id ASC",
+    actif: "activite DESC, id DESC",
+    signale: "signalements DESC, activite DESC, id DESC",
+    alpha: "COALESCE(NULLIF(pseudo, ''), email) COLLATE NOCASE ASC",
+  };
+  const ordre = tris[tri] || tris.recent;
+
+  // Comme les tris, ces conditions portent sur la sous-requête : pas d'alias `u`.
+  const conditions = {
+    tous: "1 = 1",
+    suspendus: "suspended_until IS NOT NULL AND suspended_until > datetime('now')",
+    equipe: "role IN ('admin', 'moderator')",
+    signales: "signalements > 0",
+    inactifs: "activite = 0",
+  };
+  const ou = conditions[filtre] || conditions.tous;
+
+  return db
+    .prepare(
+      `SELECT * FROM (
+         SELECT u.id, u.email, u.pseudo, u.role, u.created_at, u.avatar_url,
+                u.suspended_until, u.suspension_reason,
+                (SELECT COUNT(*) FROM community_deals d WHERE d.user_id = u.id) AS deals,
+                (SELECT COUNT(*) FROM comments c WHERE c.user_id = u.id) AS commentaires,
+                (SELECT COUNT(*) FROM messages m WHERE m.from_user_id = u.id) AS messages,
+                (SELECT COUNT(*) FROM forum_threads t WHERE t.user_id = u.id)
+                  + (SELECT COUNT(*) FROM forum_replies r WHERE r.user_id = u.id) AS forum,
+                (SELECT COUNT(*) FROM community_deals d WHERE d.user_id = u.id)
+                  + (SELECT COUNT(*) FROM comments c WHERE c.user_id = u.id)
+                  + (SELECT COUNT(*) FROM messages m WHERE m.from_user_id = u.id)
+                  + (SELECT COUNT(*) FROM forum_threads t WHERE t.user_id = u.id)
+                  + (SELECT COUNT(*) FROM forum_replies r WHERE r.user_id = u.id) AS activite,
+                -- Signalements visant les contenus de ce membre, toutes
+                -- natures confondues : c'est le chiffre qui déclenche une
+                -- vérification, bien plus que le volume publié.
+                (SELECT COUNT(*) FROM reports rp
+                   WHERE rp.status = 'ouvert' AND (
+                     (rp.content_type = 'deal' AND rp.content_id IN (SELECT id FROM community_deals WHERE user_id = u.id))
+                     OR (rp.content_type = 'comment' AND rp.content_id IN (SELECT id FROM comments WHERE user_id = u.id))
+                     OR (rp.content_type = 'message' AND rp.content_id IN (SELECT id FROM messages WHERE from_user_id = u.id))
+                     OR (rp.content_type = 'thread' AND rp.content_id IN (SELECT id FROM forum_threads WHERE user_id = u.id))
+                     OR (rp.content_type = 'reply' AND rp.content_id IN (SELECT id FROM forum_replies WHERE user_id = u.id))
+                   )) AS signalements
+         FROM users u
+         WHERE (? = '%%' OR lower(u.email) LIKE ? OR lower(COALESCE(u.pseudo, '')) LIKE ?)
+       )
+       WHERE ${ou}
+       ORDER BY ${ordre}
+       LIMIT ? OFFSET ?`
+    )
+    .all(q, q, q, limit, offset);
+}
+
+/** Fiche complète d'un membre, côté administration. */
+function userAdminSheet(userId) {
+  const u = db.prepare("SELECT id, email, pseudo, role, avatar_url, created_at, suspended_until, suspension_reason FROM users WHERE id = ?").get(userId);
+  if (!u) return null;
+  return {
+    membre: u,
+    suspension: suspensionEnCours(userId),
+    stats: userStats(userId),
+    activite: userActivity(userId, 30),
+    // Ce qui a été fait à ce membre, et ce qu'il a signalé lui-même.
+    sanctions: db
+      .prepare(
+        `SELECT l.*, COALESCE(NULLIF(a.pseudo, ''), a.email) AS admin_nom
+         FROM moderation_log l LEFT JOIN users a ON a.id = l.admin_id
+         WHERE l.target_user_id = ? ORDER BY l.id DESC LIMIT 30`
+      )
+      .all(userId),
+    signalementsDeposes: db
+      .prepare("SELECT COUNT(*) AS n FROM reports WHERE reporter_id = ?").get(userId).n,
+  };
+}
+
+/**
+ * Séries quotidiennes sur N jours : inscriptions et contenus publiés.
+ *
+ * Les jours sans rien doivent apparaître à zéro, sinon la courbe se
+ * resserre sur les seuls jours actifs et donne une fausse impression de
+ * régularité. SQLite n'a pas de générateur de dates : on construit la
+ * grille en JavaScript et on y verse les comptages.
+ */
+function seriesQuotidiennes(jours = 30) {
+  const grille = [];
+  const index = new Map();
+  for (let i = jours - 1; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    const ligne = { jour: d, inscriptions: 0, deals: 0, commentaires: 0, messages: 0, forum: 0 };
+    grille.push(ligne);
+    index.set(d, ligne);
+  }
+
+  // Le forum vit dans deux tables (sujets et réponses) : on les additionne
+  // pour n'avoir qu'une seule courbe « participation au forum ».
+  const SOURCES = {
+    inscriptions: ["users"],
+    deals: ["community_deals"],
+    commentaires: ["comments"],
+    messages: ["messages"],
+    forum: ["forum_threads", "forum_replies"],
+  };
+
+  for (const [champ, tables] of Object.entries(SOURCES)) {
+    for (const table of tables) {
+      const lignes = db
+        .prepare(
+          `SELECT date(created_at) AS jour, COUNT(*) AS n FROM ${table}
+           WHERE created_at > datetime('now', '-' || ? || ' day') GROUP BY jour`
+        )
+        .all(jours);
+      for (const r of lignes) {
+        const ligne = index.get(r.jour);
+        if (ligne) ligne[champ] += r.n;
+      }
+    }
+  }
+  return grille;
+}
+
+/** Membres ayant publié quelque chose sur les N derniers jours. */
+function membresActifs(jours = 30) {
+  return db
+    .prepare(
+      `SELECT COUNT(DISTINCT auteur) AS n FROM (
+         SELECT user_id AS auteur, created_at FROM community_deals
+         UNION ALL SELECT user_id, created_at FROM comments
+         UNION ALL SELECT from_user_id, created_at FROM messages
+         UNION ALL SELECT user_id, created_at FROM forum_threads
+         UNION ALL SELECT user_id, created_at FROM forum_replies
+       ) WHERE created_at > datetime('now', '-' || ? || ' day')`
+    )
+    .get(jours).n;
+}
+
+/** Lignes brutes pour un export CSV — aucune mise en forme ici. */
+function exportMembres() {
+  return db
+    .prepare(
+      `SELECT u.id, u.email, u.pseudo, u.role, u.created_at, u.suspended_until,
+              (SELECT COUNT(*) FROM community_deals d WHERE d.user_id = u.id) AS deals,
+              (SELECT COUNT(*) FROM comments c WHERE c.user_id = u.id) AS commentaires,
+              (SELECT COUNT(*) FROM follows f WHERE f.followed_id = u.id) AS abonnes
+       FROM users u ORDER BY u.id`
+    )
+    .all();
+}
+
+function exportDeals() {
+  return db
+    .prepare(
+      `SELECT d.id, d.title, d.price, d.seller, d.category, d.url, d.created_at, d.expires_at,
+              COALESCE(NULLIF(u.pseudo, ''), 'Membre #' || u.id) AS auteur,
+              COALESCE(SUM(CASE WHEN v.value = 1 THEN 1 ELSE 0 END), 0) AS votes_pour,
+              COALESCE(SUM(CASE WHEN v.value = -1 THEN 1 ELSE 0 END), 0) AS votes_contre
+       FROM community_deals d
+       JOIN users u ON u.id = d.user_id
+       LEFT JOIN community_votes v ON v.deal_id = d.id
+       GROUP BY d.id ORDER BY d.id`
+    )
+    .all();
+}
+
 module.exports = {
   db,
+  listUsersAdmin,
+  userAdminSheet,
+  seriesQuotidiennes,
+  membresActifs,
+  exportMembres,
+  exportDeals,
   REGLAGES_DEFAUT,
   reglages,
   reglagesDetailles,
