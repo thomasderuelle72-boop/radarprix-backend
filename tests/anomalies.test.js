@@ -384,7 +384,37 @@ describe("amorçage de la surveillance", () => {
     expect(rejeu.ajoutees).toBe(0);
   });
 
+  it("remplace le lien d'agrégateur par le vrai lien marchand une fois résolu", () => {
+    const { enregistrerLienMarchand } = require("../src/db.js");
+    // Ce que stocke un scan : le lien de l'agrégateur, seul disponible.
+    insertSnapshots("tablette test lien", "hightech", [
+      { name: "Tablette Test Lien", price: 299, seller: "Fnac", url: "https://www.google.com/shopping/product/42" },
+    ]);
+    // Sans résolution, l'amorçage l'écarte — ce n'est pas une fiche marchande.
+    expect(amorcerDepuisSnapshots({ limite: 40 }).ajoutees).toBe(0);
+
+    // Le lien résolu coûte une requête facturée : il doit être conservé.
+    const modifiees = enregistrerLienMarchand("Tablette Test Lien", "Fnac", "https://www.fnac.com/a999/tablette");
+    expect(modifiees).toBeGreaterThan(0);
+
+    expect(amorcerDepuisSnapshots({ limite: 40 }).ajoutees).toBe(1);
+    expect(listerUrls().map((u) => u.url)).toContain("https://www.fnac.com/a999/tablette");
+  });
+
+  it("n'écrase pas un vrai lien marchand déjà connu", () => {
+    const { enregistrerLienMarchand } = require("../src/db.js");
+    insertSnapshots("montre test lien", "hightech", [
+      { name: "Montre Test Lien", price: 199, seller: "Darty", url: "https://www.darty.com/vrai-lien" },
+    ]);
+    // La condition ne vise que les liens absents ou d'agrégateur : un lien
+    // marchand déjà en base est plus fiable que celui qu'on viendrait poser.
+    expect(enregistrerLienMarchand("Montre Test Lien", "Darty", "https://www.darty.com/autre")).toBe(0);
+  });
+
   it("écarte les marchands inconnus, sauf demande explicite", () => {
+    // On vide d'abord la file des candidats laissés par les tests
+    // précédents : sans cela, on mesurerait leur effet et non le nôtre.
+    amorcerDepuisSnapshots({ limite: 100 });
     insertSnapshots("the test amorcage", "tout", [
       { name: "Thé Test Amorçage", price: 12, seller: "Luna Gourmet", url: "https://lunagourmet.example/amorcage-5" },
     ]);

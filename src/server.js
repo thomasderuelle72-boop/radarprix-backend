@@ -86,6 +86,7 @@ const {
   removeCommunityVote,
   getUserVote,
   fermerBase,
+  enregistrerLienMarchand,
 } = require("./db");
 const {
   sendMessage, listPublicMessages, listConversation,
@@ -101,7 +102,7 @@ const {
   listDeals: listDealsUnifies, statsDeals, getDeal: getDealUnifie,
   publierDeal, depublierDeal, TYPES_DEAL, reappliquerRegles,
 } = require("./dealsStore");
-const { meritePublication } = require("./curation");
+const { meritePublication, marchandRetenu } = require("./curation");
 const { collecterTout } = require("./sources");
 const {
   ajouterUrl: ajouterUrlSurveillee,
@@ -241,6 +242,29 @@ async function scanQuery(query, category = "tout") {
     if (item._token) {
       const directLink = await resolveDirectLink(item._token, item.seller, item.price);
       item.url = directLink || null; // jamais le lien Google en repli : soit le vrai lien, soit rien
+      if (directLink) {
+        // Ce lien a coûté une requête facturée. Il était jusqu'ici renvoyé à
+        // l'écran puis oublié : on le conserve, et on met la fiche sous
+        // surveillance quand l'enseigne le mérite. Chaque recherche enrichit
+        // ainsi le radar pour tout le monde, au lieu de ne servir que son
+        // auteur le temps d'un affichage.
+        try {
+          enregistrerLienMarchand(item.name, item.seller, directLink);
+          if (marchandRetenu(item.seller)) {
+            ajouterUrlSurveillee({
+              url: directLink,
+              label: item.name,
+              merchant: item.seller,
+              category,
+              produit: item.name,
+            });
+          }
+        } catch (e) {
+          // Une fiche non enregistrée ne doit pas faire échouer la recherche
+          // que le visiteur attend.
+          console.error(`[scan] mise sous surveillance impossible : ${e.message}`);
+        }
+      }
     } else {
       item.url = null;
     }

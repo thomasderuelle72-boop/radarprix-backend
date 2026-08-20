@@ -1784,6 +1784,28 @@ function exportDeals() {
 }
 
 /**
+ * Enregistre le vrai lien marchand d'une offre, une fois résolu.
+ *
+ * Les scans stockent le lien de l'agrégateur (product_link), pas celui du
+ * marchand : c'est tout ce que renvoie la recherche. Le vrai lien demande une
+ * requête supplémentaire, facturée — et son résultat n'était jusqu'ici que
+ * renvoyé à l'écran, jamais conservé. Chaque scan achetait donc cette
+ * information puis la jetait, et la surveillance des fiches n'avait aucune
+ * adresse exploitable à se mettre sous la dent.
+ */
+function enregistrerLienMarchand(name, seller, url) {
+  if (!url || !name) return 0;
+  const info = db
+    .prepare(
+      `UPDATE snapshots SET url = ?
+       WHERE product_key = ? AND seller IS ?
+         AND (url IS NULL OR url = '' OR url LIKE '%google.%')`
+    )
+    .run(url, productKey(name), seller || null);
+  return info.changes;
+}
+
+/**
  * Déclenche une copie de sécurité de la base à chaud.
  *
  * `sauvegarderBase` tourne déjà à l'ouverture du fichier, donc une fois par
@@ -1814,6 +1836,7 @@ function fermerBase() {
 module.exports = {
   db,
   fermerBase,
+  enregistrerLienMarchand,
   sauvegarderMaintenant,
   listUsersAdmin,
   userAdminSheet,
