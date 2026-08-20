@@ -109,6 +109,7 @@ const {
   listerUrls: listerUrlsSurveillees,
   surveiller: surveillerFiches,
 } = require("./watch");
+const { amorcerDepuisSnapshots } = require("./watchSeed");
 const { indicateurs, manquees, noterDeal, ingererVeriteTerrain } = require("./mesure");
 const { classement: classementMarchands } = require("./reputation");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
@@ -450,6 +451,22 @@ app.post("/api/admin/watch", requireAuth, requireAdmin, (req, res) => {
 app.delete("/api/admin/watch/:id", requireAuth, requireAdmin, (req, res) => {
   retirerUrlSurveillee(parseInt(req.params.id, 10));
   res.json({ ok: true });
+});
+
+// Amorce la surveillance à partir des fiches déjà observées lors des scans
+// passés. C'est ce qui met le détecteur D3 en route : il est complet mais ne
+// surveille que ce qu'on lui donne, et la liste part vide.
+app.post("/api/admin/watch/amorcer", requireAuth, requireAdmin, (req, res) => {
+  try {
+    res.json(
+      amorcerDepuisSnapshots({
+        limite: parseInt(req.body?.limite, 10) || undefined,
+        toutMarchand: Boolean(req.body?.toutMarchand),
+      })
+    );
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post("/api/admin/watch/run", requireAuth, requireAdmin, async (req, res) => {

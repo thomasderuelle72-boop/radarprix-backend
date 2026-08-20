@@ -339,3 +339,56 @@ describe("surveillance de fiches (constat F1)", () => {
     expect(watch.domaineDe("nawak")).toBeNull();
   });
 });
+
+describe("amorçage de la surveillance", () => {
+  const { amorcerDepuisSnapshots, estFicheMarchande } = require("../src/watchSeed.js");
+  const { insertSnapshots } = require("../src/db.js");
+  const { listerUrls } = require("../src/watch.js");
+
+  it("écarte les liens d'agrégateur, qui ne sont pas des fiches marchandes", () => {
+    // Relire une page Google Shopping ne dit rien du prix pratiqué par le
+    // vendeur, et l'agrégateur refuse d'être interrogé de cette façon.
+    expect(estFicheMarchande("https://www.google.com/shopping/product/1")).toBe(false);
+    expect(estFicheMarchande("https://www.awin1.com/cread.php?x=1")).toBe(false);
+    expect(estFicheMarchande("https://www.fnac.com/a1234/casque")).toBe(true);
+  });
+
+  it("promeut les fiches observées plutôt que d'inventer des adresses", () => {
+    insertSnapshots("clavier test amorcage", "hightech", [
+      { name: "Clavier Test Amorçage", price: 89, seller: "Fnac", url: "https://www.fnac.com/amorcage-1" },
+      { name: "Clavier Test Amorçage", price: 92, seller: "Cdiscount", url: "https://www.cdiscount.com/amorcage-2.html" },
+    ]);
+    const r = amorcerDepuisSnapshots({ limite: 40 });
+    expect(r.ajoutees).toBeGreaterThanOrEqual(2);
+    const urls = listerUrls().map((u) => u.url);
+    expect(urls).toContain("https://www.fnac.com/amorcage-1");
+  });
+
+  it("ne surveille pas deux fois la même fiche", () => {
+    insertSnapshots("souris test amorcage", "hightech", [
+      { name: "Souris Test Amorçage", price: 39, seller: "Darty", url: "https://www.darty.com/amorcage-3" },
+      // Même produit, même vendeur, vu deux fois : une seule surveillance.
+      { name: "Souris Test Amorçage", price: 41, seller: "Darty", url: "https://www.darty.com/amorcage-3" },
+    ]);
+    amorcerDepuisSnapshots({ limite: 40 });
+    const combien = listerUrls().filter((u) => u.url === "https://www.darty.com/amorcage-3").length;
+    expect(combien).toBe(1);
+  });
+
+  it("est sans effet au second passage", () => {
+    insertSnapshots("ecran test amorcage", "hightech", [
+      { name: "Écran Test Amorçage", price: 199, seller: "Boulanger", url: "https://www.boulanger.com/amorcage-4" },
+    ]);
+    amorcerDepuisSnapshots({ limite: 40 });
+    const rejeu = amorcerDepuisSnapshots({ limite: 40 });
+    expect(rejeu.ajoutees).toBe(0);
+  });
+
+  it("écarte les marchands inconnus, sauf demande explicite", () => {
+    insertSnapshots("the test amorcage", "tout", [
+      { name: "Thé Test Amorçage", price: 12, seller: "Luna Gourmet", url: "https://lunagourmet.example/amorcage-5" },
+    ]);
+    expect(amorcerDepuisSnapshots({ limite: 40 }).ajoutees).toBe(0);
+    expect(amorcerDepuisSnapshots({ limite: 40, toutMarchand: true }).ajoutees).toBe(1);
+  });
+});
