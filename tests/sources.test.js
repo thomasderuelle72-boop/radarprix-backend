@@ -1,5 +1,5 @@
 // Détecteurs D1 (promotions, codes promo) et D2 (gratuit).
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -227,5 +227,74 @@ describe("D1 — promotions et codes promo", () => {
   it("échoue explicitement sans clé plutôt que de partir sur le réseau", async () => {
     await expect(promos.fetchStrackrDeals()).rejects.toThrow(/STRACKR_API_KEY/);
     await expect(promos.fetchAwinOffers()).rejects.toThrow(/AWIN_API_TOKEN/);
+  });
+});
+
+const { fetchAwinOffers } = promos;
+
+describe("D1 — Awin : diagnostic des pannes", () => {
+  const env = { ...process.env };
+  afterEach(() => {
+    process.env = { ...env };
+  });
+
+  function reponse(status) {
+    return async () => ({ ok: false, status, json: async () => ({}) });
+  }
+
+  it("distingue une adresse inexistante d'un jeton refusé", async () => {
+    process.env.AWIN_API_TOKEN = "jeton";
+    process.env.AWIN_PUBLISHER_ID = "3048875";
+    // C'est la confusion qui a coûté du temps en production : un 404 sur une
+    // URL inventée se lisait « Awin a répondu 404 » et faisait chercher la clé.
+    await expect(fetchAwinOffers({ fetcher: reponse(404) })).rejects.toThrow(/l'adresse n'existe pas/);
+    await expect(fetchAwinOffers({ fetcher: reponse(401) })).rejects.toThrow(/refusé le jeton/);
+    await expect(fetchAwinOffers({ fetcher: reponse(429) })).rejects.toThrow(/limite le débit/);
+  });
+
+  it("interpole l'identifiant d'éditeur dans l'adresse configurée", async () => {
+    process.env.AWIN_API_TOKEN = "jeton";
+    process.env.AWIN_PUBLISHER_ID = "3048875";
+    process.env.AWIN_OFFERS_URL = "https://api.awin.com/publisher/{publisherId}/promotions";
+    let vue = null;
+    await fetchAwinOffers({
+      fetcher: async (url) => {
+        vue = url;
+        return { ok: true, json: async () => [] };
+      },
+    });
+    expect(vue).toBe("https://api.awin.com/publisher/3048875/promotions");
+  });
+
+  it("envoie un POST avec son corps quand l'API l'exige", async () => {
+    process.env.AWIN_API_TOKEN = "jeton";
+    process.env.AWIN_PUBLISHER_ID = "3048875";
+    process.env.AWIN_OFFERS_METHOD = "post";
+    process.env.AWIN_OFFERS_BODY = '{"type":"voucher"}';
+    let recu = null;
+    await fetchAwinOffers({
+      fetcher: async (_url, opts) => {
+        recu = opts;
+        return { ok: true, json: async () => [] };
+      },
+    });
+    expect(recu.method).toBe("POST");
+    expect(recu.body).toBe('{"type":"voucher"}');
+    expect(recu.headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("n'envoie aucun corps en GET", async () => {
+    process.env.AWIN_API_TOKEN = "jeton";
+    process.env.AWIN_PUBLISHER_ID = "3048875";
+    process.env.AWIN_OFFERS_BODY = '{"ignoré":true}';
+    let recu = null;
+    await fetchAwinOffers({
+      fetcher: async (_url, opts) => {
+        recu = opts;
+        return { ok: true, json: async () => [] };
+      },
+    });
+    expect(recu.method).toBe("GET");
+    expect(recu.body).toBeUndefined();
   });
 });

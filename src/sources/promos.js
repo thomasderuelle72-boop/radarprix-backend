@@ -185,19 +185,64 @@ async function fetchStrackrDeals({ fetcher = fetch } = {}) {
 }
 
 /**
- * Interroge l'Offers API d'Awin. Jeton dans AWIN_API_TOKEN, identifiant
- * d'éditeur dans AWIN_PUBLISHER_ID.
+ * Interroge l'API de promotions d'Awin.
+ *
+ * Le chemin est configurable (AWIN_OFFERS_URL, AWIN_OFFERS_METHOD,
+ * AWIN_OFFERS_BODY) et non écrit en dur, pour une raison précise : Awin
+ * publie plusieurs API voisines — « Post Offers » côté annonceur pour créer
+ * une promotion, « Retrieve Offers » côté éditeur pour les lire — dont les
+ * chemins ont bougé au fil des versions. Un chemin figé dans le code oblige
+ * à redéployer pour corriger une adresse, ce qui est absurde pour une valeur
+ * que la documentation d'Awin donne en une ligne.
+ *
+ * {publisherId} dans l'URL est remplacé par AWIN_PUBLISHER_ID.
+ *
+ * Variables :
+ *   AWIN_API_TOKEN      jeton OAuth2 (obligatoire)
+ *   AWIN_PUBLISHER_ID   identifiant d'éditeur (obligatoire)
+ *   AWIN_OFFERS_URL     adresse complète, {publisherId} interpolé
+ *   AWIN_OFFERS_METHOD  GET par défaut, POST si l'API l'exige
+ *   AWIN_OFFERS_BODY    corps JSON à envoyer quand la méthode est POST
  */
+const AWIN_OFFERS_URL_DEFAUT = "https://api.awin.com/publishers/{publisherId}/offers";
+
 async function fetchAwinOffers({ fetcher = fetch } = {}) {
   const jeton = process.env.AWIN_API_TOKEN;
   const editeur = process.env.AWIN_PUBLISHER_ID;
   if (!jeton) throw new Error("AWIN_API_TOKEN manquant");
   if (!editeur) throw new Error("AWIN_PUBLISHER_ID manquant");
 
-  const res = await fetcher(`https://api.awin.com/publishers/${editeur}/offers`, {
-    headers: { Authorization: `Bearer ${jeton}`, Accept: "application/json" },
+  const url = (process.env.AWIN_OFFERS_URL || AWIN_OFFERS_URL_DEFAUT).replace("{publisherId}", editeur);
+  const methode = (process.env.AWIN_OFFERS_METHOD || "GET").toUpperCase();
+  const corps = process.env.AWIN_OFFERS_BODY || null;
+
+  const res = await fetcher(url, {
+    method: methode,
+    headers: {
+      Authorization: `Bearer ${jeton}`,
+      Accept: "application/json",
+      ...(methode === "POST" ? { "Content-Type": "application/json" } : {}),
+    },
+    ...(methode === "POST" && corps ? { body: corps } : {}),
   });
-  if (!res.ok) throw new Error(`Awin a répondu ${res.status}`);
+
+  if (!res.ok) {
+    // Le code de retour distingue trois pannes très différentes, qu'un
+    // message unique confondait : une adresse fausse ressemblait à un jeton
+    // refusé, et on cherchait la clé au lieu de l'URL.
+    if (res.status === 404) {
+      throw new Error(
+        `Awin a répondu 404 sur ${url} — l'adresse n'existe pas. ` +
+          "Corrige AWIN_OFFERS_URL (et AWIN_OFFERS_METHOD si l'API attend un POST) " +
+          "avec le chemin donné par la documentation Awin, sans redéployer."
+      );
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`Awin a refusé le jeton (${res.status}) — vérifie AWIN_API_TOKEN et AWIN_PUBLISHER_ID.`);
+    }
+    if (res.status === 429) throw new Error("Awin limite le débit (429) — 20 appels par minute maximum.");
+    throw new Error(`Awin a répondu ${res.status}`);
+  }
 
   return extraireListe(await res.json()).map(normaliserOffreAwin).filter(Boolean);
 }
