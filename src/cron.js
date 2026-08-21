@@ -58,8 +58,23 @@ const SCHEDULE_DECOUVERTE = process.env.CRON_DECOUVERTE_SCHEDULE || "23 */3 * * 
 // mais une lecture structurée fiable, là où nos propres motifs échouent.
 const SCHEDULE_SCRAPER = process.env.CRON_SCRAPER_SCHEDULE || "41 */6 * * *";
 
+// Le scan SerpApi s'arrête de lui-même quand le quota mensuel est épuisé.
+// Sans ça, chaque passage relançait dix requêtes vouées à répondre 429, dont
+// chacune tentait ensuite un repli lui aussi en échec : vingt lignes d'erreur
+// toutes les deux heures, qui noient les vraies pannes dans les journaux.
+let quotaSerpApiEpuise = false;
+
 async function tick() {
+  if (quotaSerpApiEpuise) return;
   const results = await runCatalogBatch(BATCH_SIZE);
+  if (results.length > 0 && results.every((r) => !r.ok && /run out of searches|429/i.test(r.error || ""))) {
+    quotaSerpApiEpuise = true;
+    console.warn(
+      `[${new Date().toISOString()}] quota SerpApi épuisé — scan catalogue suspendu jusqu'au prochain redémarrage. ` +
+        `Les autres sources (découverte, surveillance, flux) continuent normalement.`
+    );
+    return;
+  }
   for (const r of results) {
     if (r.ok) console.log(`[${new Date().toISOString()}] ${r.name} (${r.category}) : ${r.offersFound} offres`);
     else console.error(`[${new Date().toISOString()}] Échec sur "${r.name}" :`, r.error);
@@ -106,9 +121,22 @@ async function tickDecouverte() {
   try {
     const resultats = await peupler();
     for (const r of resultats) {
-      if (r.ignore) console.log(`[${new Date().toISOString()}] découverte ignorée : ${r.motif}`);
-      else if (r.ok) console.log(`[${new Date().toISOString()}] découverte ${r.enseigne} : ${r.ajoutees} fiche(s) ajoutée(s)`);
-      else console.error(`[${new Date().toISOString()}] découverte ${r.enseigne} en échec :`, r.erreur);
+      if (r.ignore) {
+        console.log(`[${new Date().toISOString()}] découverte ignorée : ${r.motif}`);
+      } else if (r.ok) {
+        // « 0 ajoutée » ne disait pas si le marchand a refusé la requête, si
+        // son sitemap est vide, ou si aucune adresse ne ressemblait à une
+        // fiche. Trois pannes distinctes qu'un compteur unique confondait.
+        console.log(
+          `[${new Date().toISOString()}] découverte ${r.enseigne} : ${r.ajoutees} nouvelle(s), ` +
+            `${r.trouvees} reconnue(s), ${r.sitemapsLus} sitemap(s) lu(s)`
+        );
+        for (const err of r.erreurs || []) {
+          console.error(`[${new Date().toISOString()}]   ↳ ${r.enseigne} : ${err}`);
+        }
+      } else {
+        console.error(`[${new Date().toISOString()}] découverte ${r.enseigne} en échec :`, r.erreur);
+      }
     }
   } catch (e) {
     console.error(`[${new Date().toISOString()}] découverte en échec :`, e.message);
