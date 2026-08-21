@@ -1470,6 +1470,32 @@ app.post("/api/admin/trigger-scan", requireAuth, requireAdmin, async (req, res) 
 app.get("/api/health", (req, res) => res.json({ ok: true }));
 
 if (require.main === module) {
+  /* ── Purge unique au démarrage ───────────────────────────────────
+     La remise à zéro s'appelle normalement depuis le panneau admin. Mais
+     quand le contenu à effacer empêche justement de se servir du site, il
+     faut pouvoir la déclencher sans passer par lui.
+
+     REINITIALISER_AU_DEMARRAGE=true efface le contenu des détecteurs à
+     l'ouverture, puis le dit. À retirer aussitôt : laissée en place, elle
+     reviderait la base à chaque redéploiement — d'où l'avertissement, qui
+     n'est pas décoratif. */
+  if (process.env.REINITIALISER_AU_DEMARRAGE === "true") {
+    try {
+      const efface = reinitialiser({ garderHistorique: process.env.REINIT_GARDER_HISTORIQUE === "true" });
+      const total = efface.reduce((n, e) => n + e.lignes, 0);
+      console.log(`[reinit] ${total} ligne(s) effacée(s) :`);
+      for (const e of efface) {
+        console.log(`[reinit]   ${e.conservee ? "conservée" : String(e.lignes).padStart(6)} — ${e.table} (${e.quoi})`);
+      }
+      console.warn(
+        "[reinit] ⚠️  RETIRE MAINTENANT la variable REINITIALISER_AU_DEMARRAGE : " +
+          "laissée en place, elle revide la base à chaque redéploiement."
+      );
+    } catch (e) {
+      console.error(`[reinit] échec : ${e.message}`);
+    }
+  }
+
   const serveur = app.listen(PORT, () => console.log(`RadarPrix backend en écoute sur le port ${PORT}`));
   annoncerPilotage();
 
