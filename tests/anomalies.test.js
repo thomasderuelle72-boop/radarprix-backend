@@ -656,3 +656,59 @@ describe("désactivation des fiches stériles", () => {
     expect(listerUrls().some((u) => u.url === url)).toBe(true);
   });
 });
+
+describe("garde-fous de temps", () => {
+  const fp = require("../src/fetchPage.js");
+  const d = require("../src/decouverte.js");
+
+  it("pose un délai d'expiration sur chaque requête", async () => {
+    let recu = null;
+    await fp.recupererPage("https://x.fr/p/1", {
+      fetcher: async (_u, opts) => {
+        recu = opts;
+        return { ok: true, status: 200, text: async () => "<html></html>" };
+      },
+    });
+    // Sans signal, un marchand muet suspend le programme indéfiniment : c'est
+    // ce qui a arrêté la découverte en production, processeur au repos.
+    expect(recu.signal).toBeDefined();
+    expect(typeof recu.signal.aborted).toBe("boolean");
+  });
+
+  it("abandonne une requête qui ne répond jamais", async () => {
+    const avant = process.env.FETCH_TIMEOUT_MS;
+    process.env.FETCH_TIMEOUT_MS = "50";
+    try {
+      // Un serveur qui accepte la connexion et se tait pour toujours.
+      const muet = (_u, opts) =>
+        new Promise((_resolve, reject) => {
+          opts.signal.addEventListener("abort", () => reject(new Error("délai dépassé")));
+        });
+      await expect(fp.recupererPage("https://x.fr/p/2", { fetcher: muet })).rejects.toThrow();
+    } finally {
+      if (avant === undefined) delete process.env.FETCH_TIMEOUT_MS;
+      else process.env.FETCH_TIMEOUT_MS = avant;
+    }
+  });
+
+  it("lit les adresses d'un sitemap sans en construire l'arbre", () => {
+    // Le format est trop simple pour justifier le coût d'un arbre DOM sur
+    // plusieurs mégaoctets et des dizaines de milliers d'entrées.
+    const gros = `<urlset>${Array.from({ length: 20000 }, (_, i) => `<url><loc>https://x.fr/p/${i}</loc></url>`).join("")}</urlset>`;
+    const debut = Date.now();
+    const lu = d.lireSitemap(gros);
+    expect(lu.pages).toHaveLength(20000);
+    expect(lu.index).toHaveLength(0);
+    expect(Date.now() - debut).toBeLessThan(1000);
+  });
+
+  it("distingue un index de sitemaps par le type du document", () => {
+    const index = `<?xml version="1.0"?><sitemapindex><sitemap><loc>https://x.fr/s1.xml</loc></sitemap></sitemapindex>`;
+    expect(d.lireSitemap(index)).toEqual({ index: ["https://x.fr/s1.xml"], pages: [] });
+  });
+
+  it("décode les esperluettes échappées des adresses", () => {
+    const xml = `<urlset><url><loc>https://x.fr/p?a=1&amp;b=2</loc></url></urlset>`;
+    expect(d.lireSitemap(xml).pages).toEqual(["https://x.fr/p?a=1&b=2"]);
+  });
+});

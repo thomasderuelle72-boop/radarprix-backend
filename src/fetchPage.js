@@ -24,6 +24,31 @@
 const { logSourceEvent } = require("./db");
 
 const AGENT = "RadarPrixBot/1.0 (+https://radarprix.fr/bot)";
+
+/* Délai d'expiration, et ce n'est pas un réglage de confort : sans lui, un
+   marchand qui accepte la connexion puis ne répond jamais fait attendre le
+   programme indéfiniment. Observé en production — la découverte s'est
+   arrêtée sans un mot, processeur au repos, plus aucune tâche planifiée
+   n'ayant repris la main. Un serveur muet ne doit jamais pouvoir suspendre
+   tout le reste. */
+const DELAI_DEFAUT = 20000;
+
+/** Délai courant, relu à chaque appel — un réglage figé au chargement du
+ *  module ne pourrait plus être ajusté sans redéployer. */
+function delaiMs() {
+  const n = parseInt(process.env.FETCH_TIMEOUT_MS || "", 10);
+  return Number.isFinite(n) && n > 0 ? n : DELAI_DEFAUT;
+}
+
+/** Signal d'abandon, avec repli pour les runtimes sans AbortSignal.timeout. */
+function signalDelai(ms = delaiMs()) {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return AbortSignal.timeout(ms);
+  }
+  const ctrl = new AbortController();
+  setTimeout(() => ctrl.abort(), ms).unref?.();
+  return ctrl.signal;
+}
 const ENDPOINT_BRIGHTDATA = "https://api.brightdata.com/request";
 
 /* Garde-fou de facturation. Bright Data facture à la requête : 40 fiches
@@ -76,6 +101,7 @@ async function directe(url, fetcher) {
       Accept: "text/html,application/xhtml+xml",
     },
     redirect: "follow",
+    signal: signalDelai(),
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.text();
@@ -95,6 +121,7 @@ async function viaBrightData(url, fetcher) {
 
   const res = await fetcher(ENDPOINT_BRIGHTDATA, {
     method: "POST",
+    signal: signalDelai(delaiMs() * 2), // le déblocage est lent par nature
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${cle}` },
     body: JSON.stringify({
       zone: process.env.BRIGHT_DATA_ZONE || "serp_api2",
@@ -130,4 +157,4 @@ async function recupererPage(url, { fetcher = fetch } = {}) {
   }
 }
 
-module.exports = { recupererPage, etatQuota, reinitialiserQuota, AGENT, ENDPOINT_BRIGHTDATA };
+module.exports = { recupererPage, etatQuota, reinitialiserQuota, signalDelai, delaiMs, AGENT, ENDPOINT_BRIGHTDATA };

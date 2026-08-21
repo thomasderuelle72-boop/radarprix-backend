@@ -15,8 +15,11 @@
 // garde-fous : on ne descend que d'un niveau dans l'index, et on ne retient
 // que les adresses qui ressemblent à des fiches produits.
 const zlib = require("zlib");
-const cheerio = require("cheerio");
 const { recupererPage } = require("./fetchPage");
+
+/* Budget de temps global. Même avec un délai par requête, douze sitemaps
+   lents mis bout à bout dépasseraient largement l'intervalle du cron. */
+const BUDGET_MS = parseInt(process.env.DECOUVERTE_BUDGET_MS || "90000", 10);
 
 
 /* ── Reconnaître une fiche produit ────────────────────────────────
@@ -136,14 +139,19 @@ async function sitemapsDe(domaine, { fetcher = fetch } = {}) {
  * sous-sitemaps, un index de sitemaps ne contenant que des renvois.
  */
 function lireSitemap(xml) {
-  const $ = cheerio.load(xml, { xmlMode: true });
-  const index = $("sitemapindex > sitemap > loc")
-    .map((_, el) => $(el).text().trim())
-    .get();
-  const pages = $("urlset > url > loc")
-    .map((_, el) => $(el).text().trim())
-    .get();
-  return { index, pages };
+  // Extraction par expression régulière plutôt que par arbre DOM. Un sitemap
+  // de grande enseigne pèse plusieurs mégaoctets et contient des dizaines de
+  // milliers d'entrées : en construire la représentation complète coûte un
+  // temps et une mémoire sans rapport avec le seul champ qu'on lit. Le
+  // format est trop simple pour justifier ce prix.
+  const locs = [...xml.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)].map((m) =>
+    m[1].replace(/&amp;/g, "&").trim()
+  );
+
+  // Un index ne contient que des renvois vers d'autres sitemaps, jamais des
+  // pages : le type du document décide de la nature des adresses lues.
+  const estIndex = /<sitemapindex[\s>]/i.test(xml.slice(0, 4000));
+  return estIndex ? { index: locs, pages: [] } : { index: [], pages: locs };
 }
 
 /**
@@ -165,8 +173,13 @@ async function decouvrirFiches(domaine, { limite = 50, maxSitemaps = 12, fetcher
   let sitemapsLus = 0;
 
   const aExplorer = await sitemapsDe(domaine, { fetcher });
+  const echeance = Date.now() + BUDGET_MS;
 
   while (aExplorer.length > 0 && trouvees.size < limite && sitemapsLus < maxSitemaps + 1) {
+    if (Date.now() > echeance) {
+      erreurs.push(`budget de ${Math.round(BUDGET_MS / 1000)} s dépassé — exploration interrompue`);
+      break;
+    }
     const url = aExplorer.shift();
     let xml;
     try {
