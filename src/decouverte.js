@@ -18,7 +18,6 @@ const zlib = require("zlib");
 const cheerio = require("cheerio");
 const { recupererPage } = require("./fetchPage");
 
-const AGENT = "RadarPrixBot/1.0 (+https://radarprix.fr/bot)";
 
 /* Ce qui distingue une fiche produit d'une page de catégorie. Chaque
    marchand a sa convention, et se fier à un motif unique raterait la moitié
@@ -67,9 +66,12 @@ async function sitemapsDe(domaine, { fetcher = fetch } = {}) {
   const racine = domaine.startsWith("http") ? domaine : `https://${domaine}`;
   let robots;
   try {
-    const res = await fetcher(`${racine}/robots.txt`, { headers: { "User-Agent": AGENT } });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    robots = await res.text();
+    // Par le récupérateur à deux étages, et non par un fetch direct : les
+    // marchands qui bloquent les centres de données bloquent aussi leur
+    // robots.txt. On échouait alors dès la première étape, pour se rabattre
+    // sur une adresse devinée — souvent fausse chez les grandes enseignes,
+    // qui découpent leur sitemap en plusieurs fichiers aux noms arbitraires.
+    ({ html: robots } = await recupererPage(`${racine}/robots.txt`, { fetcher }));
   } catch {
     // Sans robots.txt lisible, on tente l'emplacement conventionnel plutôt
     // que d'abandonner : il est correct dans la majorité des cas.
@@ -149,4 +151,83 @@ async function decouvrirFiches(domaine, { limite = 50, maxSitemaps = 3, fetcher 
   return { urls: [...trouvees], sitemapsLus, erreurs };
 }
 
-module.exports = { decouvrirFiches, sitemapsDe, lireSitemap, ressembleAFiche, texteDe, MOTIFS_FICHE };
+/**
+ * Rejoue la découverte en rapportant chaque étape, pour savoir où elle casse.
+ *
+ * Écrit parce que « rien ne s'affiche » ne dit pas si le marchand a refusé la
+ * requête, si son sitemap est introuvable, ou si ses adresses de fiches ne
+ * ressemblent à aucun des motifs reconnus. Les trois se corrigent
+ * différemment, et sans ce détail on ajoute du code au hasard.
+ *
+ * L'échantillon d'adresses NON retenues est le plus utile : il montre la
+ * forme réelle des URL du marchand, donc le motif qui manque.
+ */
+async function diagnostiquer(domaine, { fetcher = fetch } = {}) {
+  const etapes = [];
+  const racine = domaine.startsWith("http") ? domaine : `https://${domaine}`;
+
+  let robotsOk = false;
+  try {
+    const { via } = await recupererPage(`${racine}/robots.txt`, { fetcher });
+    robotsOk = true;
+    etapes.push({ etape: "robots.txt", ok: true, detail: `lu (${via})` });
+  } catch (e) {
+    etapes.push({ etape: "robots.txt", ok: false, detail: e.message });
+  }
+
+  let sitemaps = [];
+  try {
+    sitemaps = await sitemapsDe(domaine, { fetcher });
+    etapes.push({
+      etape: "sitemaps déclarés",
+      ok: sitemaps.length > 0,
+      detail: robotsOk ? `${sitemaps.length} déclaré(s)` : `${sitemaps.length} deviné(s), robots.txt illisible`,
+      exemples: sitemaps.slice(0, 3),
+    });
+  } catch (e) {
+    etapes.push({ etape: "sitemaps déclarés", ok: false, detail: e.message });
+    return { domaine, etapes, urls: [] };
+  }
+
+  let toutesLesUrls = [];
+  let aExplorer = [...sitemaps];
+  let lus = 0;
+
+  while (aExplorer.length > 0 && lus < 4 && toutesLesUrls.length === 0) {
+    const url = aExplorer.shift();
+    try {
+      const { html, via } = await recupererPage(url, { fetcher });
+      lus++;
+      const { index, pages } = lireSitemap(texteDe(html));
+      etapes.push({
+        etape: `sitemap ${lus}`,
+        ok: true,
+        detail: `${pages.length} page(s), ${index.length} sous-sitemap(s) (${via})`,
+        exemples: [url],
+      });
+      if (pages.length > 0) toutesLesUrls = pages;
+      else aExplorer.unshift(...index.slice(0, 3));
+    } catch (e) {
+      lus++;
+      etapes.push({ etape: `sitemap ${lus}`, ok: false, detail: e.message, exemples: [url] });
+    }
+  }
+
+  const retenues = toutesLesUrls.filter(ressembleAFiche);
+  const ecartees = toutesLesUrls.filter((u) => !ressembleAFiche(u));
+  etapes.push({
+    etape: "reconnaissance des fiches",
+    ok: retenues.length > 0,
+    detail: `${retenues.length} retenue(s) sur ${toutesLesUrls.length} adresse(s)`,
+  });
+
+  return {
+    domaine,
+    etapes,
+    // Les deux échantillons ensemble suffisent à décider quoi corriger.
+    exemplesRetenus: retenues.slice(0, 5),
+    exemplesEcartes: ecartees.slice(0, 8),
+  };
+}
+
+module.exports = { decouvrirFiches, sitemapsDe, lireSitemap, ressembleAFiche, texteDe, diagnostiquer, MOTIFS_FICHE };

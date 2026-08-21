@@ -112,6 +112,7 @@ const {
 } = require("./watch");
 const { amorcerDepuisSnapshots } = require("./watchSeed");
 const { peupler, enseignes } = require("./peuplement");
+const { diagnostiquer } = require("./decouverte");
 const { indicateurs, manquees, noterDeal, ingererVeriteTerrain } = require("./mesure");
 const { classement: classementMarchands } = require("./reputation");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
@@ -506,6 +507,19 @@ app.post("/api/admin/watch/peupler", requireAuth, requireAdmin, async (req, res)
       }),
       enseignesConnues: enseignes().map((e) => e.nom),
     });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Diagnostic de la découverte pour une enseigne : dit à quelle étape elle
+// casse, et montre la forme réelle des adresses du marchand. Sans ça,
+// « rien ne s'affiche » ne permet de corriger quoi que ce soit.
+app.post("/api/admin/watch/diagnostic", requireAuth, requireAdmin, async (req, res) => {
+  const domaine = (req.body?.domaine || "").trim();
+  if (!domaine) return res.status(400).json({ error: "Paramètre 'domaine' requis." });
+  try {
+    res.json(await diagnostiquer(domaine));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
