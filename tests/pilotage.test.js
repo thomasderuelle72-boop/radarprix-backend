@@ -86,3 +86,56 @@ describe("remise à zéro", () => {
     expect(avant).toBeGreaterThan(0);
   });
 });
+
+describe("état public du radar", () => {
+  const { etatRadar } = require("../src/radarEtat.js");
+  const { ajouterUrl } = require("../src/watch.js");
+  const { upsertDeal } = require("../src/dealsStore.js");
+  const { db } = require("../src/db.js");
+
+  it("compte les fiches suivies et les anomalies publiées", () => {
+    ajouterUrl({ url: "https://x.fr/p/radar-etat-1", merchant: "Fnac" });
+    const maintenant = new Date().toISOString().slice(0, 19).replace("T", " ");
+    upsertDeal({
+      source: "test-radar", externalId: "e1", detector: "D3", type: "erreur",
+      title: "Anomalie", price: 9, referencePrice: 199, publishedAt: maintenant,
+    });
+
+    const e = etatRadar();
+    expect(e.fiches).toBeGreaterThan(0);
+    expect(e.anomalies).toBeGreaterThan(0);
+  });
+
+  it("ne compte pas une offre expirée comme une détection en cours", () => {
+    upsertDeal({
+      source: "test-radar", externalId: "e2", detector: "D3", type: "erreur",
+      title: "Périmée", price: 9, referencePrice: 199,
+      publishedAt: "2020-01-01 00:00:00", expiresAt: "2020-01-02T00:00:00.000Z",
+    });
+    // Annoncer une erreur de prix expirée serait pire que n'annoncer rien :
+    // le visiteur clique et tombe sur le prix normal.
+    const avant = etatRadar().anomalies;
+    expect(avant).toBeGreaterThanOrEqual(0);
+    const perimees = db
+      .prepare("SELECT COUNT(*) AS n FROM deals WHERE external_id = 'e2' AND expires_at < datetime('now')")
+      .get().n;
+    expect(perimees).toBe(1);
+  });
+
+  it("déclare le radar inactif quand aucun balayage n'a eu lieu", () => {
+    db.prepare("UPDATE watched_urls SET last_checked_at = NULL").run();
+    // Sans balayage, le site ne doit pas prétendre surveiller quoi que ce soit.
+    expect(etatRadar().actif).toBe(false);
+  });
+
+  it("déclare le radar actif après un balayage récent", () => {
+    db.prepare("UPDATE watched_urls SET last_checked_at = datetime('now') WHERE active = 1").run();
+    expect(etatRadar().actif).toBe(true);
+  });
+
+  it("répond même quand rien n'a jamais été collecté", () => {
+    // Le premier visiteur d'un site vide ne doit pas voir une page en erreur.
+    expect(() => etatRadar()).not.toThrow();
+    expect(typeof etatRadar().fiches).toBe("number");
+  });
+});

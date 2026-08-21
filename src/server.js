@@ -116,6 +116,7 @@ const { diagnostiquer } = require("./decouverte");
 const { tourComplet: tourScraper } = require("./scraperRun");
 const { reinitialiser, apercu } = require("./reinitialisation");
 const { etatPilotage, annoncerPilotage } = require("./pilotage");
+const { etatRadar } = require("./radarEtat");
 const { indicateurs, manquees, noterDeal, ingererVeriteTerrain } = require("./mesure");
 const { classement: classementMarchands } = require("./reputation");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
@@ -1463,6 +1464,20 @@ app.post("/api/admin/trigger-scan", requireAuth, requireAdmin, async (req, res) 
     const results = await runCatalogBatch(size, { source: "manuel", triggeredBy: req.user.sub });
     res.json({ scanned: results.length, results });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// État du radar, public et sans authentification. Alimente l'indicateur de
+// la navigation et la ligne de bas de menu : une promesse de fraîcheur qui se
+// vérifie vaut mieux qu'une promesse qui se répète. L'information ne dit rien
+// de sensible — ni quelles fiches sont suivies, ni chez quel marchand.
+app.get("/api/radar", (req, res) => {
+  try {
+    res.json(etatRadar());
+  } catch (e) {
+    // Un indicateur en panne ne doit jamais empêcher la navigation de
+    // s'afficher : le frontend sait se passer de cette réponse.
     res.status(500).json({ error: e.message });
   }
 });
