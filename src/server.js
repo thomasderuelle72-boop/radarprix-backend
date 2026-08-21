@@ -731,8 +731,14 @@ app.patch("/api/auth/me", requireAuth, (req, res) => {
   if (avatarUrl !== undefined && avatarUrl) {
     const lien = /^https?:\/\//.test(avatarUrl);
     const integree = /^data:image\/(jpeg|png|webp);base64,/.test(avatarUrl);
-    if (!lien && !integree) {
-      return res.status(400).json({ error: "Photo invalide : indique un lien http(s) ou choisis une image." });
+    // Troisième forme : un avatar de la panoplie du site, stocké comme un
+    // jeton « rp:motif-teinte » et redessiné à l'affichage. On ne valide que
+    // la forme : la liste des motifs vit dans le frontend, et la dupliquer
+    // ici obligerait à déployer les deux côtés pour en ajouter un. Un jeton
+    // inconnu retombe proprement sur l'initiale colorée.
+    const panoplie = /^rp:[a-z]{2,20}-[a-z]{2,20}$/.test(avatarUrl);
+    if (!lien && !integree && !panoplie) {
+      return res.status(400).json({ error: "Avatar invalide : choisis-en un dans la galerie, une photo, ou indique un lien http(s)." });
     }
     // La photo est stockée dans la base et renvoyée avec chaque commentaire :
     // au-delà de ~150 Ko elle alourdirait toutes les pages du site.
