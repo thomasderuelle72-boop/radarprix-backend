@@ -19,32 +19,81 @@ const cheerio = require("cheerio");
 const { recupererPage } = require("./fetchPage");
 
 
-/* Ce qui distingue une fiche produit d'une page de catégorie. Chaque
-   marchand a sa convention, et se fier à un motif unique raterait la moitié
-   des sites. On teste donc plusieurs formes courantes :
-     /p/…            très répandu
-     /f-xxx-yyy.html Cdiscount
-     /a1234567/…     Fnac
-     /ref/1234567    Boulanger
-     …-p-1234.html   variantes diverses
-   Un identifiant numérique long est le signal le plus fiable : une page de
-   catégorie n'en porte presque jamais. */
-const MOTIFS_FICHE = [
-  /\/p\/[^/]+/i,
-  /\/f-\d+/i,
-  /\/a\d{4,}/i,
-  /\/ref\/\d{4,}/i,
-  /-p-\d{3,}/i,
-  /\/product\//i,
-  /\/produit\//i,
-  /\/dp\/[A-Z0-9]{8,}/i,
-  /\/\d{6,}\.html?$/i,
+/* ── Reconnaître une fiche produit ────────────────────────────────
+   Première version : une liste de motifs positifs (/p/, /f-123, /a1234567…).
+   Elle a échoué en production sur Cdiscount ET la Fnac — zéro adresse
+   reconnue sur des sitemaps pourtant lus correctement.
+
+   L'erreur était de méthode. Deviner un produit à partir de la FORME de son
+   adresse, c'est réécrire un motif par marchand et le refaire à chaque
+   refonte de site. Or nous disposons d'un juge autrement plus fiable : la
+   page elle-même. Si elle porte un JSON-LD de type Product avec un prix,
+   c'est une fiche produit ; sinon non, quelle que soit son adresse.
+
+   On inverse donc la logique : au lieu de retenir ce qui ressemble à une
+   fiche, on écarte ce qui n'en est manifestement pas une, et la lecture de
+   la page tranche pour le reste. Une adresse retenue à tort échoue une fois
+   à la lecture, se fait compter un échec, et finit désactivée — coût borné,
+   contre un catalogue entier manqué avec l'approche inverse. */
+const MOTIFS_HORS_FICHE = [
+  /\/(aide|help|faq|contact|cgv|cgu|mentions|legal|privacy|cookies)\b/i,
+  /\/(compte|account|login|connexion|panier|cart|checkout|commande)\b/i,
+  /\/(blog|actualites|actualite|news|magazine|guide|conseils|dossier)\b/i,
+  /\/(marques|brands|categorie|categories|category|rayon|univers|selection)\b/i,
+  /\/(recherche|search|sitemap|plan-du-site|store|magasin|boutiques)\b/i,
+  /\/(recrutement|carriere|jobs|presse|investisseurs|entreprise)\b/i,
+  /\.(pdf|jpg|jpeg|png|gif|svg|xml|css|js)$/i,
 ];
 
-/** L'adresse ressemble-t-elle à une fiche produit ? */
+/**
+ * L'adresse peut-elle être une fiche produit ?
+ *
+ * Volontairement permissif : c'est la lecture du JSON-LD qui décidera pour
+ * de bon. On exige seulement que l'adresse pointe vers quelque chose d'assez
+ * profond pour être une fiche — une page d'accueil ou une section de premier
+ * niveau n'en est jamais une.
+ */
+// Signaux qui désignent une fiche sans ambiguïté possible, quelle que soit
+// la longueur du libellé qui suit. Ils passent avant toute autre règle : un
+// /p/xy court reste une fiche, alors qu'un critère de longueur le rejetterait.
+const SIGNAUX_FICHE = [
+  /\/p\//i,
+  /\/product\//i,
+  /\/produit\//i,
+  /\/dp\//i,
+  /\/f-\d/i,
+  /\/ref\//i,
+  /\/a\d{4,}/i,
+  /-p-\d{3,}/i,
+];
+
 function ressembleAFiche(url) {
-  return MOTIFS_FICHE.some((m) => m.test(url));
+  let chemin;
+  try {
+    chemin = new URL(url).pathname;
+  } catch {
+    return false;
+  }
+
+  if (MOTIFS_HORS_FICHE.some((m) => m.test(chemin))) return false;
+  if (SIGNAUX_FICHE.some((m) => m.test(chemin))) return true;
+
+  const segments = chemin.split("/").filter(Boolean);
+  if (segments.length === 0) return false; // page d'accueil
+
+  // Un identifiant numérique long est le signal le plus fiable qui soit :
+  // une page de catégorie n'en porte presque jamais, une fiche presque
+  // toujours (référence, EAN, identifiant interne).
+  if (/\d{4,}/.test(chemin)) return true;
+
+  // À défaut, une adresse profonde et terminale reste plausible. Deux
+  // segments suffisent : beaucoup de marchands publient /categorie/nom-produit.
+  const dernier = segments[segments.length - 1];
+  return segments.length >= 2 && dernier.length >= 8 && /[a-z]/i.test(dernier);
 }
+
+// Conservé pour compatibilité : les tests historiques s'y réfèrent.
+const MOTIFS_FICHE = MOTIFS_HORS_FICHE;
 
 /** Décompresse si le contenu est gzippé — beaucoup de sitemaps le sont. */
 function texteDe(brut) {
@@ -106,9 +155,13 @@ function lireSitemap(xml) {
  * @param {number} [opts.maxSitemaps] sous-sitemaps explorés au maximum
  * @returns {Promise<{urls: string[], sitemapsLus: number, erreurs: string[]}>}
  */
-async function decouvrirFiches(domaine, { limite = 50, maxSitemaps = 3, fetcher = fetch } = {}) {
+async function decouvrirFiches(domaine, { limite = 50, maxSitemaps = 12, fetcher = fetch } = {}) {
   const erreurs = [];
   const trouvees = new Set();
+  // Quelques adresses telles quelles, retenues ou non : sans elles, un
+  // « 0 reconnue » ne dit pas à quoi ressemblent les adresses du marchand,
+  // et on corrige à l'aveugle.
+  const echantillonVu = [];
   let sitemapsLus = 0;
 
   const aExplorer = await sitemapsDe(domaine, { fetcher });
@@ -136,6 +189,7 @@ async function decouvrirFiches(domaine, { limite = 50, maxSitemaps = 3, fetcher 
     }
 
     for (const page of lu.pages) {
+      if (echantillonVu.length < 5) echantillonVu.push(page);
       if (trouvees.size >= limite) break;
       if (ressembleAFiche(page)) trouvees.add(page);
     }
@@ -144,11 +198,18 @@ async function decouvrirFiches(domaine, { limite = 50, maxSitemaps = 3, fetcher 
     // faire : descendre dans un index de deux cents fichiers pour trouver
     // cinquante fiches serait absurde.
     if (trouvees.size < limite) {
-      for (const enfant of lu.index.slice(0, maxSitemaps)) aExplorer.push(enfant);
+      // Les grands sites publient des dizaines de sous-sitemaps : produits,
+      // pages éditoriales, magasins, marques… Descendre dans l'ordre du
+      // fichier fait épuiser le budget sur des branches sans intérêt — c'est
+      // ce qui est arrivé à la Fnac, quatre sitemaps lus sans une seule
+      // fiche. On explore donc d'abord ceux dont le nom évoque un catalogue.
+      const prometteur = (u) => /produit|product|item|catalog|offre|offer|shop|sku/i.test(u);
+      const enfants = [...lu.index].sort((a, b) => Number(prometteur(b)) - Number(prometteur(a)));
+      for (const enfant of enfants.slice(0, maxSitemaps)) aExplorer.push(enfant);
     }
   }
 
-  return { urls: [...trouvees], sitemapsLus, erreurs };
+  return { urls: [...trouvees], sitemapsLus, erreurs, echantillonVu: echantillonVu.slice(0, 5) };
 }
 
 /**

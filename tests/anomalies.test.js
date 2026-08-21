@@ -506,13 +506,27 @@ describe("découverte automatique de fiches", () => {
       expect(d.ressembleAFiche(url)).toBe(true);
     }
     for (const url of [
-      "https://www.cdiscount.com/informatique/",
+      "https://www.cdiscount.com/informatique/", // section de premier niveau
       "https://www.fnac.com/aide/livraison",
-      "https://www.darty.com/nav/achat/gros_electromenager/",
       "https://www.sephora.fr/marques/",
+      "https://www.fnac.com/blog/actualites-tech",
+      "https://www.darty.com/plan-du-site",
+      "https://www.cdiscount.com/media/photo.jpg",
     ]) {
       expect(d.ressembleAFiche(url)).toBe(false);
     }
+  });
+
+  it("accepte un candidat douteux plutôt que de manquer un catalogue entier", () => {
+    // Choix assumé, après l'échec en production de la reconnaissance par
+    // motifs : zéro adresse retenue chez Cdiscount ET la Fnac, sur des
+    // sitemaps pourtant lus correctement.
+    //
+    // Une adresse retenue à tort coûte une lecture, ne rend aucun JSON-LD de
+    // produit, se fait compter un échec et finit désactivée. Une adresse
+    // rejetée à tort coûte le catalogue entier du marchand. Le juge final
+    // n'est pas la forme de l'URL, c'est la page elle-même.
+    expect(d.ressembleAFiche("https://www.darty.com/nav/achat/gros_electromenager/")).toBe(true);
   });
 
   it("lit les sitemaps déclarés dans robots.txt plutôt que de les deviner", async () => {
@@ -604,5 +618,41 @@ describe("découverte automatique de fiches", () => {
     const r = await d.decouvrirFiches("x.fr", { limite: 10, fetcher });
     expect(r.urls).toEqual(["https://x.fr/p/ok"]);
     expect(r.erreurs.length).toBeGreaterThan(0);
+  });
+});
+
+describe("désactivation des fiches stériles", () => {
+  const { ajouterUrl, verifierFiche, listerUrls } = require("../src/watch.js");
+
+  it("cesse de relire une adresse qui ne rend jamais de prix", async () => {
+    const url = "https://x.fr/categorie/sans-produit-test";
+    ajouterUrl({ url, merchant: "TestShop", category: "tout" });
+    const fiche = listerUrls().find((u) => u.url === url);
+
+    // Une page de catégorie : du HTML valide, mais aucun JSON-LD de produit.
+    const fetcher = async () => ({ ok: true, status: 200, text: async () => "<html><body>Rayon</body></html>" });
+
+    let derniere;
+    for (let i = 0; i < 4; i++) derniere = await verifierFiche(fiche, { fetcher });
+
+    // C'est ce garde-fou qui rend tenable une découverte permissive : sans
+    // lui, une page de catégorie serait relue toutes les quinze minutes
+    // indéfiniment, pour rien.
+    expect(derniere.ok).toBe(false);
+    expect(derniere.desactivee).toBe(true);
+    expect(listerUrls().some((u) => u.url === url)).toBe(false);
+  });
+
+  it("ne désactive pas sur un échec isolé", async () => {
+    const url = "https://x.fr/p/produit-passager-test";
+    ajouterUrl({ url, merchant: "TestShop", category: "tout" });
+    const fiche = listerUrls().find((u) => u.url === url);
+    const r = await verifierFiche(fiche, {
+      fetcher: async () => ({ ok: false, status: 503, text: async () => "" }),
+    });
+    // Un marchand en maintenance ne doit pas coûter la fiche.
+    expect(r.ok).toBe(false);
+    expect(r.desactivee).toBe(false);
+    expect(listerUrls().some((u) => u.url === url)).toBe(true);
   });
 });

@@ -111,6 +111,9 @@ async function tickWatch() {
     for (const a of anomalies) {
       console.log(`  → ${a.verdict.toUpperCase()} ${a.prix}€ (réf ${Math.round(a.reference)}€) ${a.url}`);
     }
+    for (const d of resultats.filter((r) => r.desactivee)) {
+      console.log(`  ⨯ fiche désactivée après échecs répétés : ${d.url} (${d.erreur})`);
+    }
   } catch (e) {
     console.error(`[${new Date().toISOString()}] surveillance en échec :`, e.message);
   }
@@ -133,6 +136,11 @@ async function tickDecouverte() {
         );
         for (const err of r.erreurs || []) {
           console.error(`[${new Date().toISOString()}]   ↳ ${r.enseigne} : ${err}`);
+        }
+        // Un « 0 reconnue » ne dit rien de la forme des adresses du marchand.
+        // Sans cet échantillon, on corrige les règles à l'aveugle.
+        for (const vue of r.echantillonVu || []) {
+          console.log(`[${new Date().toISOString()}]   • vu : ${vue}`);
         }
       } else {
         console.error(`[${new Date().toISOString()}] découverte ${r.enseigne} en échec :`, r.erreur);

@@ -82,7 +82,7 @@ async function peupler({
     curseur++;
 
     try {
-      const { urls, sitemapsLus, erreurs } = await decouvrirFiches(enseigne.domaine, {
+      const { urls, sitemapsLus, erreurs, echantillonVu } = await decouvrirFiches(enseigne.domaine, {
         limite: fichesParEnseigne,
         fetcher,
       });
@@ -115,6 +115,7 @@ async function peupler({
         dejaConnues,
         sitemapsLus,
         erreurs: erreurs.slice(0, 2),
+        echantillonVu,
       });
     } catch (e) {
       logSourceEvent("decouverte", false, `${enseigne.nom} : ${e.message}`);

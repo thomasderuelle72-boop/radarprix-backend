@@ -27,6 +27,25 @@ const { evaluer } = require("./anomalies");
 const { isTrustedSeller } = require("./algorithm");
 const { productKey } = require("./productKey");
 const { recupererPage } = require("./fetchPage");
+
+/* Au-delà de ce nombre d'échecs consécutifs, une fiche cesse d'être relue.
+   C'est ce qui rend tenable une découverte permissive : on retient large,
+   et les adresses qui ne sont pas des fiches produits s'éliminent d'elles-
+   mêmes au lieu d'être relues indéfiniment toutes les quinze minutes.
+   Un échec passager (marchand en maintenance) ne suffit donc pas ; une page
+   de catégorie, qui ne rendra jamais de prix, disparaît en une heure. */
+const ECHECS_AVANT_DESACTIVATION = parseInt(process.env.WATCH_ECHECS_MAX || "4", 10);
+
+/** Compte un échec de lecture, et désactive la fiche si elle s'obstine. */
+function compterEchec(ficheId) {
+  db.prepare("UPDATE watched_urls SET echecs = echecs + 1, last_checked_at = datetime('now') WHERE id = ?").run(ficheId);
+  const { echecs } = db.prepare("SELECT echecs FROM watched_urls WHERE id = ?").get(ficheId) || {};
+  if (echecs >= ECHECS_AVANT_DESACTIVATION) {
+    db.prepare("UPDATE watched_urls SET active = 0 WHERE id = ?").run(ficheId);
+    return true;
+  }
+  return false;
+}
 const { upsertDeal } = require("./dealsStore");
 const { scoreDesirabilite, meritePublication } = require("./curation");
 const { logSourceEvent } = require("./db");
@@ -169,14 +188,14 @@ async function verifierFiche(fiche, { fetcher = fetch, maintenant = new Date() }
     // échouerait précisément chez les marchands qui comptent.
     ({ html } = await recupererPage(fiche.url, { fetcher }));
   } catch (e) {
-    db.prepare("UPDATE watched_urls SET echecs = echecs + 1, last_checked_at = datetime('now') WHERE id = ?").run(fiche.id);
-    return { url: fiche.url, ok: false, erreur: e.message };
+    const desactivee = compterEchec(fiche.id);
+    return { url: fiche.url, ok: false, erreur: e.message, desactivee };
   }
 
   const offre = extraireOffre(html);
   if (!offre || !(offre.price > 0)) {
-    db.prepare("UPDATE watched_urls SET echecs = echecs + 1, last_checked_at = datetime('now') WHERE id = ?").run(fiche.id);
-    return { url: fiche.url, ok: false, erreur: "aucun prix structuré trouvé" };
+    const desactivee = compterEchec(fiche.id);
+    return { url: fiche.url, ok: false, erreur: "aucun prix structuré trouvé", desactivee };
   }
 
   // Historique AVANT insertion : sinon le prix qu'on vient de relever
