@@ -106,6 +106,28 @@ function listForumReplies(threadId) {
 
 function addForumReply(threadId, userId, body) {
   db.prepare("INSERT INTO forum_replies (thread_id, user_id, body) VALUES (?, ?, ?)").run(threadId, userId, body);
+
+  // Prévenir l'auteur du sujet. Le require est local pour éviter un cycle :
+  // notifications.js s'appuie sur db.js, que ce module charge déjà.
+  try {
+    const sujet = db.prepare("SELECT user_id, title FROM forum_threads WHERE id = ?").get(threadId);
+    if (sujet) {
+      require("./notifications").creerNotification({
+        userId: sujet.user_id,
+        acteurId: userId, // creerNotification se tait si c'est la même personne
+        type: "reponse_forum",
+        titre: "Nouvelle réponse à votre sujet",
+        corps: sujet.title,
+        cibleVue: "forum-thread",
+        cibleId: threadId,
+      });
+    }
+  } catch (e) {
+    // Une notification perdue ne doit jamais faire échouer la publication
+    // que le membre attend.
+    console.error(`[forum] notification non créée : ${e.message}`);
+  }
+
   return listForumReplies(threadId);
 }
 

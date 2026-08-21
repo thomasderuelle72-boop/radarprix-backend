@@ -16,6 +16,7 @@ const cron = require("node-cron");
 const { runCatalogBatch, PRODUCTS } = require("./scanBatch");
 const { collecterTout } = require("./sources");
 const { purgerDeals } = require("./dealsStore");
+const { purgerNotifications } = require("./notifications");
 const { surveiller } = require("./watch");
 const { sauvegarderMaintenant } = require("./db");
 const { peupler } = require("./peuplement");
@@ -95,6 +96,10 @@ async function tickFlux() {
     // indéfiniment avec des offres retirées que plus rien ne lit.
     const purges = purgerDeals();
     if (purges > 0) console.log(`[${new Date().toISOString()}] ${purges} deal(s) expiré(s) purgé(s)`);
+    // Les notifications lues n'ont plus de lecteur : sans purge, la table
+    // grossit indéfiniment avec des lignes que personne ne relira.
+    const notifs = purgerNotifications();
+    if (notifs > 0) console.log(`[${new Date().toISOString()}] ${notifs} notification(s) ancienne(s) purgée(s)`);
   } catch (e) {
     console.error(`[${new Date().toISOString()}] collecte des flux en échec :`, e.message);
   }

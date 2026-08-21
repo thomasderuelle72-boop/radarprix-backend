@@ -117,6 +117,7 @@ const { tourComplet: tourScraper } = require("./scraperRun");
 const { reinitialiser, apercu } = require("./reinitialisation");
 const { etatPilotage, annoncerPilotage } = require("./pilotage");
 const { etatRadar } = require("./radarEtat");
+const { compterNonLues, listerNotifications, marquerLues } = require("./notifications");
 const { indicateurs, manquees, noterDeal, ingererVeriteTerrain } = require("./mesure");
 const { classement: classementMarchands } = require("./reputation");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
@@ -1478,6 +1479,39 @@ app.get("/api/radar", (req, res) => {
   } catch (e) {
     // Un indicateur en panne ne doit jamais empêcher la navigation de
     // s'afficher : le frontend sait se passer de cette réponse.
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/* ── Activité : tout ce qui attend le membre, en un seul appel ──────
+   Messages privés et notifications sont deux mécanismes distincts en base,
+   mais une seule et même chose pour qui regarde son téléphone : « est-ce
+   qu'on m'a écrit ? ». Les faire compter séparément par le frontend
+   doublerait les appels à chaque écran pour reconstituer une addition. */
+app.get("/api/activite", requireAuth, (req, res) => {
+  try {
+    const messages = countUnreadMessages(req.user.sub);
+    const notifications = compterNonLues(req.user.sub);
+    res.json({ messages, notifications, total: messages + notifications });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/notifications", requireAuth, (req, res) => {
+  try {
+    res.json({ items: listerNotifications(req.user.sub, parseInt(req.query.limit, 10) || 40) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Marque comme lues. Sans identifiants, tout le lot du membre.
+app.post("/api/notifications/lues", requireAuth, (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isFinite) : null;
+    res.json({ marquees: marquerLues(req.user.sub, ids) });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });

@@ -139,3 +139,74 @@ describe("état public du radar", () => {
     expect(typeof etatRadar().fiches).toBe("number");
   });
 });
+
+describe("notifications", () => {
+  const n = require("../src/notifications.js");
+  const { db } = require("../src/db.js");
+
+  /** Deux membres, créés à la volée pour ne dépendre d'aucun état. */
+  function deuxMembres() {
+    const creer = (email) =>
+      db.prepare("INSERT INTO users (email, password_hash, pseudo) VALUES (?, 'x', ?)").run(email, email.split("@")[0])
+        .lastInsertRowid;
+    const suffixe = Date.now() + Math.random();
+    return [creer(`a${suffixe}@test.fr`), creer(`b${suffixe}@test.fr`)];
+  }
+
+  it("ne notifie jamais quelqu'un de sa propre action", () => {
+    const [moi] = deuxMembres();
+    // L'erreur la plus courante de ce genre de système, et la plus agaçante :
+    // répondre à son propre sujet ne doit produire aucune pastille.
+    const id = n.creerNotification({
+      userId: moi, acteurId: moi, type: "reponse_forum", titre: "Ma propre réponse",
+    });
+    expect(id).toBeNull();
+    expect(n.compterNonLues(moi)).toBe(0);
+  });
+
+  it("compte les non lues et les remet à zéro", () => {
+    const [dest, acteur] = deuxMembres();
+    n.creerNotification({ userId: dest, acteurId: acteur, type: "nouvel_abonne", titre: "Nouvel abonné" });
+    n.creerNotification({ userId: dest, acteurId: acteur, type: "commentaire_deal", titre: "Commentaire" });
+    expect(n.compterNonLues(dest)).toBe(2);
+
+    expect(n.marquerLues(dest)).toBe(2);
+    expect(n.compterNonLues(dest)).toBe(0);
+  });
+
+  it("refuse de marquer les notifications d'autrui", () => {
+    const [victime, curieux] = deuxMembres();
+    n.creerNotification({ userId: victime, type: "alerte_prix", titre: "Baisse de prix" });
+    const lignes = n.listerNotifications(victime);
+    // Sans le filtre sur user_id, deviner un identifiant suffirait à marquer
+    // les notifications de n'importe qui.
+    expect(n.marquerLues(curieux, [lignes[0].id])).toBe(0);
+    expect(n.compterNonLues(victime)).toBe(1);
+  });
+
+  it("porte de quoi retourner à ce dont on parle", () => {
+    const [dest, acteur] = deuxMembres();
+    n.creerNotification({
+      userId: dest, acteurId: acteur, type: "reponse_forum", titre: "Réponse",
+      cibleVue: "forum-thread", cibleId: 42,
+    });
+    const [ligne] = n.listerNotifications(dest);
+    // Un libellé sans destination oblige le membre à retrouver lui-même ce
+    // dont on lui parle — pire qu'inutile.
+    expect(ligne.cible_vue).toBe("forum-thread");
+    expect(ligne.cible_id).toBe("42");
+  });
+
+  it("refuse une nature inconnue plutôt que de l'écrire en silence", () => {
+    const [dest] = deuxMembres();
+    expect(() => n.creerNotification({ userId: dest, type: "inventé", titre: "X" })).toThrow(/inconnu/);
+  });
+
+  it("présente les non lues avant les lues", () => {
+    const [dest, acteur] = deuxMembres();
+    n.creerNotification({ userId: dest, acteurId: acteur, type: "nouvel_abonne", titre: "Ancienne" });
+    n.marquerLues(dest);
+    n.creerNotification({ userId: dest, acteurId: acteur, type: "commentaire_deal", titre: "Récente" });
+    expect(n.listerNotifications(dest)[0].titre).toBe("Récente");
+  });
+});

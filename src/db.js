@@ -590,11 +590,31 @@ function listMembersPublic(excludeUserId) {
 
 // ── Commentaires (sous un deal) ─────────────────────────────────
 function addComment(dealQuery, userId, body) {
-  db.prepare("INSERT INTO comments (deal_query, user_id, body) VALUES (?, ?, ?)").run(
-    dealQuery.toLowerCase().trim(),
-    userId,
-    body
-  );
+  const cle = dealQuery.toLowerCase().trim();
+  db.prepare("INSERT INTO comments (deal_query, user_id, body) VALUES (?, ?, ?)").run(cle, userId, body);
+
+  // Prévenir ceux qui ont déjà commenté ce produit : ce sont les seuls dont
+  // on sache qu'ils s'y intéressent. Une notification par personne, pas une
+  // par commentaire précédent — d'où le DISTINCT.
+  try {
+    const participants = db
+      .prepare("SELECT DISTINCT user_id FROM comments WHERE deal_query = ? AND user_id != ?")
+      .all(cle, userId);
+    const { creerNotification } = require("./notifications");
+    for (const { user_id } of participants) {
+      creerNotification({
+        userId: user_id,
+        acteurId: userId,
+        type: "commentaire_deal",
+        titre: "Nouveau commentaire",
+        corps: dealQuery,
+        cibleVue: "produit",
+        cibleId: cle,
+      });
+    }
+  } catch (e) {
+    console.error(`[comments] notification non créée : ${e.message}`);
+  }
 }
 
 function listComments(dealQuery, limit = 100) {
@@ -1010,7 +1030,28 @@ function badgeEventDates(userId, plafond = 1000) {
 // ── Abonnements ──────────────────────────────────────────────────
 function followUser(followerId, followedId) {
   if (followerId === followedId) return { ok: false, error: "On ne peut pas s'abonner à soi-même." };
-  db.prepare("INSERT OR IGNORE INTO follows (follower_id, followed_id) VALUES (?, ?)").run(followerId, followedId);
+  const info = db
+    .prepare("INSERT OR IGNORE INTO follows (follower_id, followed_id) VALUES (?, ?)")
+    .run(followerId, followedId);
+
+  // Seulement à la première fois : INSERT OR IGNORE ne change rien quand
+  // l'abonnement existe déjà, et re-notifier à chaque clic serait absurde.
+  if (info.changes > 0) {
+    try {
+      const suiveur = db.prepare("SELECT pseudo FROM users WHERE id = ?").get(followerId);
+      require("./notifications").creerNotification({
+        userId: followedId,
+        acteurId: followerId,
+        type: "nouvel_abonne",
+        titre: "Nouvel abonné",
+        corps: suiveur?.pseudo ? `${suiveur.pseudo} suit désormais votre profil.` : null,
+        cibleVue: "profil",
+        cibleId: followerId,
+      });
+    } catch (e) {
+      console.error(`[follows] notification non créée : ${e.message}`);
+    }
+  }
   return { ok: true };
 }
 
