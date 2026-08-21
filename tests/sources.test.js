@@ -1,5 +1,5 @@
 // Détecteurs D1 (promotions, codes promo) et D2 (gratuit).
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -350,5 +350,88 @@ describe("D1 — Awin : diagnostic des pannes", () => {
       merchant: "Cdiscount",
       discountPct: 20,
     });
+  });
+});
+
+describe("eBay — second prix du marché français", () => {
+  const ebay = require("../src/sources/ebay.js");
+  const env = { ...process.env };
+
+  beforeEach(() => ebay.oublierJeton());
+  afterEach(() => {
+    process.env = { ...env };
+    ebay.oublierJeton();
+  });
+
+  const jetonOk = { ok: true, status: 200, json: async () => ({ access_token: "T", expires_in: 7200 }) };
+
+  it("interroge le marché français, pas l'américain", async () => {
+    process.env.EBAY_APP_ID = "id";
+    process.env.EBAY_CERT_ID = "secret";
+    let entetes = null;
+    await ebay.chercher({
+      q: "casque",
+      fetcher: async (url, opts) => {
+        if (url === ebay.OAUTH) return jetonOk;
+        entetes = opts.headers;
+        return { ok: true, status: 200, json: async () => ({ itemSummaries: [] }) };
+      },
+    });
+    // Sans cet en-tête, eBay répond en dollars avec des vendeurs américains.
+    expect(entetes["X-EBAY-C-MARKETPLACE-ID"]).toBe("EBAY_FR");
+  });
+
+  it("cherche par code-barres quand il est connu, sinon par mots-clés", async () => {
+    process.env.EBAY_APP_ID = "id";
+    process.env.EBAY_CERT_ID = "secret";
+    const vues = [];
+    const fetcher = async (url) => {
+      if (url === ebay.OAUTH) return jetonOk;
+      vues.push(url);
+      return { ok: true, status: 200, json: async () => ({ itemSummaries: [] }) };
+    };
+    await ebay.chercher({ gtin: "0711719541028", fetcher });
+    await ebay.chercher({ q: "manette ps5", fetcher });
+    expect(vues[0]).toContain("gtin=0711719541028");
+    expect(vues[0]).not.toContain("q=");
+    expect(vues[1]).toContain("q=manette");
+  });
+
+  it("ne redemande pas un jeton encore valide", async () => {
+    process.env.EBAY_APP_ID = "id";
+    process.env.EBAY_CERT_ID = "secret";
+    let jetons = 0;
+    const fetcher = async (url) => {
+      if (url === ebay.OAUTH) {
+        jetons++;
+        return jetonOk;
+      }
+      return { ok: true, status: 200, json: async () => ({ itemSummaries: [] }) };
+    };
+    await ebay.chercher({ q: "a", fetcher });
+    await ebay.chercher({ q: "b", fetcher });
+    expect(jetons).toBe(1);
+  });
+
+  it("sépare le neuf du reconditionné, qui ne se comparent pas", () => {
+    const base = { itemId: "1", title: "Console", price: { value: "399.00", currency: "EUR" } };
+    expect(ebay.normaliserArticle({ ...base, condition: "New" })).toMatchObject({ itemCondition: "neuf", type: "produit", detector: "D3" });
+    expect(ebay.normaliserArticle({ ...base, condition: "Refurbished" })).toMatchObject({ itemCondition: "reconditionne", type: "occasion", detector: "D4" });
+    expect(ebay.normaliserArticle({ ...base, condition: "Used" })).toMatchObject({ itemCondition: "occasion", detector: "D4" });
+  });
+
+  it("n'invente jamais de prix de référence", () => {
+    const article = ebay.normaliserArticle({
+      itemId: "9", title: "Casque", price: { value: "79.90", currency: "EUR" }, condition: "New",
+    });
+    // eBay donne un prix, pas une valeur de marché : afficher une remise
+    // contre une référence inventée serait un mensonge au visiteur.
+    expect(article.referencePrice).toBeNull();
+    expect(article.price).toBe(79.9);
+  });
+
+  it("écarte un article sans prix exploitable", () => {
+    expect(ebay.normaliserArticle({ itemId: "1", title: "X" })).toBeNull();
+    expect(ebay.normaliserArticle({ itemId: "1", title: "X", price: { value: "0" } })).toBeNull();
   });
 });

@@ -9,6 +9,36 @@
 // Un flux en panne ne doit pas priver le site de tout son contenu.
 const { fetchEpicFreeGames } = require("./epic");
 const { fetchStrackrDeals, fetchAwinOffers } = require("./promos");
+const { chercher: chercherEbay } = require("./ebay");
+const { allProducts } = require("../catalog");
+
+/* Position dans le catalogue, pour explorer un terme différent à chaque
+   passage plutôt que de redemander toujours les mêmes. */
+let curseurEbay = 0;
+
+/**
+ * Explore quelques produits du catalogue sur eBay. Volontairement modeste :
+ * l'intérêt n'est pas d'aspirer eBay, mais d'obtenir un second prix pour des
+ * produits que le site suit déjà — ce qui rend une anomalie comparable.
+ */
+async function collecterEbay({ termes = 3, parTerme = 25, fetcher = fetch } = {}) {
+  const produits = allProducts();
+  if (produits.length === 0) return [];
+
+  const resultats = [];
+  for (let i = 0; i < termes; i++) {
+    const produit = produits[curseurEbay % produits.length];
+    curseurEbay++;
+    try {
+      resultats.push(...(await chercherEbay({ q: produit.name, limite: parTerme, fetcher })));
+    } catch (e) {
+      // Un terme en échec ne doit pas emporter le lot : les identifiants
+      // peuvent être bons et une seule requête avoir échoué.
+      console.error(`[ebay] "${produit.name}" : ${e.message}`);
+    }
+  }
+  return resultats;
+}
 const { upsertDeal, markMissingAsRemoved } = require("../dealsStore");
 const { scoreDesirabilite, meritePublication } = require("../curation");
 const { logSourceEvent } = require("../db");
@@ -36,6 +66,16 @@ const SOURCES = [
     libelle: "Strackr — promotions et codes promo agrégés",
     actif: () => Boolean(process.env.STRACKR_API_KEY),
     collecter: fetchStrackrDeals,
+  },
+  {
+    nom: "ebay",
+    detecteur: "D3",
+    libelle: "eBay — prix du marché français",
+    actif: () => Boolean(process.env.EBAY_APP_ID && process.env.EBAY_CERT_ID),
+    // Une deuxième opinion sur le prix, indépendante de nos propres relevés.
+    // Les termes explorés viennent du catalogue : on cherche ce que le site
+    // suit déjà, plutôt qu'au hasard.
+    collecter: collecterEbay,
   },
   {
     nom: "awin",
