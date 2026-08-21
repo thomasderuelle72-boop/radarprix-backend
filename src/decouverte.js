@@ -19,7 +19,23 @@ const { recupererPage } = require("./fetchPage");
 
 /* Budget de temps global. Même avec un délai par requête, douze sitemaps
    lents mis bout à bout dépasseraient largement l'intervalle du cron. */
-const BUDGET_MS = parseInt(process.env.DECOUVERTE_BUDGET_MS || "90000", 10);
+function budgetMs() {
+  const n = parseInt(process.env.DECOUVERTE_BUDGET_MS || "", 10);
+  return Number.isFinite(n) && n > 0 ? n : 90000;
+}
+
+/* Plafond de données par exploration. Constaté sur la facture Bright Data :
+   94 Mo aspirés chez un seul marchand en un après-midi, pour 43 requêtes —
+   soit plus de 2 Mo par sitemap. Les grandes enseignes publient des index
+   volumineux, et rien n'obligeait à les télécharger jusqu'au bout.
+   Le budget de temps ne protège pas de ça : un gros fichier arrive vite. */
+/* Relu à chaque appel, et non figé au chargement du module : un réglage
+   capturé à l'import ne peut plus être ajusté sans redéployer — deux tests
+   l'ont révélé, ici et sur le délai d'expiration. */
+function plafondOctets() {
+  const n = parseInt(process.env.DECOUVERTE_MAX_OCTETS || "", 10);
+  return Number.isFinite(n) && n > 0 ? n : 12 * 1024 * 1024;
+}
 
 
 /* ── Reconnaître une fiche produit ────────────────────────────────
@@ -173,11 +189,21 @@ async function decouvrirFiches(domaine, { limite = 50, maxSitemaps = 12, fetcher
   let sitemapsLus = 0;
 
   const aExplorer = await sitemapsDe(domaine, { fetcher });
-  const echeance = Date.now() + BUDGET_MS;
+  const budget = budgetMs();
+  const plafond = plafondOctets();
+  const echeance = Date.now() + budget;
+  let octetsLus = 0;
 
   while (aExplorer.length > 0 && trouvees.size < limite && sitemapsLus < maxSitemaps + 1) {
     if (Date.now() > echeance) {
-      erreurs.push(`budget de ${Math.round(BUDGET_MS / 1000)} s dépassé — exploration interrompue`);
+      erreurs.push(`budget de ${Math.round(budget / 1000)} s dépassé — exploration interrompue`);
+      break;
+    }
+    if (octetsLus > plafond) {
+      erreurs.push(
+        `plafond de ${Math.round(plafond / 1024 / 1024)} Mo atteint — exploration interrompue ` +
+          `(${Math.round(octetsLus / 1024 / 1024)} Mo téléchargés)`
+      );
       break;
     }
     const url = aExplorer.shift();
@@ -186,6 +212,7 @@ async function decouvrirFiches(domaine, { limite = 50, maxSitemaps = 12, fetcher
       // Les sitemaps sont souvent protégés au même titre que les fiches :
       // on passe par le même récupérateur à deux étages.
       const { html } = await recupererPage(url, { fetcher });
+      octetsLus += typeof html === "string" ? html.length : (html?.byteLength ?? 0);
       xml = texteDe(html);
       sitemapsLus++;
     } catch (e) {

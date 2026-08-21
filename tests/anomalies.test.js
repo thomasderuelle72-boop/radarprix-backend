@@ -712,3 +712,30 @@ describe("garde-fous de temps", () => {
     expect(d.lireSitemap(xml).pages).toEqual(["https://x.fr/p?a=1&b=2"]);
   });
 });
+
+describe("plafond de données de la découverte", () => {
+  const d = require("../src/decouverte.js");
+
+  it("interrompt l'exploration avant d'aspirer un catalogue entier", async () => {
+    const avant = process.env.DECOUVERTE_MAX_OCTETS;
+    process.env.DECOUVERTE_MAX_OCTETS = "5000";
+    try {
+      // Un index qui renvoie vers d'autres index, chacun volumineux : sans
+      // plafond, on descend indéfiniment. Constaté sur la facture réelle —
+      // 94 Mo chez un seul marchand en un après-midi.
+      const gros = `<sitemapindex>${Array.from({ length: 20 }, (_, i) => `<sitemap><loc>https://x.fr/s${i}.xml</loc></sitemap>`).join("")}</sitemapindex>` + " ".repeat(6000);
+      const fetcher = async (url) =>
+        url.endsWith("robots.txt")
+          ? { ok: true, status: 200, text: async () => "Sitemap: https://x.fr/index.xml" }
+          : { ok: true, status: 200, text: async () => gros };
+
+      const r = await d.decouvrirFiches("x.fr", { limite: 50, fetcher });
+      expect(r.erreurs.some((e) => /plafond de .* atteint/.test(e))).toBe(true);
+      // Et l'exploration s'arrête tôt plutôt que de parcourir les vingt.
+      expect(r.sitemapsLus).toBeLessThan(5);
+    } finally {
+      if (avant === undefined) delete process.env.DECOUVERTE_MAX_OCTETS;
+      else process.env.DECOUVERTE_MAX_OCTETS = avant;
+    }
+  });
+});
