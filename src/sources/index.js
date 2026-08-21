@@ -11,6 +11,7 @@ const { fetchEpicFreeGames } = require("./epic");
 const { fetchStrackrDeals, fetchAwinOffers } = require("./promos");
 const { chercher: chercherEbay } = require("./ebay");
 const { allProducts } = require("../catalog");
+const { estActif } = require("../pilotage");
 
 /* Position dans le catalogue, pour explorer un terme différent à chaque
    passage plutôt que de redemander toujours les mêmes. */
@@ -57,21 +58,24 @@ const SOURCES = [
     nom: "epic",
     detecteur: "D2",
     libelle: "Epic Games Store — jeux offerts",
-    actif: () => true, // endpoint public, aucune clé nécessaire
+    // Une clé présente ne suffit plus : il faut aussi que la source ait été
+    // nommée dans DETECTEURS_ACTIFS. Voir pilotage.js — on préfère un site
+    // silencieux à un site qui se remplit sans qu'on sache d'où.
+    actif: () => estActif("epic"),
     collecter: fetchEpicFreeGames,
   },
   {
     nom: "strackr",
     detecteur: "D1",
     libelle: "Strackr — promotions et codes promo agrégés",
-    actif: () => Boolean(process.env.STRACKR_API_KEY),
+    actif: () => estActif("strackr") && Boolean(process.env.STRACKR_API_KEY),
     collecter: fetchStrackrDeals,
   },
   {
     nom: "ebay",
     detecteur: "D3",
     libelle: "eBay — prix du marché français",
-    actif: () => Boolean(process.env.EBAY_APP_ID && process.env.EBAY_CERT_ID),
+    actif: () => estActif("ebay") && Boolean(process.env.EBAY_APP_ID && process.env.EBAY_CERT_ID),
     // Une deuxième opinion sur le prix, indépendante de nos propres relevés.
     // Les termes explorés viennent du catalogue : on cherche ce que le site
     // suit déjà, plutôt qu'au hasard.
@@ -81,7 +85,7 @@ const SOURCES = [
     nom: "awin",
     detecteur: "D1",
     libelle: "Awin — promotions et codes promo",
-    actif: () => Boolean(process.env.AWIN_API_TOKEN),
+    actif: () => estActif("awin") && Boolean(process.env.AWIN_API_TOKEN),
     collecter: fetchAwinOffers,
   },
 ];

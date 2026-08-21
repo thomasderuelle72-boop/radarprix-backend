@@ -114,6 +114,8 @@ const { amorcerDepuisSnapshots } = require("./watchSeed");
 const { peupler, enseignes } = require("./peuplement");
 const { diagnostiquer } = require("./decouverte");
 const { tourComplet: tourScraper } = require("./scraperRun");
+const { reinitialiser, apercu } = require("./reinitialisation");
+const { etatPilotage, annoncerPilotage } = require("./pilotage");
 const { indicateurs, manquees, noterDeal, ingererVeriteTerrain } = require("./mesure");
 const { classement: classementMarchands } = require("./reputation");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
@@ -519,6 +521,35 @@ app.post("/api/admin/watch/peupler", requireAuth, requireAdmin, async (req, res)
 // Un tour d'extracteur à la demande : récupère les collectes prêtes puis en
 // relance. Asynchrone par nature — le premier appel ne rend souvent rien,
 // c'est le second qui rapporte les produits.
+// Ce que la remise à zéro effacerait — consultable sans rien effacer.
+app.get("/api/admin/reinitialiser", requireAuth, requireAdmin, (req, res) => {
+  res.json({ apercu: apercu(), pilotage: etatPilotage() });
+});
+
+// Remise à zéro du contenu produit par les détecteurs. Les comptes, le forum
+// et la messagerie ne sont jamais touchés : ce sont les seules données que
+// personne ne peut régénérer.
+app.post("/api/admin/reinitialiser", requireAuth, requireAdmin, (req, res) => {
+  // Confirmation explicite : une route qui vide des tables ne doit pas
+  // pouvoir être déclenchée par un clic mal placé ni par un appel recopié.
+  if (req.body?.confirmation !== "REINITIALISER") {
+    return res.status(400).json({
+      error: 'Confirmation requise : envoie {"confirmation":"REINITIALISER"}.',
+      apercu: apercu(),
+    });
+  }
+  try {
+    res.json({ efface: reinitialiser({ garderHistorique: Boolean(req.body?.garderHistorique) }) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// État du pilotage : ce qui tourne, ce qui pourrait tourner, ce qui manque.
+app.get("/api/admin/pilotage", requireAuth, requireAdmin, (req, res) => {
+  res.json(etatPilotage());
+});
+
 app.post("/api/admin/scraper/tour", requireAuth, requireAdmin, async (req, res) => {
   try {
     res.json(await tourScraper());
@@ -1440,6 +1471,7 @@ app.get("/api/health", (req, res) => res.json({ ok: true }));
 
 if (require.main === module) {
   const serveur = app.listen(PORT, () => console.log(`RadarPrix backend en écoute sur le port ${PORT}`));
+  annoncerPilotage();
 
   // Sur un hébergeur qui ne fait tourner qu'un seul service (ex: Railway sur
   // le plan actuel), il n'y a personne d'autre pour exécuter `npm run cron` :

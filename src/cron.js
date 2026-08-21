@@ -20,6 +20,7 @@ const { surveiller } = require("./watch");
 const { sauvegarderMaintenant } = require("./db");
 const { peupler } = require("./peuplement");
 const { tourComplet: tourScraper } = require("./scraperRun");
+const { estActif, annoncerPilotage } = require("./pilotage");
 
 const BATCH_SIZE = parseInt(process.env.CRON_BATCH_SIZE || "10", 10);
 const SCHEDULE = process.env.CRON_SCHEDULE || "0 */2 * * *"; // toutes les 2h par défaut
@@ -65,7 +66,7 @@ const SCHEDULE_SCRAPER = process.env.CRON_SCRAPER_SCHEDULE || "41 */6 * * *";
 let quotaSerpApiEpuise = false;
 
 async function tick() {
-  if (quotaSerpApiEpuise) return;
+  if (!estActif("catalogue") || quotaSerpApiEpuise) return;
   const results = await runCatalogBatch(BATCH_SIZE);
   if (results.length > 0 && results.every((r) => !r.ok && /run out of searches|429/i.test(r.error || ""))) {
     quotaSerpApiEpuise = true;
@@ -101,6 +102,7 @@ async function tickFlux() {
 
 /** Surveillance des fiches marchandes (détecteur D3, erreurs de prix). */
 async function tickWatch() {
+  if (!estActif("watch")) return;
   try {
     const resultats = await surveiller();
     if (resultats.length === 0) return; // aucune fiche surveillée pour l'instant
@@ -121,6 +123,7 @@ async function tickWatch() {
 
 /** Découverte automatique de fiches produits via les sitemaps marchands. */
 async function tickDecouverte() {
+  if (!estActif("sitemap")) return;
   try {
     const resultats = await peupler();
     for (const r of resultats) {
@@ -153,6 +156,7 @@ async function tickDecouverte() {
 
 /** Extracteurs Bright Data : récupère les collectes prêtes, en relance. */
 async function tickScraper() {
+  if (!estActif("scraper")) return;
   try {
     const { recuperees, declenchees } = await tourScraper();
     for (const r of recuperees) {
@@ -182,6 +186,7 @@ function tickBackup() {
 }
 
 function startCron() {
+  annoncerPilotage();
   cron.schedule(SCHEDULE, tick);
   cron.schedule(SCHEDULE_FLUX, tickFlux);
   cron.schedule(SCHEDULE_WATCH, tickWatch);
