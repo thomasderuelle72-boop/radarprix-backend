@@ -32,6 +32,15 @@ const horodatage = () =>
 
 const dossierSauvegardes = (dbPath) => path.join(path.dirname(dbPath), "sauvegardes");
 
+/** Préfixe des copies d'une base donnée.
+ *
+ *  Les sauvegardes étaient nommées d'après le projet, pas d'après le fichier
+ *  dont elles sont la copie. Deux bases voisines dans un même dossier — deux
+ *  suites de tests, une base de recette à côté de la vraie — partageaient donc
+ *  le même jeu de copies, et la seconde à démarrer se voyait restaurer le
+ *  contenu de la première. Le nom du fichier fait maintenant partie de la clé. */
+const prefixe = (dbPath) => `${path.basename(dbPath, path.extname(dbPath))}-`;
+
 /** Les fichiers annexes du mode WAL. Ils doivent suivre la base ou disparaître
  *  avec elle : un -wal orphelin appliqué sur une base restaurée corromprait
  *  les deux. */
@@ -43,7 +52,7 @@ function listerSauvegardes(dbPath) {
   if (!fs.existsSync(dossier)) return [];
   return fs
     .readdirSync(dossier)
-    .filter((f) => f.endsWith(".sqlite"))
+    .filter((f) => f.startsWith(prefixe(dbPath)) && f.endsWith(".sqlite"))
     .map((f) => {
       const complet = path.join(dossier, f);
       const st = fs.statSync(complet);
@@ -148,7 +157,7 @@ function sauvegarderBase(db, dbPath) {
     db.pragma("wal_checkpoint(TRUNCATE)");
     const dossier = dossierSauvegardes(dbPath);
     fs.mkdirSync(dossier, { recursive: true });
-    const cible = path.join(dossier, `radarprix-${horodatage()}.sqlite`);
+    const cible = path.join(dossier, `${prefixe(dbPath)}${horodatage()}.sqlite`);
     fs.copyFileSync(dbPath, cible);
     console.log(`[persistance] sauvegarde écrite : ${path.basename(cible)}`);
 
