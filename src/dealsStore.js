@@ -21,7 +21,11 @@ const { db } = require("./db");
 // Écrit une fois ici plutôt que dupliqué en chaînes libres dans chaque
 // détecteur : une faute de frappe dans un type rendrait des deals
 // invisibles au filtrage sans qu'aucune erreur ne soit levée.
-const TYPES_DEAL = ["erreur", "promo", "code", "gratuit", "odr", "occasion"];
+// "produit" : une fiche lue dont le prix n'a rien d'anormal. Ce n'est pas
+// une affaire, et le type existe justement pour ne pas la faire passer pour
+// telle — mais c'est le catalogue qui donne au site quelque chose à montrer
+// dès le premier passage, avant qu'aucun historique n'existe.
+const TYPES_DEAL = ["erreur", "promo", "code", "gratuit", "odr", "occasion", "produit"];
 const DETECTEURS = ["D1", "D2", "D3", "D4"];
 const ETATS = ["neuf", "reconditionne", "occasion"];
 

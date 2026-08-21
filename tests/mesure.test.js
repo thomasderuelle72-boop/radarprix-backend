@@ -294,6 +294,39 @@ describe("curation — le garde-fou du flux", () => {
     }
   });
 
+  it("publie une fiche au prix normal, sans lui prêter de remise", () => {
+    // Sans ce comportement, le site reste vide jusqu'à la première anomalie —
+    // un évènement rare, et indétectable avant qu'un historique existe.
+    const fiche = { detector: "D3", type: "produit", price: 349, merchant: "Fnac" };
+    expect(curation.meritePublication(fiche)).toBe(true);
+    // Aucune remise inventée, donc un score qui la range derrière tout le reste.
+    expect(curation.scoreDesirabilite(fiche)).toBe(0);
+  });
+
+  it("ne publie pas un produit sans prix exploitable", () => {
+    expect(curation.meritePublication({ detector: "D3", type: "produit", merchant: "Fnac" })).toBe(false);
+    expect(curation.meritePublication({ detector: "D3", type: "produit", price: 0, merchant: "Fnac" })).toBe(false);
+  });
+
+  it("laisse couper entièrement le catalogue", () => {
+    const avant = process.env.PUBLIER_CATALOGUE;
+    process.env.PUBLIER_CATALOGUE = "false";
+    try {
+      expect(curation.meritePublication({ detector: "D3", type: "produit", price: 349 })).toBe(false);
+      // Les vraies détections, elles, continuent de passer.
+      expect(curation.meritePublication({ detector: "D2", type: "gratuit", price: 0 })).toBe(true);
+    } finally {
+      if (avant === undefined) delete process.env.PUBLIER_CATALOGUE;
+      else process.env.PUBLIER_CATALOGUE = avant;
+    }
+  });
+
+  it("classe toujours une vraie affaire devant une simple fiche relevée", () => {
+    const releve = { detector: "D3", type: "produit", price: 349, merchant: "Fnac" };
+    const affaire = { detector: "D3", type: "erreur", price: 99, referencePrice: 349, merchant: "Fnac" };
+    expect(curation.scoreDesirabilite(affaire)).toBeGreaterThan(curation.scoreDesirabilite(releve));
+  });
+
   it("ne publie pas une offre non chiffrée, faute de pouvoir la classer", () => {
     // « Livraison offerte dès 25 € » : limite assumée.
     expect(curation.meritePublication({ detector: "D1", type: "promo" })).toBe(false);

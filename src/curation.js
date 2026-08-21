@@ -21,6 +21,9 @@ const BONUS_TYPE = {
   odr: 8,
   occasion: 3,
   promo: 0,
+  // Zéro, et c'est délibéré : une fiche au prix normal ne doit jamais passer
+  // devant une affaire réelle. Elle remplit le catalogue, elle ne le classe pas.
+  produit: 0,
 };
 
 /**
@@ -145,6 +148,20 @@ const SEUIL_REMISE_CODE = 10;
  */
 function meritePublication(deal, score = null) {
   if (deal.detector === "D2") return true;
+
+  /* Une fiche au prix normal se publie sans condition de remise : elle ne
+     prétend à rien. C'est le catalogue du site — ce qu'un visiteur s'attend à
+     trouver en arrivant, et ce qui permet d'exister avant qu'un historique
+     suffisant ait pu se constituer.
+
+     Son score reste nul, donc elle se range derrière toute vraie affaire.
+     PUBLIER_CATALOGUE=false coupe entièrement ce comportement pour revenir à
+     un site qui n'affiche que des anomalies. */
+  if (deal.type === "produit") {
+    if (process.env.PUBLIER_CATALOGUE === "false") return false;
+    if (deal.expiresAt && new Date(deal.expiresAt) <= new Date()) return false;
+    return Number.isFinite(deal.price) && deal.price > 0;
+  }
 
   // Une offre déjà expirée ne mérite jamais d'être publiée, quel que soit
   // son score — c'est le premier motif de déception d'un site de bons plans.

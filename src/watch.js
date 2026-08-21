@@ -202,6 +202,11 @@ async function verifierFiche(fiche, { fetcher = fetch, maintenant = new Date() }
   const pairs = prixDesPairs(fiche.product_key, fiche.id);
   const reference = pairs.length > 0 ? mediane(pairs) : medianeOuNull(passe.map((p) => p.price));
   if (!(reference > 0)) {
+    // Aucune référence : c'est le cas de toute fiche fraîchement découverte,
+    // et cela le restera plusieurs passages. On ne peut rien affirmer sur le
+    // prix — mais le produit existe, et le catalogue peut déjà le montrer.
+    // Sans cela, le site resterait vide jusqu'à la première anomalie.
+    publierProduit(fiche, offre, null);
     return { url: fiche.url, ok: true, prix: offre.price, verdict: "normal", raison: "pas de référence" };
   }
 
@@ -215,9 +220,8 @@ async function verifierFiche(fiche, { fetcher = fetch, maintenant = new Date() }
     maintenant,
   });
 
-  if (evaluation.verdict !== "normal") {
-    publierAnomalie(fiche, offre, reference, evaluation);
-  }
+  if (evaluation.verdict !== "normal") publierAnomalie(fiche, offre, reference, evaluation);
+  else publierProduit(fiche, offre, reference);
 
   return { url: fiche.url, ok: true, prix: offre.price, reference, ...evaluation };
 }
@@ -234,6 +238,42 @@ function medianeOuNull(nums) {
 }
 
 /** Écrit une anomalie confirmée dans le flux public. */
+/**
+ * Publie une fiche dont le prix n'a rien d'anormal.
+ *
+ * Ce n'est pas une affaire et le type "produit" le dit explicitement : son
+ * score reste nul, donc elle se range derrière toute détection réelle. Elle
+ * existe pour que le site ait un catalogue dès le premier passage, sans quoi
+ * il resterait vide jusqu'à la première erreur de prix — un évènement rare
+ * par nature, et qu'on ne peut de toute façon pas détecter sans historique.
+ */
+function publierProduit(fiche, offre, reference) {
+  const deal = {
+    source: "watch",
+    externalId: String(fiche.id),
+    detector: "D3",
+    type: "produit",
+    title: offre.name || fiche.label || fiche.url,
+    url: fiche.url,
+    imageUrl: offre.image || null,
+    merchant: fiche.merchant,
+    category: fiche.category || "tout",
+    itemCondition: "neuf",
+    price: offre.price,
+    // Pas de référence inventée : sans comparaison possible, la fiche
+    // n'annonce aucune remise. C'est la règle qui protège tout le reste.
+    referencePrice: Number.isFinite(reference) && reference > 0 ? reference : null,
+    currency: offre.currency || "EUR",
+    payload: { gtin: offre.gtin || null, sourceExtraction: offre.source },
+  };
+  const score = scoreDesirabilite(deal, { fiabiliteMarchand: fiabilite(fiche.merchant) });
+  upsertDeal({
+    ...deal,
+    score,
+    publishedAt: meritePublication(deal, score) ? new Date().toISOString().slice(0, 19).replace("T", " ") : null,
+  });
+}
+
 function publierAnomalie(fiche, offre, reference, evaluation) {
   const deal = {
     source: "watch",
