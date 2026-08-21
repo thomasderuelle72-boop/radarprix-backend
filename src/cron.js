@@ -19,6 +19,7 @@ const { purgerDeals } = require("./dealsStore");
 const { surveiller } = require("./watch");
 const { sauvegarderMaintenant } = require("./db");
 const { peupler } = require("./peuplement");
+const { tourComplet: tourScraper } = require("./scraperRun");
 
 const BATCH_SIZE = parseInt(process.env.CRON_BATCH_SIZE || "10", 10);
 const SCHEDULE = process.env.CRON_SCHEDULE || "0 */2 * * *"; // toutes les 2h par défaut
@@ -51,6 +52,11 @@ const SCHEDULE_BACKUP = process.env.CRON_BACKUP_SCHEDULE || "37 4 * * *";
 // sitemap entier saturerait la base et ressemblerait à une attaque vue du
 // marchand.
 const SCHEDULE_DECOUVERTE = process.env.CRON_DECOUVERTE_SCHEDULE || "23 */3 * * *";
+
+// Extracteurs Bright Data. Cadence lente et facturée au produit : on ne
+// cherche pas ici la fraîcheur du prix — c'est le rôle de la surveillance —
+// mais une lecture structurée fiable, là où nos propres motifs échouent.
+const SCHEDULE_SCRAPER = process.env.CRON_SCRAPER_SCHEDULE || "41 */6 * * *";
 
 async function tick() {
   const results = await runCatalogBatch(BATCH_SIZE);
@@ -109,6 +115,25 @@ async function tickDecouverte() {
   }
 }
 
+/** Extracteurs Bright Data : récupère les collectes prêtes, en relance. */
+async function tickScraper() {
+  try {
+    const { recuperees, declenchees } = await tourScraper();
+    for (const r of recuperees) {
+      if (r.enCours) continue; // silencieux : c'est l'état normal d'une collecte jeune
+      if (r.erreur) console.error(`[${new Date().toISOString()}] extraction ${r.marchand} en échec :`, r.erreur);
+      else console.log(`[${new Date().toISOString()}] extraction ${r.marchand} : ${r.publies} produit(s) publié(s)`);
+    }
+    for (const d of declenchees) {
+      if (d.ignore) console.log(`[${new Date().toISOString()}] extraction ${d.marchand} ignorée : ${d.motif}`);
+      else if (d.erreur) console.error(`[${new Date().toISOString()}] déclenchement ${d.marchand} en échec :`, d.erreur);
+      else console.log(`[${new Date().toISOString()}] extraction ${d.marchand} déclenchée sur ${d.urls} fiche(s)`);
+    }
+  } catch (e) {
+    console.error(`[${new Date().toISOString()}] extraction en échec :`, e.message);
+  }
+}
+
 /** Copie de sécurité de la base, indépendante des redéploiements. */
 function tickBackup() {
   try {
@@ -126,11 +151,13 @@ function startCron() {
   cron.schedule(SCHEDULE_WATCH, tickWatch);
   cron.schedule(SCHEDULE_BACKUP, tickBackup);
   cron.schedule(SCHEDULE_DECOUVERTE, tickDecouverte);
+  cron.schedule(SCHEDULE_SCRAPER, tickScraper);
   console.log(`Cron RadarPrix démarré — ${BATCH_SIZE} produits toutes les exécutions (${SCHEDULE}).`);
   console.log(`Collecte des flux gratuits/promotions : ${SCHEDULE_FLUX}.`);
   console.log(`Surveillance des fiches marchandes : ${SCHEDULE_WATCH}.`);
   console.log(`Sauvegarde de la base : ${SCHEDULE_BACKUP}.`);
   console.log(`Découverte de fiches marchandes : ${SCHEDULE_DECOUVERTE}.`);
+  console.log(`Extracteurs Bright Data : ${SCHEDULE_SCRAPER}.`);
   console.log(`Catalogue total : ${PRODUCTS.length} produits.`);
   tick(); // premier lot immédiat au démarrage
   tickFlux();
@@ -138,7 +165,7 @@ function startCron() {
   tickDecouverte(); // premier peuplement immédiat : le site ne doit pas rester vide
 }
 
-module.exports = { startCron, tick, tickFlux, tickWatch, tickDecouverte };
+module.exports = { startCron, tick, tickFlux, tickWatch, tickDecouverte, tickScraper };
 
 // Lancé directement (`npm run cron`), et seulement dans ce cas : pas d'effet
 // de bord au simple require() par server.js.

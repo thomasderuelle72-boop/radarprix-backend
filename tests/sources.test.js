@@ -435,3 +435,78 @@ describe("eBay — second prix du marché français", () => {
     expect(ebay.normaliserArticle({ itemId: "1", title: "X", price: { value: "0" } })).toBeNull();
   });
 });
+
+describe("extracteurs Bright Data — collecte asynchrone", () => {
+  const sc = require("../src/sources/scraper.js");
+  const env = { ...process.env };
+  afterEach(() => {
+    process.env = { ...env };
+  });
+
+  it("ne devine aucun identifiant d'extracteur", () => {
+    // La leçon d'Awin : un identifiant plausible mais faux coûte plus cher
+    // qu'une source désactivée, parce qu'on cherche la panne du mauvais côté.
+    delete process.env.BRIGHT_DATA_DATASETS;
+    expect(sc.extracteurs()).toEqual([]);
+    process.env.BRIGHT_DATA_DATASETS = "cdiscount:gd_abc123:hightech, fnac:gd_def456";
+    expect(sc.extracteurs()).toEqual([
+      { marchand: "cdiscount", datasetId: "gd_abc123", categorie: "hightech" },
+      { marchand: "fnac", datasetId: "gd_def456", categorie: "tout" },
+    ]);
+  });
+
+  it("mémorise la collecte déclenchée pour la reprendre plus tard", async () => {
+    process.env.BRIGHT_DATA_API_KEY = "cle";
+    const id = await sc.declencher({
+      datasetId: "gd_test",
+      marchand: "TestShop",
+      urls: ["https://x.fr/p/1", "https://x.fr/p/2"],
+      fetcher: async (url, opts) => {
+        expect(url).toContain("/datasets/v3/trigger?dataset_id=gd_test");
+        // Le corps attendu est une liste d'objets {url}, pas des chaînes.
+        expect(JSON.parse(opts.body)).toEqual([{ url: "https://x.fr/p/1" }, { url: "https://x.fr/p/2" }]);
+        return { ok: true, status: 200, json: async () => ({ snapshot_id: "snap_1" }) };
+      },
+    });
+    expect(id).toBe("snap_1");
+    expect(sc.collectesEnCours().some((c) => c.snapshot_id === "snap_1")).toBe(true);
+  });
+
+  it("traite un 202 comme « pas encore prête », pas comme une panne", async () => {
+    process.env.BRIGHT_DATA_API_KEY = "cle";
+    const r = await sc.recupererCollecte("snap_1", {
+      fetcher: async () => ({ ok: false, status: 202, json: async () => ({}) }),
+    });
+    // Sans ce cas, on abandonnerait des instantanés parfaitement valides.
+    expect(r.prete).toBe(false);
+    expect(r.produits).toEqual([]);
+  });
+
+  it("accepte les vocabulaires différents d'un extracteur à l'autre", () => {
+    const a = sc.normaliserProduit(
+      { url: "https://x.fr/p/1", title: "Casque", final_price: "79,90", currency: "EUR", upc: "123456789" },
+      { marchand: "Fnac", categorie: "hightech" }
+    );
+    const b = sc.normaliserProduit(
+      { product_url: "https://y.fr/p/2", product_name: "Clavier", price: 45.5, ean: "987" },
+      { marchand: "LDLC" }
+    );
+    expect(a).toMatchObject({ title: "Casque", price: 79.9, gtin: "123456789", merchant: "Fnac", type: "produit" });
+    expect(b).toMatchObject({ title: "Clavier", price: 45.5, gtin: "987", merchant: "LDLC" });
+    // Jamais de référence inventée, quel que soit l'extracteur.
+    expect(a.referencePrice).toBeNull();
+  });
+
+  it("repère une rupture de stock quelle qu'en soit l'écriture", () => {
+    const rupture = sc.normaliserProduit({ url: "https://x.fr/p/3", title: "X", price: 10, availability: "Out of stock" });
+    const dispo = sc.normaliserProduit({ url: "https://x.fr/p/4", title: "Y", price: 10, availability: "In stock" });
+    expect(rupture.enRupture).toBe(true);
+    expect(dispo.enRupture).toBe(false);
+  });
+
+  it("écarte un produit sans prix ou sans adresse", () => {
+    expect(sc.normaliserProduit({ url: "https://x.fr/p/5", title: "X" })).toBeNull();
+    expect(sc.normaliserProduit({ title: "X", price: 10 })).toBeNull();
+    expect(sc.normaliserProduit({ url: "https://x.fr/p/6", title: "X", price: 0 })).toBeNull();
+  });
+});

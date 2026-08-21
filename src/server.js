@@ -113,6 +113,7 @@ const {
 const { amorcerDepuisSnapshots } = require("./watchSeed");
 const { peupler, enseignes } = require("./peuplement");
 const { diagnostiquer } = require("./decouverte");
+const { tourComplet: tourScraper } = require("./scraperRun");
 const { indicateurs, manquees, noterDeal, ingererVeriteTerrain } = require("./mesure");
 const { classement: classementMarchands } = require("./reputation");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
@@ -515,6 +516,17 @@ app.post("/api/admin/watch/peupler", requireAuth, requireAdmin, async (req, res)
 // Diagnostic de la découverte pour une enseigne : dit à quelle étape elle
 // casse, et montre la forme réelle des adresses du marchand. Sans ça,
 // « rien ne s'affiche » ne permet de corriger quoi que ce soit.
+// Un tour d'extracteur à la demande : récupère les collectes prêtes puis en
+// relance. Asynchrone par nature — le premier appel ne rend souvent rien,
+// c'est le second qui rapporte les produits.
+app.post("/api/admin/scraper/tour", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    res.json(await tourScraper());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/api/admin/watch/diagnostic", requireAuth, requireAdmin, async (req, res) => {
   const domaine = (req.body?.domaine || "").trim();
   if (!domaine) return res.status(400).json({ error: "Paramètre 'domaine' requis." });
