@@ -91,6 +91,7 @@ const {
 const {
   sendMessage, listPublicMessages, listConversation,
   markConversationRead, countUnreadMessages, listConversationsFor,
+  masquerConversation, supprimerMessage, marquerConversationNonLue,
 } = require("./messagerie");
 const {
   listForumCategories, getForumCategoryBySlug, listForumThreads,
@@ -951,6 +952,39 @@ app.get("/api/chat/with/:userId", requireAuth, (req, res) => {
   // au sondage régulier de relire un fil sans marquer quoi que ce soit.
   if (req.query.read !== "0") markConversationRead(req.user.sub, otherId);
   res.json({ items: listConversation(req.user.sub, otherId) });
+});
+
+// DELETE /api/chat/with/:userId — supprime la conversation POUR SOI.
+//
+// Les messages ne sont pas effacés : ils appartiennent aussi à l'autre
+// membre, qui ne les a pas supprimés. On pose un repère à partir duquel le
+// fil redevient vide de ce côté-ci ; si le correspondant écrit à nouveau, la
+// conversation repart de son message, sans l'historique masqué.
+app.delete("/api/chat/with/:userId", requireAuth, (req, res) => {
+  const otherId = parseInt(req.params.userId, 10);
+  if (!otherId) return res.status(400).json({ error: "Identifiant invalide." });
+  const repere = masquerConversation(req.user.sub, otherId);
+  res.json({ ok: true, repere });
+});
+
+// POST /api/chat/with/:userId/non-lu — remet la conversation en attente.
+app.post("/api/chat/with/:userId/non-lu", requireAuth, (req, res) => {
+  const otherId = parseInt(req.params.userId, 10);
+  if (!otherId) return res.status(400).json({ error: "Identifiant invalide." });
+  const fait = marquerConversationNonLue(req.user.sub, otherId);
+  if (!fait) return res.status(400).json({ error: "Aucun message reçu à remettre en attente." });
+  res.json({ ok: true });
+});
+
+// DELETE /api/chat/message/:id — supprime un message qu'on a envoyé.
+// La propriété est vérifiée dans la requête SQL elle-même : deviner
+// l'identifiant du message d'un autre ne donne rien.
+app.delete("/api/chat/message/:id", requireAuth, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ error: "Identifiant invalide." });
+  const supprime = supprimerMessage(req.user.sub, id);
+  if (!supprime) return res.status(404).json({ error: "Message introuvable ou non supprimable." });
+  res.json({ ok: true });
 });
 
 app.post("/api/chat/with/:userId", requireAuth, refuserSiSuspendu, (req, res) => {

@@ -80,6 +80,22 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_public ON messages(to_user_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_messages_dm ON messages(from_user_id, to_user_id);
 
+  -- État d'une conversation privée, du point de vue d'UN des deux membres.
+  --
+  -- Supprimer une conversation ne peut pas effacer les messages : ils
+  -- appartiennent aussi à l'autre personne, qui ne les a pas supprimés. On
+  -- retient donc, par membre, jusqu'où la conversation est masquée pour lui :
+  -- les messages plus anciens que ce repère ne lui sont plus servis, et la
+  -- conversation disparaît de sa liste tant qu'aucun nouveau message
+  -- n'arrive. Côté correspondant, rien ne change.
+  CREATE TABLE IF NOT EXISTS conversation_state (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    other_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    hidden_until_id INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (user_id, other_user_id)
+  );
+
   -- ── Communauté : deals soumis par les membres + votes de pertinence ──
   CREATE TABLE IF NOT EXISTS community_deals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
