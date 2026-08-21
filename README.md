@@ -1,71 +1,58 @@
 # RadarPrix — Backend
 
-Backend qui scanne réellement les marchands (via Google Shopping / SerpApi)
-et détecte les anomalies de prix par algorithme — **aucun token Claude/IA n'est utilisé ici**.
+API du site : comptes, profils, forum, salon, messagerie privée, notifications,
+deals publiés par les membres, modération. Base SQLite locale, persistée sur un
+disque monté par l'hébergeur.
 
-## Comment ça marche
+> **La machinerie de détection a été retirée.** Le backend ne va plus chercher
+> d'offres nulle part : ni SerpApi, ni Bright Data, ni eBay, ni Awin, ni
+> Strackr, ni les sitemaps marchands. Les détecteurs, la surveillance des
+> fiches, la curation, le scoring et le cron ont été supprimés pour repartir
+> d'une base propre. Les tables (`deals`, `snapshots`, `watched_urls`,
+> `watched_prices`, `rejected_offers`, `watchlist`) sont conservées vides,
+> ainsi que les routes qui les lisent : un futur moteur pourra s'y brancher
+> sans migration.
 
-1. `src/serpapi.js` interroge Google Shopping (multi-marchands) pour un produit donné.
-2. `src/db.js` enregistre chaque prix observé dans une base SQLite locale (`data/radarprix.sqlite`), qui constitue l'historique.
-3. `src/algorithm.js` compare chaque prix à deux références :
-   - la médiane des offres du même scan (fonctionne dès le 1er scan),
-   - la moyenne historique de ce produit (s'améliore avec le temps).
-   Un écart ≥60% = "erreur", ≥40% = "deal".
-4. `src/server.js` expose une API que ton site (le front) appelle.
-5. `src/cron.js` (optionnel) relance des scans toutes les 30 min pour construire l'historique même sans visiteur.
+## Ce qui tourne aujourd'hui
+
+| Domaine | Modules |
+| --- | --- |
+| Comptes et sécurité | `auth.js`, `moderation.js` |
+| Communauté | `forum.js`, `messagerie.js`, `notifications.js`, `badges.js`, `ranking.js`, `reputation.js` |
+| Données | `db.js`, `dealsStore.js`, `persistance.js`, `radarEtat.js`, `reinitialisation.js` |
+| Lecture des relevés | `algorithm.js`, `productKey.js` — sert à `/api/latest`, qui relit ce qui est déjà en base |
 
 ## Installation
 
 ```bash
 npm install
-cp .env.example .env
-# puis édite .env et colle ta clé SerpApi (compte gratuit sur serpapi.com)
+cp .env.example .env    # JWT_SECRET est le seul réglage indispensable
 ```
 
 ## Lancer en local
 
 ```bash
-npm start        # démarre l'API sur http://localhost:3001
-npm run test      # vérifie que l'algorithme de détection fonctionne (données simulées)
-npm run cron      # (optionnel, dans un 2e terminal) scans automatiques toutes les 30 min
+npm start        # API sur http://localhost:3001
+npm test         # 58 tests (vitest)
+npm run lint
 ```
 
-## Routes API
+## Variables d'environnement
 
-- `POST /api/scan` `{ "query": "PS5 slim", "category": "gaming" }`
-  → lance un scan réel, retourne les offres suspectes (deal/erreur).
-- `POST /api/scan-watchlist` `{ "list": "hightech" }`
-  → scanne toutes les requêtes prédéfinies d'une catégorie (voir `WATCHLIST` dans `server.js`).
-- `GET /api/latest?query=ps5+slim`
-  → relit le dernier scan déjà enregistré, sans consommer de quota SerpApi.
-- `GET /api/health`
-  → vérifie que le serveur tourne.
+| Variable | Rôle |
+| --- | --- |
+| `JWT_SECRET` | **Obligatoire.** Signe les jetons de session. En changer déconnecte tous les membres. |
+| `DB_PATH` | Chemin du fichier SQLite. En production : `/app/data/radarprix.sqlite`, sur le volume monté. En changer repart d'une base vide. |
+| `PORT` | Port d'écoute (fourni par l'hébergeur). |
+| `ADMIN_EMAIL` | Adresse qui obtient le rôle administrateur à l'inscription. |
+| `CORS_ORIGINS` | Origines autorisées, séparées par des virgules. |
 
-## Déploiement (mise en ligne)
+## Déploiement
 
-Ce backend a besoin de tourner en continu (pas un simple artifact) :
+Railway : `npm start` est détecté automatiquement. Le fichier SQLite **doit**
+être sur un disque persistant, sinon les comptes repartent de zéro à chaque
+redéploiement. Une sauvegarde est écrite à chaque démarrage et conservée à
+côté de la base.
 
-1. **Railway.app** ou **Render.com** (plans gratuits disponibles) : connecte ton dépôt GitHub, ils détectent `npm start` automatiquement. Ajoute `SERPAPI_KEY` dans leurs variables d'environnement (jamais dans le code).
-2. Si tu veux le scan automatique (`cron.js`), ajoute un second "service" sur la même plateforme avec la commande `npm run cron`.
-3. Le fichier `data/radarprix.sqlite` doit être sur un **disque persistant** (Railway/Render le proposent) — sinon l'historique repart de zéro à chaque redéploiement.
-
-⚠️ Vercel n'est **pas recommandé** ici : ses fonctions sont "sans état" et ne gardent pas de fichier SQLite entre deux appels.
-
-## Brancher le front dessus
-
-Dans le site (l'artifact React), remplace les appels à l'API Claude par de simples appels à ce backend, par exemple :
-
-```js
-const res = await fetch("https://TON-BACKEND.up.railway.app/api/scan-watchlist", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ list: "hightech" }),
-});
-const { items } = await res.json();
-```
-
-## Coûts
-
-- SerpApi : essai gratuit (~100 requêtes/mois), puis plans payants selon le volume.
-- Hébergement (Railway/Render) : plan gratuit suffisant pour démarrer, payant si trafic important.
-- Aucun coût lié à Claude/l'IA sur ce backend.
+Vercel ne convient pas pour ce service : ses fonctions sont sans état et ne
+gardent pas de fichier SQLite entre deux appels.

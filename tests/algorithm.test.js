@@ -5,7 +5,6 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const algo = require("../src/algorithm.js");
 const { productKey, significantWords } = require("../src/productKey.js");
-const serpapi = require("../src/serpapi.js");
 const { insertSnapshots } = require("../src/db.js");
 
 describe("séparation des variantes (constat F2)", () => {
@@ -82,13 +81,6 @@ describe("frais de port (constat F8)", () => {
     expect(algo.prixTotal({ price: 220, delivery: 0 })).toBe(220);
     expect(algo.prixTotal({ price: 100 })).toBe(100); // livraison inconnue
   });
-
-  it("lit les frais de port dans toutes leurs formulations", () => {
-    expect(serpapi.parseDelivery("Livraison gratuite")).toBe(0);
-    expect(serpapi.parseDelivery("Free delivery")).toBe(0);
-    expect(serpapi.parseDelivery("4,99 € de livraison")).toBe(4.99);
-    expect(serpapi.parseDelivery(null)).toBeNull();
-  });
 });
 
 describe("état de l'article", () => {
@@ -101,24 +93,6 @@ describe("état de l'article", () => {
 
   it("continue de reconnaître l'état annoncé dans le titre", () => {
     expect(algo.estReconditionne({ name: "iPhone 14 reconditionné grade A" })).toBe(true);
-  });
-
-  it("normalise l'état déclaré par la source", () => {
-    expect(serpapi.parseCondition("refurbished")).toBe("reconditionne");
-    expect(serpapi.parseCondition("used")).toBe("occasion");
-    expect(serpapi.parseCondition(null)).toBeNull();
-  });
-
-  it("capte état et livraison depuis un résultat brut", () => {
-    const o = serpapi.normaliserResultat({
-      title: "iPhone 15 128 Go",
-      extracted_price: 599,
-      source: "Back Market",
-      second_hand_condition: "refurbished",
-      delivery: "Livraison gratuite",
-    });
-    expect(o.itemCondition).toBe("reconditionne");
-    expect(o.delivery).toBe(0);
   });
 });
 

@@ -4,15 +4,11 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
-const { resolveDirectLink } = require("./serpapi");
-const { fetchLiveOffers } = require("./fetchOffers");
+// analyzeOffers reste le seul emprunt à l'algorithme : /api/latest relit les
+// relevés déjà en base pour en tirer un prix de référence. Rien ici ne va
+// plus chercher d'offres — c'est justement ce qui a été retiré.
+const { analyzeOffers } = require("./algorithm");
 const {
-  analyzeOffers, filterRelevantOffers, separerOffres,
-  isAccessoryTitle, isUsedOrRefurbishedTitle, titleMatchesQuery,
-} = require("./algorithm");
-const { enregistrerDetections, enregistrerReconditionne } = require("./detections");
-const {
-  insertSnapshots,
   latestSnapshots,
   priceHistoryByDay,
   createUser,
@@ -55,23 +51,7 @@ const {
   suspendreMembre,
   suspensionEnCours,
   definirRole,
-  epinglerDeal,
-  listScanRuns, etatPersistance,
-  sourceHealth,
-  listEmailLog,
-  emailStats,
-  reglagesDetailles,
-  definirReglage,
-  listBlacklist,
-  ajouterBlacklist,
-  retirerBlacklist,
-  rejeterOffre,
-  listRejets,
-  annulerRejet,
-  listCatalogItems,
-  ajouterCatalogItem,
-  basculerCatalogItem,
-  supprimerCatalogItem,
+  epinglerDeal, etatPersistance,
   listUsersAdmin,
   userAdminSheet,
   seriesQuotidiennes,
@@ -86,7 +66,6 @@ const {
   removeCommunityVote,
   getUserVote,
   fermerBase,
-  enregistrerLienMarchand,
 } = require("./db");
 const {
   sendMessage, listPublicMessages, listConversation,
@@ -97,30 +76,12 @@ const {
   listForumCategories, getForumCategoryBySlug, listForumThreads,
   getForumThread, createForumThread, listForumReplies, addForumReply,
 } = require("./forum");
-const { randomProductFor, allProducts: allCatalogProducts } = require("./catalog");
-const { runCatalogBatch } = require("./scanBatch");
 const {
-  listDeals: listDealsUnifies, statsDeals, getDeal: getDealUnifie,
-  publierDeal, depublierDeal, TYPES_DEAL, reappliquerRegles,
+  listDeals: listDealsUnifies,   TYPES_DEAL,
 } = require("./dealsStore");
-const { meritePublication, marchandRetenu } = require("./curation");
-const { collecterTout } = require("./sources");
-const {
-  ajouterUrl: ajouterUrlSurveillee,
-  retirerUrl: retirerUrlSurveillee,
-  listerUrls: listerUrlsSurveillees,
-  surveiller: surveillerFiches,
-} = require("./watch");
-const { amorcerDepuisSnapshots } = require("./watchSeed");
-const { peupler, enseignes } = require("./peuplement");
-const { diagnostiquer } = require("./decouverte");
-const { tourComplet: tourScraper } = require("./scraperRun");
 const { reinitialiser, apercu } = require("./reinitialisation");
-const { etatPilotage, annoncerPilotage } = require("./pilotage");
 const { etatRadar } = require("./radarEtat");
 const { compterNonLues, listerNotifications, marquerLues } = require("./notifications");
-const { indicateurs, manquees, noterDeal, ingererVeriteTerrain } = require("./mesure");
-const { classement: classementMarchands } = require("./reputation");
 const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, requireAdmin, isDesignatedAdminEmail, isValidEmail } = require("./auth");
 const { hotScore } = require("./ranking");
 const { calculerBadges, prochainsBadges } = require("./badges");
@@ -216,73 +177,6 @@ app.use(
 app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
-
-// On ne résout le vrai lien marchand (1 requête SerpApi de plus chacun)
-// que pour les meilleures offres affichées — pas pour toute la liste,
-// pour rester raisonnable sur le quota.
-const MAX_DIRECT_LINKS = 6;
-
-/** Lance un scan réel pour une requête, l'analyse, le stocke. */
-async function scanQuery(query, category = "tout") {
-  const rawOffers = await fetchLiveOffers(query);
-  // On écarte les accessoires et hors-sujet AVANT toute analyse de prix :
-  // sinon une coque à 15€ fausse la médiane de référence du vrai produit.
-  // Le reconditionné part vers sa propre section plutôt qu'à la poubelle.
-  const { neuf, reconditionne } = separerOffres(rawOffers, query);
-  insertSnapshots(query.toLowerCase(), category, [...neuf, ...reconditionne]);
-
-  const analysees = analyzeOffers(neuf);
-  // Les anomalies alimentent le flux unifié au passage : une recherche à la
-  // demande enrichit le site pour tout le monde, au lieu de ne servir que
-  // son auteur.
-  enregistrerDetections(category, analysees);
-  enregistrerReconditionne(category, reconditionne);
-
-  const analyzed = analysees
-    .filter((o) => o.verdict !== "normal")
-    .sort((a, b) => b.score - a.score);
-
-  // Résout les vrais liens marchands pour le haut du classement.
-  const top = analyzed.slice(0, MAX_DIRECT_LINKS);
-  const rest = analyzed.slice(MAX_DIRECT_LINKS).map((o) => ({ ...o, url: null }));
-
-  for (const item of top) {
-    if (item._token) {
-      const directLink = await resolveDirectLink(item._token, item.seller, item.price);
-      item.url = directLink || null; // jamais le lien Google en repli : soit le vrai lien, soit rien
-      if (directLink) {
-        // Ce lien a coûté une requête facturée. Il était jusqu'ici renvoyé à
-        // l'écran puis oublié : on le conserve, et on met la fiche sous
-        // surveillance quand l'enseigne le mérite. Chaque recherche enrichit
-        // ainsi le radar pour tout le monde, au lieu de ne servir que son
-        // auteur le temps d'un affichage.
-        try {
-          enregistrerLienMarchand(item.name, item.seller, directLink);
-          if (marchandRetenu(item.seller)) {
-            ajouterUrlSurveillee({
-              url: directLink,
-              label: item.name,
-              merchant: item.seller,
-              category,
-              produit: item.name,
-            });
-          }
-        } catch (e) {
-          // Une fiche non enregistrée ne doit pas faire échouer la recherche
-          // que le visiteur attend.
-          console.error(`[scan] mise sous surveillance impossible : ${e.message}`);
-        }
-      }
-    } else {
-      item.url = null;
-    }
-    delete item._token;
-  }
-  rest.forEach((o) => delete o._token);
-
-  return [...top, ...rest];
-}
-
 
 /**
  * Un membre suspendu peut continuer à lire le site, mais plus à y publier.
@@ -420,113 +314,8 @@ app.get("/api/feed/occasion", (req, res) => {
 // avoir à dupliquer la liste des types côté client.
 app.get("/api/feed/types", (req, res) => res.json({ types: TYPES_DEAL }));
 
-// ── Mesure : les deux chiffres qui pilotent le réglage ──────────
-// Précision (parmi ce qu'on publie, quelle part est fausse) et rappel (parmi
-// les vraies erreurs de prix, quelle part on trouve). Sans eux, les seuils du
-// détecteur ne peuvent être ajustés qu'à l'intuition.
-app.get("/api/admin/indicateurs", requireAuth, requireModerator, (req, res) => {
-  res.json(indicateurs({ jours: parseInt(req.query.jours, 10) || 30 }));
-});
-
-// Les erreurs de prix connues que RadarPrix n'a PAS vues : la liste de
-// travail la plus utile du tableau de bord.
-app.get("/api/admin/manquees", requireAuth, requireModerator, (req, res) => {
-  res.json({ manquees: manquees({ limit: parseInt(req.query.limit, 10) || 50 }) });
-});
-
-// Jugement d'un modérateur sur un deal publié automatiquement. C'est cette
-// étiquette qui alimente à la fois la précision et la réputation marchand.
-app.post("/api/admin/feed/:id/juger", requireAuth, requireModerator, (req, res) => {
-  const deal = getDealUnifie(parseInt(req.params.id, 10));
-  if (!deal) return res.status(404).json({ error: "Deal introuvable." });
-  try {
-    noterDeal(deal.id, req.body?.verdict, { motif: req.body?.motif || null, userId: req.user.sub });
-    // Un faux positif quitte le flux immédiatement : le signaler sans le
-    // retirer laisserait le membre tomber dessus malgré tout.
-    if (req.body?.verdict === "faux_positif") depublierDeal(deal.id);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-app.post("/api/admin/verite-terrain", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    res.json(await ingererVeriteTerrain());
-  } catch (e) {
-    res.status(502).json({ error: e.message });
-  }
-});
-
-app.get("/api/admin/marchands", requireAuth, requireModerator, (req, res) => {
-  res.json({ marchands: classementMarchands({ limit: parseInt(req.query.limit, 10) || 50 }) });
-});
-
-// ── Surveillance des fiches marchandes (détecteur D3) ───────────
-// C'est ce qui remplace la recherche large : au lieu d'interroger un
-// agrégateur une fois toutes les seize heures, on relit des fiches précises
-// toutes les quinze minutes, pour un coût en bande passante.
-app.get("/api/admin/watch", requireAuth, requireModerator, (req, res) => {
-  res.json({ urls: listerUrlsSurveillees({ actives: req.query.toutes !== "1" }) });
-});
-
-app.post("/api/admin/watch", requireAuth, requireAdmin, (req, res) => {
-  const { url, label, merchant, category, produit } = req.body || {};
-  if (!url) return res.status(400).json({ error: "Paramètre 'url' requis." });
-  try {
-    res.json({ url: ajouterUrlSurveillee({ url, label, merchant, category, produit }) });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-app.delete("/api/admin/watch/:id", requireAuth, requireAdmin, (req, res) => {
-  retirerUrlSurveillee(parseInt(req.params.id, 10));
-  res.json({ ok: true });
-});
-
-// Amorce la surveillance à partir des fiches déjà observées lors des scans
-// passés. C'est ce qui met le détecteur D3 en route : il est complet mais ne
-// surveille que ce qu'on lui donne, et la liste part vide.
-app.post("/api/admin/watch/amorcer", requireAuth, requireAdmin, (req, res) => {
-  try {
-    res.json(
-      amorcerDepuisSnapshots({
-        limite: parseInt(req.body?.limite, 10) || undefined,
-        toutMarchand: Boolean(req.body?.toutMarchand),
-      })
-    );
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Découverte automatique : lit les sitemaps des enseignes et met les fiches
-// trouvées sous surveillance. C'est ce qui remplit le site sans saisie ni
-// clé d'API, et sans attendre l'acceptation d'un programme d'affiliation.
-app.post("/api/admin/watch/peupler", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    res.json({
-      resultats: await peupler({
-        enseignesParPassage: parseInt(req.body?.enseignes, 10) || undefined,
-        fichesParEnseigne: parseInt(req.body?.fiches, 10) || undefined,
-      }),
-      enseignesConnues: enseignes().map((e) => e.nom),
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// Diagnostic de la découverte pour une enseigne : dit à quelle étape elle
-// casse, et montre la forme réelle des adresses du marchand. Sans ça,
-// « rien ne s'affiche » ne permet de corriger quoi que ce soit.
-// Un tour d'extracteur à la demande : récupère les collectes prêtes puis en
-// relance. Asynchrone par nature — le premier appel ne rend souvent rien,
-// c'est le second qui rapporte les produits.
-// Ce que la remise à zéro effacerait — consultable sans rien effacer.
 app.get("/api/admin/reinitialiser", requireAuth, requireAdmin, (req, res) => {
-  res.json({ apercu: apercu(), pilotage: etatPilotage() });
+  res.json({ apercu: apercu() });
 });
 
 // Remise à zéro du contenu produit par les détecteurs. Les comptes, le forum
@@ -548,90 +337,6 @@ app.post("/api/admin/reinitialiser", requireAuth, requireAdmin, (req, res) => {
   }
 });
 
-// État du pilotage : ce qui tourne, ce qui pourrait tourner, ce qui manque.
-app.get("/api/admin/pilotage", requireAuth, requireAdmin, (req, res) => {
-  res.json(etatPilotage());
-});
-
-app.post("/api/admin/scraper/tour", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    res.json(await tourScraper());
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post("/api/admin/watch/diagnostic", requireAuth, requireAdmin, async (req, res) => {
-  const domaine = (req.body?.domaine || "").trim();
-  if (!domaine) return res.status(400).json({ error: "Paramètre 'domaine' requis." });
-  try {
-    res.json(await diagnostiquer(domaine));
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post("/api/admin/watch/run", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    const resultats = await surveillerFiches({ taille: parseInt(req.body?.taille, 10) || undefined });
-    res.json({ verifiees: resultats.length, resultats });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// ── Administration du flux ──────────────────────────────────────
-app.post("/api/admin/collecte", requireAuth, requireAdmin, async (req, res) => {
-  try {
-    const resultats = await collecterTout({ detecteur: req.body?.detecteur || null });
-    // Les règles de publication ne valent que pour ce qui vient d'être
-    // collecté : une offre déjà en ligne a été jugée à la règle en vigueur ce
-    // jour-là. Sans ce repassage, durcir un filtre ne retire jamais ce qu'il
-    // aurait refusé — les promotions de marchands inconnus restaient donc
-    // visibles alors même que le filtre qui les écarte était déployé.
-    const menage = reappliquerRegles((deal) => meritePublication(deal, deal.score));
-    res.json({ resultats, menage });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get("/api/admin/feed/stats", requireAuth, requireModerator, (req, res) => {
-  res.json({ stats: statsDeals() });
-});
-
-// Un deal collecté automatiquement mais jugé sans intérêt doit pouvoir être
-// retiré du flux sans attendre un correctif du score de désirabilité.
-app.post("/api/admin/feed/:id/publier", requireAuth, requireModerator, (req, res) => {
-  const deal = getDealUnifie(parseInt(req.params.id, 10));
-  if (!deal) return res.status(404).json({ error: "Deal introuvable." });
-  publierDeal(deal.id);
-  res.json({ ok: true, deal: getDealUnifie(deal.id) });
-});
-
-app.delete("/api/admin/feed/:id/publier", requireAuth, requireModerator, (req, res) => {
-  const deal = getDealUnifie(parseInt(req.params.id, 10));
-  if (!deal) return res.status(404).json({ error: "Deal introuvable." });
-  depublierDeal(deal.id);
-  res.json({ ok: true, deal: getDealUnifie(deal.id) });
-});
-
-// POST /api/scan  { query?: "PS5 slim", category?: "gaming" }
-// Si "query" est fourni, on scanne exactement ce produit.
-// Sinon, on tire un produit réel au hasard dans la catégorie demandée.
-app.post("/api/scan", async (req, res) => {
-  const { query, category } = req.body || {};
-  const effectiveQuery = query && query.trim() ? query.trim() : randomProductFor(category);
-  try {
-    const results = await scanQuery(effectiveQuery, category || "tout");
-    res.json({ query: effectiveQuery, count: results.length, items: results });
-  } catch (e) {
-    console.error(e);
-    res.status(502).json({ error: e.message });
-  }
-});
-
-// GET /api/latest?query=...  — relit le dernier scan enregistré, sans en refaire un.
 app.get("/api/latest", (req, res) => {
   const { query } = req.query;
   if (!query) return res.status(400).json({ error: "Paramètre 'query' requis." });
@@ -1239,197 +944,21 @@ app.post("/api/admin/users/:id/role", requireAuth, requireAdmin, (req, res) => {
 
 // ── Santé du site ────────────────────────────────────────────────
 
-// GET /api/admin/health — état des services extérieurs et du scan.
+// GET /api/admin/health — l'état de ce qui reste : la base et sa persistance.
+//
+// Cette route rendait aussi l'état des sources extérieures, du dernier scan
+// et des clés d'API. Ces trois-là ne décrivaient plus rien depuis le retrait
+// de la machinerie d'acquisition : mieux vaut une réponse courte et vraie
+// qu'un tableau de bord qui affiche des zéros.
 app.get("/api/admin/health", requireAuth, requireModerator, (req, res) => {
-  const runs = listScanRuns(1);
   res.json({
-    sources: sourceHealth(),
-    dernierScan: runs[0] || null,
-    emails: emailStats(),
     // Où la base est écrite et ce qu'elle contient. C'est la réponse à
     // « est-ce que les comptes vont survivre au prochain déploiement ? »,
     // qui exigeait jusqu'ici d'aller lire les journaux de l'hébergeur.
     persistance: etatPersistance(),
-    cronActif: process.env.ENABLE_CRON !== "false",
-    // Ce que le serveur a réellement en main : une clé absente explique un
-    // service muet bien plus sûrement qu'une panne.
-    clesPresentes: {
-      serpapi: Boolean(process.env.SERPAPI_KEY),
-      brightdata: Boolean(process.env.BRIGHT_DATA_BROWSER_HOST),
-      resend: Boolean(process.env.RESEND_API_KEY),
-      adminEmail: Boolean(process.env.ADMIN_EMAIL),
-    },
   });
 });
 
-// GET /api/admin/scans — historique des exécutions de scan.
-app.get("/api/admin/scans", requireAuth, requireModerator, (req, res) => {
-  res.json({ items: listScanRuns(Math.min(100, parseInt(req.query.limit, 10) || 30)) });
-});
-
-// GET /api/admin/emails — journal des emails envoyés.
-app.get("/api/admin/emails", requireAuth, requireModerator, (req, res) => {
-  res.json({ items: listEmailLog(Math.min(200, parseInt(req.query.limit, 10) || 50)), stats: emailStats() });
-});
-
-// POST /api/admin/diagnose  { query }
-// Rejoue un produit et montre le raisonnement complet : ce qui a été
-// récupéré, ce qui a été écarté et pour quelle raison, puis ce que
-// l'algorithme en a conclu. Le bouton de scan existant lançait le travail
-// sans jamais rien montrer, ce qui le rendait inutile pour comprendre un
-// mauvais résultat.
-app.post("/api/admin/diagnose", requireAuth, requireAdmin, async (req, res) => {
-  const query = String(req.body?.query || "").trim();
-  if (!query) return res.status(400).json({ error: "Indique un produit à diagnostiquer." });
-  const debit = limiterFrequence(req.user.sub, "diagnostic", 6, 600000);
-  if (!debit.ok) return res.status(429).json({ error: debit.error });
-
-  try {
-    const brutes = await fetchLiveOffers(query);
-    const retenues = filterRelevantOffers(brutes, query);
-    const gardees = new Set(retenues.map((o) => `${o.seller}|${o.name}|${o.price}`));
-
-    // Pour chaque offre écartée, la raison exacte — dans le même ordre que
-    // filterRelevantOffers les applique.
-    const ecartees = brutes
-      .filter((o) => !gardees.has(`${o.seller}|${o.name}|${o.price}`))
-      .map((o) => ({
-        name: o.name,
-        seller: o.seller,
-        price: o.price,
-        raison: isAccessoryTitle(o.name)
-          ? "accessoire (coque, câble, protection…)"
-          : isUsedOrRefurbishedTitle(o.name)
-          ? "occasion ou reconditionné"
-          : !titleMatchesQuery(o.name, query)
-          ? "titre trop éloigné du produit demandé"
-          : "écartée par le filtrage",
-      }));
-
-    const analysees = analyzeOffers(retenues).map(({ _token, ...o }) => o);
-    res.json({
-      query,
-      brutes: brutes.length,
-      retenues: retenues.map(({ _token, ...o }) => o),
-      ecartees,
-      analysees,
-      anomalies: analysees.filter((o) => o.verdict !== "normal").length,
-    });
-  } catch (e) {
-    res.status(502).json({ error: e.message });
-  }
-});
-
-
-// ── Qualité de la détection ──────────────────────────────────────
-
-// GET /api/admin/settings — réglages de l'algorithme, avec bornes et valeur d'origine.
-app.get("/api/admin/settings", requireAuth, requireAdmin, (req, res) => {
-  res.json({ items: reglagesDetailles() });
-});
-
-// PATCH /api/admin/settings  { cle, valeur }  (valeur null = valeur d'origine)
-app.patch("/api/admin/settings", requireAuth, requireAdmin, (req, res) => {
-  const r = definirReglage(req.user.sub, req.body?.cle, req.body?.valeur);
-  if (!r.ok) return res.status(400).json({ error: r.error });
-  res.json({ ok: true, valeur: r.valeur, items: reglagesDetailles() });
-});
-
-// GET /api/admin/blacklist
-app.get("/api/admin/blacklist", requireAuth, requireModerator, (req, res) => {
-  res.json({ items: listBlacklist() });
-});
-
-// POST /api/admin/blacklist  { type: "marchand"|"motif", valeur, note? }
-app.post("/api/admin/blacklist", requireAuth, requireModerator, (req, res) => {
-  const r = ajouterBlacklist(req.user.sub, req.body?.type, req.body?.valeur, req.body?.note);
-  if (!r.ok) return res.status(400).json({ error: r.error });
-  res.status(201).json({ ok: true, items: listBlacklist() });
-});
-
-// DELETE /api/admin/blacklist/:id
-app.delete("/api/admin/blacklist/:id", requireAuth, requireModerator, (req, res) => {
-  const r = retirerBlacklist(req.user.sub, parseInt(req.params.id, 10));
-  if (!r.ok) return res.status(404).json({ error: r.error });
-  res.json({ ok: true, items: listBlacklist() });
-});
-
-// POST /api/admin/rejects  { name, seller, price, motif? } — écarte une anomalie.
-app.post("/api/admin/rejects", requireAuth, requireModerator, (req, res) => {
-  const r = rejeterOffre(req.user.sub, req.body || {});
-  if (!r.ok) return res.status(400).json({ error: r.error });
-  res.status(201).json({ ok: true, deja: Boolean(r.deja) });
-});
-
-// GET /api/admin/rejects
-app.get("/api/admin/rejects", requireAuth, requireModerator, (req, res) => {
-  res.json({ items: listRejets() });
-});
-
-// DELETE /api/admin/rejects/:id — remet l'anomalie en circulation.
-app.delete("/api/admin/rejects/:id", requireAuth, requireModerator, (req, res) => {
-  const r = annulerRejet(req.user.sub, parseInt(req.params.id, 10));
-  if (!r.ok) return res.status(404).json({ error: r.error });
-  res.json({ ok: true });
-});
-
-// ── Catalogue ────────────────────────────────────────────────────
-
-// GET /api/admin/catalog — produits du fichier + produits ajoutés à la main.
-app.get("/api/admin/catalog", requireAuth, requireAdmin, (req, res) => {
-  res.json({
-    // Le fichier catalog.js reste la référence et n'est pas modifiable
-    // depuis le site : le distinguer évite de croire qu'on peut y toucher.
-    fichier: allCatalogProducts(),
-    ajoutes: listCatalogItems(),
-  });
-});
-
-// POST /api/admin/catalog  { name, category }
-app.post("/api/admin/catalog", requireAuth, requireAdmin, (req, res) => {
-  const r = ajouterCatalogItem(req.user.sub, req.body?.name, req.body?.category);
-  if (!r.ok) return res.status(400).json({ error: r.error });
-  res.status(201).json({ ok: true, ajoutes: listCatalogItems() });
-});
-
-// PATCH /api/admin/catalog/:id  { actif }
-app.patch("/api/admin/catalog/:id", requireAuth, requireAdmin, (req, res) => {
-  const r = basculerCatalogItem(req.user.sub, parseInt(req.params.id, 10), Boolean(req.body?.actif));
-  if (!r.ok) return res.status(404).json({ error: r.error });
-  res.json({ ok: true, ajoutes: listCatalogItems() });
-});
-
-// DELETE /api/admin/catalog/:id
-app.delete("/api/admin/catalog/:id", requireAuth, requireAdmin, (req, res) => {
-  const r = supprimerCatalogItem(req.user.sub, parseInt(req.params.id, 10));
-  if (!r.ok) return res.status(404).json({ error: r.error });
-  res.json({ ok: true, ajoutes: listCatalogItems() });
-});
-
-
-// ── Membres et statistiques ──────────────────────────────────────
-
-/**
- * Met une valeur au format CSV : guillemets doublés, champ entouré si
- * nécessaire. Sans ça, un titre de deal contenant une virgule ou un
- * point-virgule décalerait toutes les colonnes suivantes du fichier.
- */
-function champCsv(v) {
-  if (v === null || v === undefined) return "";
-  const s = String(v);
-  return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
-function versCsv(lignes) {
-  if (lignes.length === 0) return "";
-  const colonnes = Object.keys(lignes[0]);
-  const corps = lignes.map((l) => colonnes.map((c) => champCsv(l[c])).join(";"));
-  // Point-virgule et BOM : c'est ce qu'attend Excel en français, sinon les
-  // accents sortent en charabia et tout tient dans une seule colonne.
-  return "\uFEFF" + [colonnes.join(";"), ...corps].join("\r\n");
-}
-
-// GET /api/admin/members?recherche=&filtre=&tri=&page=
 app.get("/api/admin/members", requireAuth, requireModerator, (req, res) => {
   const pageSize = Math.min(100, Math.max(10, parseInt(req.query.pageSize, 10) || 40));
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -1461,6 +990,23 @@ app.get("/api/admin/activity", requireAuth, requireModerator, (req, res) => {
   });
 });
 
+/* ── Export CSV ──────────────────────────────────────────────────
+   Un point-virgule comme séparateur et un BOM en tête : c'est ce qu'attend
+   Excel en français. Avec une virgule, tout arrive dans une seule colonne ;
+   sans BOM, les accents sortent en charabia. */
+function champCsv(v) {
+  if (v === null || v === undefined) return "";
+  const s = String(v);
+  return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function versCsv(lignes) {
+  if (lignes.length === 0) return "";
+  const colonnes = Object.keys(lignes[0]);
+  const corps = lignes.map((l) => colonnes.map((c) => champCsv(l[c])).join(";"));
+  return "\uFEFF" + [colonnes.join(";"), ...corps].join("\r\n");
+}
+
 // GET /api/admin/export/:quoi.csv  (membres | deals)
 app.get("/api/admin/export/:quoi", requireAuth, requireAdmin, (req, res) => {
   const quoi = String(req.params.quoi).replace(/\.csv$/, "");
@@ -1491,28 +1037,6 @@ app.get("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
   res.json({ users: listUsers(200) });
 });
 
-// Lance immédiatement un lot de scans catalogue (au lieu d'attendre le
-// prochain passage du cron). Consomme du quota SerpApi à chaque appel :
-// bouton à utiliser avec modération, pas pour un rafraîchissement en boucle.
-app.post("/api/admin/trigger-scan", requireAuth, requireAdmin, async (req, res) => {
-  const size = Math.min(20, Math.max(1, parseInt(req.body?.size, 10) || 10));
-  // Chaque produit scanné consomme une requête SerpApi, et le quota est
-  // mensuel : quelques clics rapides pouvaient vider ce qui restait. Deux
-  // lancements par quart d'heure suffisent largement à un usage manuel.
-  const debit = limiterFrequence(req.user.sub, "scan-manuel", 2, 900000);
-  if (!debit.ok) return res.status(429).json({ error: debit.error });
-  try {
-    const results = await runCatalogBatch(size, { source: "manuel", triggeredBy: req.user.sub });
-    res.json({ scanned: results.length, results });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-// État du radar, public et sans authentification. Alimente l'indicateur de
-// la navigation et la ligne de bas de menu : une promesse de fraîcheur qui se
-// vérifie vaut mieux qu'une promesse qui se répète. L'information ne dit rien
-// de sensible — ni quelles fiches sont suivies, ni chez quel marchand.
 app.get("/api/radar", (req, res) => {
   try {
     res.json(etatRadar());
@@ -1586,16 +1110,6 @@ if (require.main === module) {
   }
 
   const serveur = app.listen(PORT, () => console.log(`RadarPrix backend en écoute sur le port ${PORT}`));
-  annoncerPilotage();
-
-  // Sur un hébergeur qui ne fait tourner qu'un seul service (ex: Railway sur
-  // le plan actuel), il n'y a personne d'autre pour exécuter `npm run cron` :
-  // sans ce démarrage ici, le catalogue de deals reste vide en permanence.
-  // Activé explicitement (ENABLE_CRON=true) pour ne jamais consommer le
-  // quota SerpApi par surprise en local/dev.
-  if (process.env.ENABLE_CRON === "true") {
-    require("./cron").startCron();
-  }
 
   /* ── Arrêt propre ───────────────────────────────────────────────
      À chaque redéploiement, l'hébergeur envoie SIGTERM puis tue le
