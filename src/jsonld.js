@@ -98,11 +98,40 @@ function lireDisponibilite(v) {
   return null;
 }
 
+/* Un AggregateOffer portant plusieurs offres ne décrit pas la même chose
+   selon la page. Sur une fiche produit, il agrège les vendeurs d'un même
+   article : son lowPrice est le meilleur prix pour CE produit, et il nous
+   intéresse. Sur une page de catégorie, il agrège des articles différents :
+   son lowPrice est le « à partir de » du rayon, et il ne veut rien dire.
+
+   Constaté en production : le site s'est rempli de « Antenne TV — 10,00 € »
+   et « Petite fourniture de bureau », qui sont des rayons Boulanger, pas des
+   produits. Un prix de rayon publié comme un prix d'article est pire qu'une
+   absence de donnée — il fait afficher au site des affaires qui n'existent
+   pas.
+
+   On écarte donc un agrégat large. Le seuil laisse passer le cas légitime
+   d'une fiche vendue par quelques marchands, et arrête les rayons, qui en
+   comptent des dizaines. */
+const OFFRES_AGREGEES_MAX = parseInt(process.env.JSONLD_OFFRES_MAX || "", 10) || 12;
+
+function estAgregatDeRayon(o) {
+  if (!/aggregateoffer/i.test(String(o["@type"] || ""))) return false;
+  const nombre = Number(o.offerCount);
+  if (Number.isFinite(nombre) && nombre > OFFRES_AGREGEES_MAX) return true;
+  // Un écart de prix démesuré trahit un rayon même sans offerCount : les
+  // vendeurs d'un même article ne varient pas d'un facteur dix.
+  const bas = lirePrix(o.lowPrice);
+  const haut = lirePrix(o.highPrice);
+  return bas > 0 && haut > 0 && haut / bas > 10;
+}
+
 /** Première offre exploitable trouvée dans un nœud Product. */
 function offreDe(noeud) {
   const offres = [].concat(noeud.offers || []);
   for (const o of offres) {
     if (!o || typeof o !== "object") continue;
+    if (estAgregatDeRayon(o)) continue;
     // AggregateOffer expose lowPrice plutôt que price : c'est le prix le plus
     // bas parmi les vendeurs de la fiche, exactement ce qui nous intéresse.
     const prix = lirePrix(o.price ?? o.lowPrice ?? o.highPrice);
@@ -179,6 +208,7 @@ function extraireOffreMeta(html) {
 }
 
 module.exports = {
+  estAgregatDeRayon,
   extraireOffre,
   extraireOffreMeta,
   extraireBlocsJsonLd,

@@ -417,6 +417,18 @@ function depublierDeal(id) {
   db.prepare("UPDATE deals SET published_at = NULL WHERE id = ?").run(id);
 }
 
+/**
+ * Retire du flux le deal d'une source donnée, désigné par son identifiant
+ * chez elle. Utilisé quand une fiche cesse de rendre un prix exploitable :
+ * le produit ne doit plus être servi sur la foi d'une lecture ancienne.
+ */
+function depublierParSource(source, externalId) {
+  const info = db
+    .prepare("UPDATE deals SET published_at = NULL WHERE source = ? AND external_id = ? AND published_at IS NOT NULL")
+    .run(source, String(externalId));
+  return info.changes;
+}
+
 /** Répartition par type et par détecteur — sert au tableau de bord admin. */
 function statsDeals() {
   return db
@@ -496,6 +508,7 @@ module.exports = {
   reappliquerRegles,
   publierDeal,
   depublierDeal,
+  depublierParSource,
   statsDeals,
   getDeal,
   purgerDeals,

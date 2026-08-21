@@ -27,6 +27,7 @@ const { evaluer } = require("./anomalies");
 const { isTrustedSeller } = require("./algorithm");
 const { productKey } = require("./productKey");
 const { recupererPage } = require("./fetchPage");
+const { upsertDeal, depublierParSource } = require("./dealsStore");
 
 /* Au-delà de ce nombre d'échecs consécutifs, une fiche cesse d'être relue.
    C'est ce qui rend tenable une découverte permissive : on retient large,
@@ -38,6 +39,15 @@ const ECHECS_AVANT_DESACTIVATION = parseInt(process.env.WATCH_ECHECS_MAX || "4",
 
 /** Compte un échec de lecture, et désactive la fiche si elle s'obstine. */
 function compterEchec(ficheId) {
+  // Une fiche qui ne rend plus de prix ne doit plus être servie. Sans ça, un
+  // produit publié le reste indéfiniment sur la foi d'une lecture ancienne —
+  // et un durcissement des règles de lecture (rayons écartés, par exemple)
+  // ne retirerait jamais ce qu'il aurait refusé.
+  try {
+    depublierParSource("watch", ficheId);
+  } catch {
+    // La dépublication est un nettoyage, jamais un point de panne.
+  }
   db.prepare("UPDATE watched_urls SET echecs = echecs + 1, last_checked_at = datetime('now') WHERE id = ?").run(ficheId);
   const { echecs } = db.prepare("SELECT echecs FROM watched_urls WHERE id = ?").get(ficheId) || {};
   if (echecs >= ECHECS_AVANT_DESACTIVATION) {
@@ -46,7 +56,6 @@ function compterEchec(ficheId) {
   }
   return false;
 }
-const { upsertDeal } = require("./dealsStore");
 const { scoreDesirabilite, meritePublication } = require("./curation");
 const { logSourceEvent } = require("./db");
 const { fiabilite } = require("./reputation");

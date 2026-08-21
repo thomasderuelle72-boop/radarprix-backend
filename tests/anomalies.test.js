@@ -739,3 +739,36 @@ describe("plafond de données de la découverte", () => {
     }
   });
 });
+
+describe("rayons pris pour des produits", () => {
+  const jl = require("../src/jsonld.js");
+
+  const fiche = (offre) => `<script type="application/ld+json">${JSON.stringify({
+    "@context": "https://schema.org", "@type": "Product", name: "Casque XYZ", offers: offre,
+  })}</script>`;
+
+  it("lit un agrégat de vendeurs pour un même article", () => {
+    // Cas légitime : quelques marchands vendent la même référence.
+    const o = jl.extraireOffre(fiche({ "@type": "AggregateOffer", lowPrice: "279.00", highPrice: "310.00", offerCount: 4, priceCurrency: "EUR" }));
+    expect(o.price).toBe(279);
+  });
+
+  it("écarte un agrégat de rayon, dont le prix ne veut rien dire", () => {
+    // Cas rencontré en production : « Antenne TV — 10,00 € » chez Boulanger.
+    // Un rayon agrège des articles différents ; son « à partir de » publié
+    // comme un prix d'article fait afficher des affaires qui n'existent pas.
+    expect(jl.extraireOffre(fiche({ "@type": "AggregateOffer", lowPrice: "10.00", highPrice: "890.00", offerCount: 240, priceCurrency: "EUR" }))).toBeNull();
+  });
+
+  it("repère un rayon à son écart de prix, même sans offerCount", () => {
+    // Les vendeurs d'un même article ne varient pas d'un facteur dix.
+    expect(jl.estAgregatDeRayon({ "@type": "AggregateOffer", lowPrice: "9.99", highPrice: "1299.00" })).toBe(true);
+    expect(jl.estAgregatDeRayon({ "@type": "AggregateOffer", lowPrice: "279.00", highPrice: "310.00" })).toBe(false);
+  });
+
+  it("ne touche pas à une offre simple", () => {
+    const o = jl.extraireOffre(fiche({ "@type": "Offer", price: "349.90", priceCurrency: "EUR" }));
+    expect(o.price).toBe(349.9);
+    expect(jl.estAgregatDeRayon({ "@type": "Offer", price: "349.90" })).toBe(false);
+  });
+});
