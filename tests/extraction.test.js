@@ -151,3 +151,55 @@ describe("produitDepuisHtml — replis", () => {
     expect(produitDepuisHtml("")).toBeNull();
   });
 });
+
+/* Une page de rayon « promotions » telle qu'un marchand la publie : les
+   articles vivent dans un ItemList, et le même produit peut apparaître
+   deux fois. C'est cette page qu'on lit pour couvrir cent enseignes sans
+   visiter chaque fiche une par une. */
+const PAGE_RAYON = `<html><head>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "ItemList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "item": {
+      "@type": "Product", "name": "Casque Sony WH-1000XM5",
+      "image": "https://img.fr/a.jpg", "sku": "A1",
+      "offers": { "@type": "Offer", "price": "279.99", "priceCurrency": "EUR",
+                  "priceValidUntil": "2026-09-30",
+                  "priceSpecification": { "@type": "UnitPriceSpecification", "priceType": "ListPrice", "price": "419.00" } } } },
+    { "@type": "ListItem", "position": 2, "item": {
+      "@type": "Product", "name": "Enceinte JBL Flip 6", "sku": "A2",
+      "offers": { "@type": "Offer", "price": "89.99", "priceCurrency": "EUR" } } },
+    { "@type": "ListItem", "position": 3, "item": {
+      "@type": "Product", "name": "Article sans prix", "sku": "A3" } }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{ "@type": "Product", "name": "Casque Sony WH-1000XM5", "sku": "A1",
+  "offers": { "@type": "Offer", "price": "279.99", "priceCurrency": "EUR" } }
+</script>
+</head><body></body></html>`;
+
+describe("produitsDepuisHtml — une page de rayon", () => {
+  it("rapporte tous les articles d'un ItemList", () => {
+    const { produitsDepuisHtml } = require("../src/extraction.js");
+    const fiches = produitsDepuisHtml(PAGE_RAYON);
+
+    // Trois articles listés, mais l'un n'a pas de prix : il ne compte pas.
+    // Et le casque apparaît deux fois — une seule fiche doit en sortir.
+    expect(fiches.map((f) => f.nom)).toEqual([
+      "Casque Sony WH-1000XM5",
+      "Enceinte JBL Flip 6",
+    ]);
+    expect(fiches[0].prixReference).toBe(419);
+    expect(fiches[0].finOffre).toBe("2026-09-30T00:00:00.000Z");
+    expect(fiches[1].prixReference).toBeNull();
+  });
+
+  it("ne rend rien d'une page sans balisage produit", () => {
+    const { produitsDepuisHtml } = require("../src/extraction.js");
+    expect(produitsDepuisHtml("<html><body>rien</body></html>")).toEqual([]);
+  });
+});

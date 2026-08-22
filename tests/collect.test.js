@@ -451,3 +451,27 @@ describe("scan complet", () => {
     expect(collect.etatCollecte().find((s) => s.source === "firecrawl").etat).toBe("instable");
   });
 });
+
+describe("semis des cibles depuis le registre", () => {
+  it("crée une cible par enseigne qui publie une page promotions", () => {
+    const premier = collect.semerCibles();
+    expect(premier.creees).toBeGreaterThan(20);
+
+    const cibles = collect.listTargets();
+    const amazon = cibles.find((c) => c.merchant === "Amazon");
+    expect(amazon).toBeDefined();
+    expect(amazon.promoUrl).toMatch(/^https:\/\/www\.amazon\.fr\//);
+    expect(amazon.active).toBe(true);
+  });
+
+  it("ne recrée rien au second passage — il tourne à chaque démarrage", () => {
+    collect.semerCibles();
+    const apres = collect.semerCibles();
+    expect(apres.creees).toBe(0);
+  });
+
+  it("respecte une limite, parce que chaque cible active coûte un appel", () => {
+    const r = collect.semerCibles({ limite: 3 });
+    expect(r.creees).toBe(3);
+  });
+});

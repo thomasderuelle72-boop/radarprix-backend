@@ -226,6 +226,76 @@ function produitDepuisMicrodata(html) {
   };
 }
 
+/** Normalise un objet Product du balisage, ou null s'il n'a pas de prix. */
+function ficheDepuisProduit(produit) {
+  const offre = trouverOffre(produit);
+  const prix = offre ? nombre(offre.price) : null;
+  if (!Number.isFinite(prix)) return null;
+
+  const dispo = String(premiere(offre.availability) || "");
+  return {
+    nom: premiere(produit.name),
+    description: premiere(produit.description),
+    image: premiere(produit.image),
+    marque: premiere(produit.brand),
+    url: premiere(offre.url) || premiere(produit.url) || null,
+    prix,
+    prixReference: prixDeReference(offre, prix),
+    devise: premiere(offre.priceCurrency) || "EUR",
+    disponible: dispo ? /InStock|LimitedAvailability|PreOrder/i.test(dispo) : null,
+    // Deux noms pour la même idée selon les implémentations.
+    finOffre: date(offre.priceValidUntil) || date(offre.validThrough),
+    debutOffre: date(offre.validFrom),
+    caracteristiques: caracteristiques(produit),
+    etat: etat(offre, produit),
+    sku: premiere(produit.sku) || premiere(produit.gtin13) || premiere(produit.mpn) || null,
+    source: "jsonld",
+  };
+}
+
+/**
+ * TOUTES les fiches produits d'une page, pas seulement la première.
+ *
+ * C'est ce qui rend une page « promotions » exploitable : une seule
+ * requête rapporte les vingt ou cinquante articles qu'elle liste, là où
+ * visiter chaque fiche une par une coûterait autant d'appels que
+ * d'articles. À cent enseignes, la différence décide si le site est
+ * tenable ou non.
+ *
+ * Les listes schema.org (`ItemList`) sont parcourues aussi : beaucoup de
+ * pages de rayon n'exposent leurs produits que là.
+ */
+function produitsDepuisHtml(html) {
+  const objets = extraireJsonLd(html);
+  const produits = [];
+
+  const ajouter = (o) => {
+    if (!o || typeof o !== "object") return;
+    if (estType(o, "Product")) produits.push(o);
+    // Un ItemList porte ses éléments dans itemListElement, chacun étant
+    // soit le produit lui-même, soit un ListItem qui l'enveloppe.
+    for (const el of [].concat(o.itemListElement || [])) {
+      if (!el || typeof el !== "object") continue;
+      if (estType(el, "Product")) produits.push(el);
+      else if (el.item && typeof el.item === "object") ajouter(el.item);
+    }
+  };
+  objets.forEach(ajouter);
+
+  const vues = new Set();
+  const fiches = [];
+  for (const p of produits) {
+    const f = ficheDepuisProduit(p);
+    if (!f || !f.nom) continue;
+    // Une même fiche peut apparaître dans un ItemList ET à la racine.
+    const cle = f.sku || f.url || `${f.nom}|${f.prix}`;
+    if (vues.has(cle)) continue;
+    vues.add(cle);
+    fiches.push(f);
+  }
+  return fiches;
+}
+
 /**
  * Fiche produit normalisée à partir du HTML d'une page marchande.
  *
@@ -264,6 +334,7 @@ function produitDepuisHtml(html) {
 
 module.exports = {
   extraireJsonLd,
+  produitsDepuisHtml,
   produitDepuisHtml,
   produitDepuisOpenGraph,
   produitDepuisMicrodata,

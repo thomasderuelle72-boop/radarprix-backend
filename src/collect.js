@@ -24,7 +24,8 @@
 const { db, insertSnapshots, debuterScan, terminerScan, logSourceEvent } = require("./db");
 const { analyzeOffers } = require("./algorithm");
 const { upsertDeal, publierDeal, markMissingAsRemoved } = require("./dealsStore");
-const { reconnaitreMarchand } = require("./marchands");
+const { MARCHANDS, reconnaitreMarchand, pagePromo } = require("./marchands");
+const { produitDepuisHtml, produitsDepuisHtml } = require("./extraction");
 const Parser = require("rss-parser");
 const { XMLParser } = require("fast-xml-parser");
 
@@ -46,6 +47,15 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_watch_targets_active ON watch_targets(active);
 `);
 
+/* Troisième canal, ajouté après coup : la page « promotions » publique
+   d'une enseigne. Une base déjà en service n'a pas la colonne, d'où la
+   migration — le catch couvre le cas normal où elle existe déjà. */
+try {
+  db.exec("ALTER TABLE watch_targets ADD COLUMN promo_url TEXT");
+} catch (e) {
+  if (!/duplicate column/i.test(e.message)) throw e;
+}
+
 // ── Cibles suivies ──────────────────────────────────────────────
 
 function decouperDomaines(cible) {
@@ -63,6 +73,7 @@ function enJson(ligne) {
     category: ligne.category,
     merchant: ligne.merchant,
     feedUrl: ligne.feed_url,
+    promoUrl: ligne.promo_url || null,
     searchDomains: decouperDomaines(ligne),
     active: Boolean(ligne.active),
     createdAt: ligne.created_at,
@@ -87,23 +98,33 @@ function getTarget(id) {
  * un flux, ou au moins un domaine marchand pour Firecrawl. Une cible sans
  * aucune source ne ferait que des erreurs à chaque scan.
  */
-function addTarget({ query, category, merchant, feedUrl, domains }) {
+function addTarget({ query, category, merchant, feedUrl, promoUrl, domains }) {
   const propre = String(query || "").trim();
   if (propre.length < 3) return { ok: false, error: "Le produit suivi doit faire au moins 3 caractères." };
   const flux = feedUrl ? String(feedUrl).trim() : "";
+  const promo = promoUrl ? String(promoUrl).trim() : "";
   const domaines = Array.isArray(domains) ? domains.map((d) => String(d).trim()).filter(Boolean) : [];
-  if (!flux && domaines.length === 0) {
-    return { ok: false, error: "Il faut un flux (feedUrl) ou au moins un domaine marchand (domains)." };
+  if (!flux && !promo && domaines.length === 0) {
+    return { ok: false, error: "Il faut un flux (feedUrl), une page promotions (promoUrl) ou au moins un domaine marchand (domains)." };
   }
-  if (flux && !/^https?:\/\//.test(flux)) {
-    return { ok: false, error: "L'URL du flux doit commencer par http:// ou https://" };
+  for (const [valeur, quoi] of [[flux, "du flux"], [promo, "de la page promotions"]]) {
+    if (valeur && !/^https?:\/\//.test(valeur)) {
+      return { ok: false, error: `L'URL ${quoi} doit commencer par http:// ou https://` };
+    }
   }
   const info = db
     .prepare(
-      `INSERT INTO watch_targets (query, category, merchant, feed_url, search_domains)
-       VALUES (?, ?, ?, ?, ?)`
+      `INSERT INTO watch_targets (query, category, merchant, feed_url, promo_url, search_domains)
+       VALUES (?, ?, ?, ?, ?, ?)`
     )
-    .run(propre, category || "tout", merchant ? String(merchant).trim() : null, flux || null, JSON.stringify(domaines));
+    .run(
+      propre,
+      category || "tout",
+      merchant ? String(merchant).trim() : null,
+      flux || null,
+      promo || null,
+      JSON.stringify(domaines)
+    );
   return { ok: true, target: getTarget(info.lastInsertRowid) };
 }
 
@@ -534,20 +555,40 @@ async function collecterFirecrawl(cible) {
   for (const r of resultats.slice(0, 3)) {
     if (!r.url) continue;
     try {
+      // On demande le HTML brut EN PLUS du markdown : c'est dans le HTML
+      // que vit le balisage schema.org, et le markdown le fait disparaître.
+      // Sans lui, il ne reste qu'à deviner des nombres dans du texte — ce
+      // qui produisait des prix faux sur les pages un peu chargées.
+      // `onlyMainContent` est désactivé pour la même raison : le JSON-LD
+      // est dans le <head>, que ce réglage supprime.
       const donnees = await appelFirecrawl("/scrape", {
         url: r.url,
-        formats: ["markdown"],
-        onlyMainContent: true,
+        formats: ["markdown", "rawHtml"],
+        onlyMainContent: false,
       });
-      const prix = prixDePage(donnees);
+
+      const fiche = donnees.rawHtml ? produitDepuisHtml(donnees.rawHtml) : null;
+      // Le prix déclaré par le marchand prime ; la lecture du markdown ne
+      // sert plus qu'aux pages sans aucun balisage.
+      const prix = fiche && Number.isFinite(fiche.prix) ? fiche.prix : prixDePage(donnees);
       if (!Number.isFinite(prix)) continue;
-      const titre = (donnees.metadata?.title || r.title || cible.query).trim();
+
+      const titre = (fiche?.nom || donnees.metadata?.title || r.title || cible.query).trim();
+      const marchand = reconnaitreMarchand({ url: r.url, texte: titre });
       offres.push({
-        externalId: r.url,
+        externalId: fiche?.sku || r.url,
         name: titre.slice(0, 200),
         price: prix,
+        refPriceAnnonce: fiche?.prixReference ?? null,
         url: r.url,
-        seller: cible.merchant || null,
+        seller: cible.merchant || (marchand && marchand.nom) || fiche?.marque || null,
+        img: fiche?.image || donnees.metadata?.ogImage || null,
+        description: fiche?.description || null,
+        caracteristiques: fiche?.caracteristiques || [],
+        itemCondition: fiche?.etat || "neuf",
+        finOffre: fiche?.finOffre || null,
+        debutOffre: fiche?.debutOffre || null,
+        balisage: fiche?.source || "texte",
       });
     } catch (e) {
       // Une page en échec ne doit pas faire échouer toute la cible : la
@@ -558,11 +599,118 @@ async function collecterFirecrawl(cible) {
   return offres;
 }
 
+/**
+ * Collecte la page « promotions » publique d'une enseigne.
+ *
+ * Un seul appel réseau rapporte tous les articles que la page annonce,
+ * lus dans le balisage schema.org que le marchand publie pour Google.
+ * C'est ce qui rend une centaine d'enseignes tenable : une requête par
+ * enseigne et par scan, au lieu d'une par article.
+ *
+ * Firecrawl sert de navigateur quand il est configuré — beaucoup de pages
+ * de rayon ne rendent leur balisage qu'après exécution du JavaScript.
+ * Sans clé, on tente la page en direct, ce qui suffit sur les sites rendus
+ * côté serveur.
+ */
+async function collecterPagePromo(cible) {
+  let html = null;
+
+  if (cleFirecrawl()) {
+    // onlyMainContent retirerait le <head>, où vit le JSON-LD.
+    const donnees = await appelFirecrawl("/scrape", {
+      url: cible.promoUrl,
+      formats: ["rawHtml"],
+      onlyMainContent: false,
+    });
+    html = donnees.rawHtml || null;
+  } else {
+    const rep = await fetch(cible.promoUrl, {
+      headers: { "User-Agent": "RadarPrix/1.0 (+https://radarprix.fr)" },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!rep.ok) throw new Error(`page promotions indisponible (HTTP ${rep.status})`);
+    html = await rep.text();
+  }
+
+  const fiches = html ? produitsDepuisHtml(html) : [];
+  if (fiches.length === 0) throw new Error("aucune fiche produit balisée sur la page");
+
+  const base = cible.promoUrl;
+  return fiches.map((f, i) => ({
+    // Le SKU du marchand est l'identifiant le plus stable ; à défaut le
+    // lien, à défaut le nom — sans quoi chaque scan republierait tout.
+    externalId: String(f.sku || f.url || `${cible.id}-${f.nom}`).slice(0, 200),
+    name: String(f.nom).slice(0, 200),
+    price: f.prix,
+    refPriceAnnonce: f.prixReference,
+    url: lienAbsolu(f.url, base) || base,
+    seller: cible.merchant || f.marque || null,
+    img: lienAbsolu(f.image, base),
+    description: f.description || null,
+    caracteristiques: f.caracteristiques || [],
+    itemCondition: f.etat || "neuf",
+    finOffre: f.finOffre || null,
+    debutOffre: f.debutOffre || null,
+    balisage: f.source,
+    ordre: i,
+  }));
+}
+
+/** Une page de rayon donne souvent des liens relatifs ; le flux public non. */
+function lienAbsolu(lien, base) {
+  if (!lien) return null;
+  try {
+    return new URL(String(lien), base).toString();
+  } catch {
+    return null;
+  }
+}
+
 /** Le canal de collecte d'une cible, selon ce qu'elle sait fournir. */
 function collecterCible(cible) {
   if (cible.feedUrl) return collecterFlux(cible);
+  // La page promotions passe avant la recherche : un appel qui rapporte
+  // vingt articles vaut mieux que sept appels qui en rapportent six.
+  if (cible.promoUrl) return collecterPagePromo(cible);
   if (cible.searchDomains && cible.searchDomains.length > 0) return collecterFirecrawl(cible);
-  return Promise.reject(new Error("ni flux ni domaines de recherche"));
+  return Promise.reject(new Error("ni flux, ni page promotions, ni domaines de recherche"));
+}
+
+/**
+ * Crée les cibles à partir du registre des enseignes.
+ *
+ * Le site doit se remplir à l'installation, sans que personne saisisse
+ * cent domaines. Chaque enseigne qui publie une page « promotions » en
+ * devient une, du même nom qu'elle.
+ *
+ * Idempotent : une cible déjà présente pour la même adresse n'est pas
+ * recréée, et une cible que l'administration a désactivée le reste. Le
+ * semis peut donc tourner à chaque démarrage sans rien écraser.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.limite] nombre maximal de cibles à créer d'un coup.
+ *   Chaque cible active coûte un appel Firecrawl par scan : mieux vaut
+ *   pouvoir borner que découvrir la facture après coup.
+ */
+function semerCibles({ limite = Infinity } = {}) {
+  const existantes = new Set(
+    db.prepare("SELECT promo_url FROM watch_targets WHERE promo_url IS NOT NULL").all().map((r) => r.promo_url)
+  );
+
+  let creees = 0;
+  for (const m of MARCHANDS) {
+    if (creees >= limite) break;
+    const url = pagePromo(m);
+    if (!url || existantes.has(url)) continue;
+    const r = addTarget({
+      query: `Promotions ${m.nom}`,
+      category: m.categorie,
+      merchant: m.nom,
+      promoUrl: url,
+    });
+    if (r.ok) creees++;
+  }
+  return { creees, total: db.prepare("SELECT COUNT(*) AS n FROM watch_targets").get().n };
 }
 
 // ── Scan complet ────────────────────────────────────────────────
@@ -642,8 +790,14 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         const presentable = (a) =>
           a.verdict !== "normal" || Number.isFinite(a.refPrice ?? a.refPriceAnnonce);
 
-        const retenues = cible.feedUrl ? analyses.filter(presentable) : anomalies;
-        const ignorees = cible.feedUrl ? analyses.length - retenues.length : 0;
+        // Un flux et une page « promotions » sont tous deux des listes déjà
+        // choisies par le marchand : ce qu'elles annoncent vaut d'être
+        // montré. Seule la recherche Firecrawl reste sur les anomalies —
+        // elle visite des fiches ordinaires pour établir une référence, et
+        // les publier toutes noierait la mesure.
+        const listeChoisie = Boolean(cible.feedUrl || cible.promoUrl);
+        const retenues = listeChoisie ? analyses.filter(presentable) : anomalies;
+        const ignorees = listeChoisie ? analyses.length - retenues.length : 0;
         const aPublier = retenues;
 
         let publies = 0;
@@ -669,6 +823,14 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
             merchant: a.seller || cible.merchant || null,
             category: cible.category,
             itemCondition: a.itemCondition || "neuf",
+            // La description vient de la fiche du marchand ; on la borne
+            // parce qu'une fiche peut contenir une page entière.
+            description: a.description ? String(a.description).slice(0, 1200) : null,
+            // Durée de l'offre telle que le marchand la déclare
+            // (priceValidUntil / validThrough). Le flux public l'expose,
+            // et dealsStore retire d'office une offre expirée.
+            startsAt: a.debutOffre || null,
+            expiresAt: a.finOffre || null,
             score: a.score,
             confidence: a.confidence,
             payload: {
@@ -681,6 +843,14 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
               // de présenter la promesse d'un marchand comme sa propre
               // mesure : c'est toute la différence qu'il vend.
               refSource: a.refPrice ? "mesure" : a.refPriceAnnonce ? "flux" : null,
+              // Caractéristiques déclarées (additionalProperty schema.org) :
+              // « Autonomie : 30 heures », « Couleur : noir ». C'est ce qui
+              // distingue une fiche produit d'une ligne de prix.
+              caracteristiques: a.caracteristiques && a.caracteristiques.length ? a.caracteristiques : null,
+              // D'où vient l'information : jsonld, microdata, opengraph,
+              // texte. Permet de mesurer la qualité du balisage marchand
+              // par marchand plutôt que de la supposer.
+              balisage: a.balisage || null,
             },
           });
           publierDeal(id);
@@ -777,6 +947,7 @@ module.exports = {
   listTargets,
   getTarget,
   addTarget,
+  semerCibles,
   updateTarget,
   deleteTarget,
   parseFluxRSS,

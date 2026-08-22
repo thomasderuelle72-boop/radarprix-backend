@@ -94,6 +94,7 @@ const {
   addTarget,
   updateTarget,
   deleteTarget,
+  semerCibles,
   lancerScan,
   etatCollecte,
 } = require("./collect");
@@ -305,6 +306,12 @@ function enFormeHeritee(d) {
     // commercial d'un vendeur comme une mesure indépendante.
     refSource: (d.payload && d.payload.refSource) || null,
     itemCondition: d.itemCondition || "neuf",
+    // Ce que la fiche du marchand déclare en plus du prix : de quoi rendre
+    // une carte informative plutôt qu'une ligne de tarif.
+    description: d.description || null,
+    caracteristiques: (d.payload && d.payload.caracteristiques) || null,
+    startsAt: d.startsAt || null,
+    expiresAt: d.expiresAt || null,
   };
 }
 
@@ -1222,6 +1229,20 @@ if (require.main === module) {
     } catch (e) {
       console.error(`[reinit] échec : ${e.message}`);
     }
+  }
+
+  // Le site doit se remplir tout seul : les enseignes du registre qui
+  // publient une page « promotions » deviennent des cibles au démarrage.
+  // L'opération est idempotente — elle ne recrée rien et ne réactive rien
+  // de ce que l'administration a mis en pause.
+  try {
+    const semis = semerCibles();
+    if (semis.creees > 0) {
+      console.log(`[cibles] ${semis.creees} cible(s) créée(s) depuis le registre — ${semis.total} au total.`);
+    }
+  } catch (e) {
+    // Un semis qui échoue ne doit pas empêcher le site de démarrer.
+    console.error(`[cibles] semis impossible : ${e.message}`);
   }
 
   const serveur = app.listen(PORT, () => console.log(`RadarPrix backend en écoute sur le port ${PORT}`));
