@@ -322,17 +322,14 @@ const BARRE_HTML = /<(?:del|s|strike)\b[^>]*>([\s\S]{0,120}?)<\/(?:del|s|strike)
 const TOUTES_BARRES = /<(?:del|s|strike)\b[^>]*>[\s\S]*?<\/(?:del|s|strike)>/gi;
 const BARRE_TEXTE = /(?:au lieu de|prix conseill[ée]|prix public|prix bar[ré]{1,2}|anciennement|initialement|[ée]tait\s*[àa]?)\s*:?\s*([^<.;)]{0,24})/i;
 
-/* « -40% », « −40 % », « (-40%) » : certains flux annoncent la remise sans
-   jamais donner le prix d'avant. */
-const POURCENT = /[-−–]\s*(\d{1,2})\s*%/;
 
 /**
  * Prix de référence annoncé par la source, ou null.
  *
- * Trois chemins, du plus sûr au moins sûr : une balise de prix barré, une
- * formule explicite, puis un pourcentage dont on retrouve le prix d'avant
- * par le calcul. Une référence inférieure ou égale au prix payé est
- * rejetée : ce n'est pas une remise, c'est une coquille de la source.
+ * Deux chemins seulement, et tous deux explicites : une balise de prix
+ * barré, ou une formule « au lieu de » suivie d'un montant. Une référence
+ * inférieure ou égale au prix payé est rejetée : ce n'est pas une remise,
+ * c'est une coquille de la source.
  */
 function prixReference(texte, prix) {
   if (!Number.isFinite(prix) || prix <= 0) return null;
@@ -344,14 +341,13 @@ function prixReference(texte, prix) {
     if (Number.isFinite(ref) && ref > prix) return ref;
   }
 
-  const pc = brut.match(POURCENT);
-  if (pc) {
-    const pct = parseInt(pc[1], 10);
-    if (pct > 0 && pct < 100) {
-      const ref = Math.round((prix / (1 - pct / 100)) * 100) / 100;
-      if (ref > prix) return ref;
-    }
-  }
+  // Un pourcentage seul dans un titre ne dit PAS une remise, et retrouver
+  // le prix d'avant par le calcul était une mauvaise idée : « Clavier
+  // C98FRF - 96% Effet Hall » désigne le format du clavier, et le site a
+  // affiché « 69,48 € au lieu de 1737 € », soit −96 %. Une remise
+  // invraisemblable détruit plus de crédibilité que dix remises absentes
+  // n'en font gagner. On ne retient donc qu'une référence explicitement
+  // écrite : un prix barré, ou un « au lieu de » suivi d'un montant.
   return null;
 }
 

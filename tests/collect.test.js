@@ -175,11 +175,12 @@ describe("ce qu'un flux dit en plus du titre et du prix", () => {
     expect(ipad.refPriceAnnonce).toBe(599);
     expect(ipad.itemCondition).toBe("reconditionne");
 
-    // Remise annoncée en pourcentage, sans prix d'avant : on le retrouve
-    // par le calcul plutôt que de n'afficher aucune remise.
+    // Un pourcentage seul dans un titre ne fonde AUCUNE référence. Vu en
+    // production : « Clavier C98FRF - 96% Effet Hall » désigne le format du
+    // clavier, et le site a affiché « 69,48 € au lieu de 1737 € ».
     const nespresso = offres.find((o) => o.name.includes("Nespresso"));
     expect(nespresso.price).toBe(89.9);
-    expect(nespresso.refPriceAnnonce).toBeCloseTo(149.83, 1);
+    expect(nespresso.refPriceAnnonce).toBeNull();
   });
 
   it("nomme le vendeur par le domaine du lien, la marque en repli", async () => {
@@ -213,6 +214,14 @@ describe("ce qu'un flux dit en plus du titre et du prix", () => {
     expect(o.seller).toBe("Dyson");
     expect(o.img).toBe("https://img.example/dyson.jpg");
     expect(o.itemCondition).toBe("reconditionne");
+  });
+
+  it("ne déduit jamais un prix d'avant d'un pourcentage", () => {
+    // Le cas réel qui a produit un « -96 % » sur la page d'accueil.
+    expect(collect.prixReference("Clavier C98FRF - 96% Effet Hall", 69.48)).toBeNull();
+    expect(collect.prixReference("Écran 27\" -40% ce week-end", 189)).toBeNull();
+    // Une référence écrite, elle, est bien lue.
+    expect(collect.prixReference("199 € au lieu de 299 €", 199)).toBe(299);
   });
 
   it("refuse une référence qui n'est pas au-dessus du prix payé", () => {
