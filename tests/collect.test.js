@@ -161,7 +161,7 @@ describe("scan complet", () => {
     expect(bilan.cibles).toBe(0);
   });
 
-  it("collecte, analyse et publie l'anomalie d'un flux (D3)", async () => {
+  it("publie tout ce qu'un flux rapporte, l'anomalie signalée à part (D3)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => reponse({ texte: FLUX_RSS }))
@@ -176,7 +176,13 @@ describe("scan complet", () => {
     const bilan = await collect.lancerScan({});
     expect(bilan.cibles).toBe(1);
     expect(bilan.offres).toBe(2);
-    expect(bilan.publies).toBe(1);
+    // Les deux articles du flux sont publiés, pas seulement l'anomalie :
+    // un flux marchand est une liste déjà choisie par sa source, et n'en
+    // publier que les anomalies laissait le site vide.
+    expect(bilan.publies).toBe(2);
+    // « analyses » ne compte que les anomalies : c'est ce que le tableau
+    // de bord présente comme détections.
+    expect(bilan.analyses).toBe(1);
     expect(bilan.erreurs).toBe(0);
 
     // Les deux offres sont archivées dans l'historique.
@@ -185,14 +191,26 @@ describe("scan complet", () => {
       .get("iPhone 15 128 Go");
     expect(snapshots.n).toBe(2);
 
-    // L'anomalie est publiée dans le flux unifié, détecteur D3.
-    const deal = db
-      .prepare("SELECT id, detector, type, price, reference_price, published_at FROM deals WHERE detector = 'D3'")
-      .get();
-    expect(deal).not.toBeUndefined();
-    expect(deal.type).toBe("promo");
-    expect(deal.published_at).not.toBeNull();
-    expect(getDeal(deal.id).discountPct).toBeGreaterThanOrEqual(40);
+    // Les deux articles sont dans le flux unifié, détecteur D3, publiés.
+    const deals = db
+      .prepare("SELECT id, detector, type, price, reference_price, published_at FROM deals WHERE detector = 'D3' ORDER BY price")
+      .all();
+    expect(deals).toHaveLength(2);
+    expect(deals.every((d) => d.published_at !== null)).toBe(true);
+
+    // Le type sépare les deux : l'article soldé est une affaire mesurée,
+    // l'autre un simple produit rapporté. C'est cette distinction qui
+    // empêche un article ordinaire de passer pour une erreur de prix.
+    const anomalie = deals.find((d) => d.type === "promo");
+    const ordinaire = deals.find((d) => d.type === "produit");
+    expect(anomalie).not.toBeUndefined();
+    expect(ordinaire).not.toBeUndefined();
+    expect(anomalie.price).toBeLessThan(ordinaire.price);
+    expect(getDeal(anomalie.id).discountPct).toBeGreaterThanOrEqual(40);
+    // Ici les deux offres portent sur le même produit, donc une référence
+    // existe pour les deux ; ce qui les sépare est l'écart mesuré, pas sa
+    // présence. L'article au prix courant reste très loin du seuil.
+    expect(getDeal(ordinaire.id).discountPct).toBeLessThan(40);
 
     // Le scan est refermé et la source « flux » consignée.
     const run = listScanRuns(1)[0];

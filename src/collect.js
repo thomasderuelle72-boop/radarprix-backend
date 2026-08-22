@@ -437,15 +437,36 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         insertSnapshots(cible.query, cible.category, offres);
 
         // La détection elle-même : référence entre pairs du lot + historique
-        // en base (voir algorithm.js). On ne publie que les anomalies.
-        const analyses = analyzeOffers(offres).filter((o) => o.verdict !== "normal");
+        // en base (voir algorithm.js).
+        const analyses = analyzeOffers(offres);
+        const anomalies = analyses.filter((o) => o.verdict !== "normal");
+
+        // Ce qu'on publie dépend de la nature de la cible.
+        //
+        // Un flux marchand est une liste déjà choisie par sa source : ses
+        // articles valent d'être montrés même quand aucune anomalie n'est
+        // mesurable. Et c'est le cas général — analyzeOffers a besoin de
+        // plusieurs offres du MÊME produit pour établir une référence,
+        // alors qu'un flux de bons plans contient cinquante produits
+        // différents. Filtrer sur les anomalies y publiait donc zéro
+        // article : le site restait vide alors que la collecte marchait.
+        //
+        // Une cible Firecrawl, elle, existe pour comparer les prix d'un
+        // produit précis chez plusieurs marchands. Y publier chaque page
+        // visitée noierait la mesure sous les pages ordinaires.
+        const aPublier = cible.feedUrl ? analyses : anomalies;
+
         let publies = 0;
-        for (const a of analyses) {
+        for (const a of aPublier) {
           const id = upsertDeal({
             source: `d3-${cible.id}`,
             externalId: a.externalId,
             detector: "D3",
-            type: a.verdict === "erreur" ? "erreur" : "promo",
+            // « produit » désigne un article rapporté sans anomalie mesurée.
+            // Le frontend le rend en « deal » comme une promotion, et ne le
+            // fait jamais passer pour une erreur de prix : seul le type
+            // « erreur » alimente cette page et cette promesse.
+            type: a.verdict === "erreur" ? "erreur" : a.verdict === "deal" ? "promo" : "produit",
             title: a.name,
             price: a.price,
             referencePrice: a.refPrice,
@@ -474,7 +495,9 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         }
 
         bilan.offres += offres.length;
-        bilan.analyses += analyses.length;
+        // « analyses » compte les anomalies, pas les articles parcourus :
+        // c'est le chiffre que le tableau de bord présente comme détections.
+        bilan.analyses += anomalies.length;
         bilan.publies += publies;
         ligne.offres = offres.length;
         ligne.publies = publies;
