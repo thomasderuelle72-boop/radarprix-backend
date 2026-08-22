@@ -299,6 +299,12 @@ function enFormeHeritee(d) {
     score: d.score,
     confidence: d.confidence,
     allTimeLow: Boolean(d.payload && d.payload.allTimeLow),
+    // « mesure » : référence observée entre marchands par RadarPrix.
+    // « flux » : prix barré annoncé par la source. L'interface doit
+    // pouvoir les distinguer, sous peine de présenter l'argument
+    // commercial d'un vendeur comme une mesure indépendante.
+    refSource: (d.payload && d.payload.refSource) || null,
+    itemCondition: d.itemCondition || "neuf",
   };
 }
 

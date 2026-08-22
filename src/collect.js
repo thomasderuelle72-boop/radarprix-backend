@@ -152,6 +152,16 @@ const rssParser = new Parser({
       ["price", "price"],
       ["g:price", "price"],
       ["s:price", "price"],
+      // Prix courant quand le flux distingue le tarif barré du tarif payé :
+      // c'est ce couple qui donne une vraie remise plutôt qu'une devinette.
+      ["g:sale_price", "salePrice"],
+      ["sale_price", "salePrice"],
+      ["g:brand", "brand"],
+      ["g:condition", "condition"],
+      ["g:image_link", "imageLink"],
+      ["media:content", "mediaContent", { keepArray: true }],
+      ["media:thumbnail", "mediaThumbnail"],
+      ["source", "sourceName"],
     ],
   },
 });
@@ -223,32 +233,162 @@ function extrairePrix(texte) {
   return null;
 }
 
+/* ── Ce qu'un flux dit en plus du titre et du prix ────────────────
+   Un flux marchand transporte presque toujours le vendeur, le prix barré
+   et une image. Ne lire que le titre et le prix, comme au départ, donnait
+   des cartes sans vendeur, sans remise et sans visuel — c'est-à-dire des
+   cartes qui ne servent à rien.
+
+   Rien ici n'est inventé : chaque valeur vient d'une balise du flux ou
+   d'une mention explicite de son texte. Quand la source ne dit rien, le
+   champ reste vide, ce qui est la vérité. */
+
+/** Nom d'hôte d'une URL, sans « www. ». Renvoie null si l'URL est illisible. */
+function hote(url) {
+  try {
+    return new URL(String(url)).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Nom d'enseigne déduit d'un domaine : « www.amazon.fr » → « Amazon ».
+ *
+ * On prend l'étiquette qui précède l'extension, et non la première :
+ * « boutique.leclerc.fr » désigne Leclerc, pas « Boutique ».
+ */
+function nomDeMarchand(domaine) {
+  if (!domaine) return null;
+  const parts = domaine.split(".").filter(Boolean);
+  const nom = parts.length >= 2 ? parts[parts.length - 2] : parts[0];
+  if (!nom || nom.length < 2) return null;
+  return nom.charAt(0).toUpperCase() + nom.slice(1);
+}
+
+/** Première image d'un fragment HTML — les flux la mettent souvent là. */
+function premiereImage(html) {
+  const m = String(html || "").match(/<img[^>]+src=["']([^"']+)["']/i);
+  return m ? m[1] : null;
+}
+
+/* Un prix barré s'écrit de deux façons : en HTML (<del>, <s>, <strike>) ou
+   en toutes lettres. Les deux sont couvertes, dans cet ordre — la balise
+   est explicite là où la formule demande de faire confiance au texte. */
+const BARRE_HTML = /<(?:del|s|strike)\b[^>]*>([\s\S]{0,120}?)<\/(?:del|s|strike)>/i;
+/* Le même motif, pour retirer ces blocs AVANT de chercher le prix payé.
+   « <del>349 €</del> 279,99 € » rendait 349 : le premier montant du texte
+   gagnait, et l'article s'affichait à son prix d'avant la remise. */
+const TOUTES_BARRES = /<(?:del|s|strike)\b[^>]*>[\s\S]*?<\/(?:del|s|strike)>/gi;
+const BARRE_TEXTE = /(?:au lieu de|prix conseill[ée]|prix public|prix bar[ré]{1,2}|anciennement|initialement|[ée]tait\s*[àa]?)\s*:?\s*([^<.;)]{0,24})/i;
+
+/* « -40% », « −40 % », « (-40%) » : certains flux annoncent la remise sans
+   jamais donner le prix d'avant. */
+const POURCENT = /[-−–]\s*(\d{1,2})\s*%/;
+
+/**
+ * Prix de référence annoncé par la source, ou null.
+ *
+ * Trois chemins, du plus sûr au moins sûr : une balise de prix barré, une
+ * formule explicite, puis un pourcentage dont on retrouve le prix d'avant
+ * par le calcul. Une référence inférieure ou égale au prix payé est
+ * rejetée : ce n'est pas une remise, c'est une coquille de la source.
+ */
+function prixReference(texte, prix) {
+  if (!Number.isFinite(prix) || prix <= 0) return null;
+  const brut = String(texte || "");
+
+  for (const motif of [BARRE_HTML, BARRE_TEXTE]) {
+    const m = brut.match(motif);
+    const ref = m ? extrairePrix(m[1]) : null;
+    if (Number.isFinite(ref) && ref > prix) return ref;
+  }
+
+  const pc = brut.match(POURCENT);
+  if (pc) {
+    const pct = parseInt(pc[1], 10);
+    if (pct > 0 && pct < 100) {
+      const ref = Math.round((prix / (1 - pct / 100)) * 100) / 100;
+      if (ref > prix) return ref;
+    }
+  }
+  return null;
+}
+
+/* Vocabulaire du Google Merchant Center, puis les mots français que les
+   flux emploient. Un article reconditionné mêlé au neuf ferait passer sa
+   décote normale pour une bonne affaire. */
+const ETATS_FLUX = [
+  [/(refurbished|reconditionn|remis [àa] neuf|seconde vie)/i, "reconditionne"],
+  [/(\bused\b|occasion|d[ée]j[àa] servi)/i, "occasion"],
+];
+
+/** État de l'article d'après la balise g:condition, puis d'après son texte. */
+function etatArticle(condition, texte) {
+  const source = `${condition || ""} ${texte || ""}`;
+  for (const [motif, etat] of ETATS_FLUX) {
+    if (motif.test(source)) return etat;
+  }
+  return "neuf";
+}
+
 /** Offre brute d'un flux, ramenée aux champs que la détection attend. */
 function offreDeFlux(item, i, merchant) {
   const name = String(item.title || "").trim();
   if (!name) return null;
   const url = item.link || item.guid || null;
+
+  // Tout le texte de l'article en un bloc : le prix barré, la remise et
+  // l'état s'y trouvent indifféremment selon les flux.
+  const texte = [item.title, item.content, item.contentSnippet, item.summary]
+    .filter(Boolean)
+    .join(" \n ");
+
+  // Le prix payé se cherche sur un texte débarrassé des prix barrés.
+  const sansBarre = (v) => String(v || "").replace(TOUTES_BARRES, " ");
+
   const prix =
+    extrairePrix(item.salePrice) ||
     extrairePrix(item.price) ||
-    extrairePrix(item.content || "") ||
-    extrairePrix(item.contentSnippet || "") ||
+    extrairePrix(sansBarre(item.content)) ||
+    extrairePrix(sansBarre(item.contentSnippet)) ||
     // Dernier recours : le prix dans le titre lui-même. Sans exigence de
     // monnaie, un titre « iPhone 15 128 Go » ferait n'importe quoi — la
     // prudence est dans extrairePrix, pas ici.
     extrairePrix(item.title) ||
     null;
   if (!Number.isFinite(prix)) return null;
+
+  // Quand le flux sépare tarif barré et tarif payé, la référence est
+  // donnée, pas déduite : c'est le cas le plus fiable.
+  const refAnnoncee =
+    (item.salePrice ? extrairePrix(item.price) : null) || prixReference(texte, prix);
+
+  const media = Array.isArray(item.mediaContent) ? item.mediaContent[0] : item.mediaContent;
   const img =
+    item.imageLink ||
     (item.enclosure && item.enclosure.url) ||
-    (item["media:content"] && item["media:content"].url) ||
+    (media && (media.$ ? media.$.url : media.url)) ||
+    (item.mediaThumbnail && (item.mediaThumbnail.$ ? item.mediaThumbnail.$.url : item.mediaThumbnail.url)) ||
+    premiereImage(item.content) ||
     null;
+
+  // <source> nomme le site d'origine de l'article (RSS 2.0). rss-parser le
+  // rend en objet quand la balise porte son attribut url.
+  const nomSource =
+    typeof item.sourceName === "string"
+      ? item.sourceName
+      : item.sourceName && item.sourceName._ ? item.sourceName._ : null;
+
   return {
     externalId: String(item.guid || item.link || `item-${i}`),
     name,
     price: prix,
+    refPriceAnnonce: Number.isFinite(refAnnoncee) ? refAnnoncee : null,
     url,
-    seller: merchant || null,
+    seller: item.brand || nomSource || merchant || null,
     img: img || null,
+    itemCondition: etatArticle(item.condition, texte),
   };
 }
 
@@ -263,22 +403,37 @@ function parseFluxXML(xml) {
   const doc = new XMLParser({ ignoreAttributes: false }).parse(xml);
   const canal = doc.rss?.channel || doc.channel || doc.feed || null;
   if (!canal) return [];
-  const items = canal.item || canal.entry || [];
-  if (!Array.isArray(items)) return [items].filter(Boolean);
+  // Un seul <item> et fast-xml-parser rend un objet, pas un tableau. Le
+  // raccourci qui renvoyait cet objet tel quel court-circuitait toute la
+  // conversion : le flux ressortait en balises brutes, sans nom ni prix.
+  const brut = canal.item || canal.entry || [];
+  const items = Array.isArray(brut) ? brut : [brut].filter(Boolean);
   return items
     .map((item, i) => {
       const name = String(item.title || "").trim();
       if (!name) return null;
       const url = item.link || item["g:link"] || item.id || null;
-      const prix = extrairePrix(item["g:price"] || item.price || item["s:price"]) || null;
+      // g:sale_price est le prix payé, g:price le tarif de base : quand les
+      // deux existent, la remise est annoncée par le marchand lui-même.
+      const solde = extrairePrix(item["g:sale_price"] || item.sale_price);
+      const base = extrairePrix(item["g:price"] || item.price || item["s:price"]);
+      const prix = Number.isFinite(solde) ? solde : base;
       if (!Number.isFinite(prix)) return null;
+
+      const texte = [name, item.description, item["g:description"]].filter(Boolean).join(" \n ");
+      const ref = Number.isFinite(solde) && Number.isFinite(base) && base > solde
+        ? base
+        : prixReference(texte, prix);
+
       return {
-        externalId: String(item.id || item.guid || item.link || `xml-${i}`),
+        externalId: String(item.id || item["g:id"] || item.guid || item.link || `xml-${i}`),
         name,
         price: prix,
+        refPriceAnnonce: Number.isFinite(ref) ? ref : null,
         url,
-        seller: item["g:brand"] || null,
-        img: item["g:image_link"] || null,
+        seller: item["g:brand"] || item["g:store_name"] || null,
+        img: item["g:image_link"] || item["g:additional_image_link"] || null,
+        itemCondition: etatArticle(item["g:condition"], texte),
       };
     })
     .filter(Boolean);
@@ -298,7 +453,18 @@ async function collecterFlux(cible) {
   const texte = await rep.text();
   let offres = await parseFluxRSS(texte);
   if (offres.length === 0) offres = parseFluxXML(texte);
-  return offres.map((o) => ({ ...o, seller: o.seller || cible.merchant || null }));
+
+  // Quand le flux ne nomme pas le vendeur, le lien le trahit souvent : un
+  // article qui pointe ailleurs que chez l'éditeur du flux est vendu par
+  // ce domaine-là. Si le lien reste sur le site du flux — cas des
+  // agrégateurs, qui redirigent par chez eux — on ne déduit rien plutôt
+  // que d'attribuer la vente à l'agrégateur, ce qui serait faux.
+  const hoteDuFlux = hote(cible.feedUrl);
+  return offres.map((o) => {
+    const hoteDuLien = hote(o.url);
+    const deduit = hoteDuLien && hoteDuLien !== hoteDuFlux ? nomDeMarchand(hoteDuLien) : null;
+    return { ...o, seller: o.seller || cible.merchant || deduit || null };
+  });
 }
 
 // ── Scraping SaaS (Firecrawl) ───────────────────────────────────
@@ -469,11 +635,16 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
             type: a.verdict === "erreur" ? "erreur" : a.verdict === "deal" ? "promo" : "produit",
             title: a.name,
             price: a.price,
-            referencePrice: a.refPrice,
+            // Deux références possibles, et elles ne valent pas la même
+            // chose : celle que RadarPrix a mesurée entre marchands prime
+            // sur celle que la source annonce. Un prix barré est un
+            // argument de vente ; une médiane observée est un constat.
+            referencePrice: a.refPrice ?? a.refPriceAnnonce ?? null,
             url: a.url,
             imageUrl: a.img || null,
             merchant: a.seller || cible.merchant || null,
             category: cible.category,
+            itemCondition: a.itemCondition || "neuf",
             score: a.score,
             confidence: a.confidence,
             payload: {
@@ -482,6 +653,10 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
               priceTotal: a.priceTotal,
               allTimeLow: Boolean(a.allTimeLow),
               zScore: a.zScore ?? null,
+              // D'où vient le prix barré affiché. Le site n'a pas le droit
+              // de présenter la promesse d'un marchand comme sa propre
+              // mesure : c'est toute la différence qu'il vend.
+              refSource: a.refPrice ? "mesure" : a.refPriceAnnonce ? "flux" : null,
             },
           });
           publierDeal(id);
@@ -569,6 +744,7 @@ module.exports = {
   parseFluxRSS,
   parseFluxXML,
   extrairePrix,
+  prixReference,
   collecterFlux,
   collecterFirecrawl,
   collecterCible,

@@ -64,6 +64,53 @@ afterEach(() => {
   delete process.env.FIRECRAWL_API_KEY;
 });
 
+/* Un flux riche, comme en servent les vrais sites : vendeur, prix barré,
+   image, état de l'article. C'est exactement ce que l'ancienne lecture
+   jetait, laissant des cartes sans vendeur, sans remise et sans visuel. */
+const FLUX_RICHE = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+  <channel>
+    <title>Bons plans</title>
+    <item>
+      <title>Casque Sony WH-1000XM5</title>
+      <link>https://www.boulanger.com/ref/1234</link>
+      <guid>riche-1</guid>
+      <description><![CDATA[Super prix ! <del>349,00 €</del> 279,99 € <img src="https://img.example/casque.jpg" />]]></description>
+      <media:thumbnail url="https://img.example/vignette.jpg" />
+    </item>
+    <item>
+      <title>iPad Air reconditionné</title>
+      <link>https://www.backmarket.fr/ipad-air</link>
+      <guid>riche-2</guid>
+      <description><![CDATA[399,00 € au lieu de 599 €]]></description>
+    </item>
+    <item>
+      <title>Machine Nespresso -40%</title>
+      <link>https://exemple-agregateur.fr/visit/9</link>
+      <guid>riche-3</guid>
+      <description><![CDATA[89,90 €]]></description>
+    </item>
+  </channel>
+</rss>`;
+
+/* Feed marchand au format Google Shopping : tout y est nommé. */
+const FLUX_MARCHAND = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">
+  <channel>
+    <title>Catalogue</title>
+    <item>
+      <g:id>SKU-1</g:id>
+      <title>Aspirateur Dyson V15</title>
+      <link>https://marchand.fr/dyson-v15</link>
+      <g:price>649,00 EUR</g:price>
+      <g:sale_price>549,00 EUR</g:sale_price>
+      <g:brand>Dyson</g:brand>
+      <g:condition>refurbished</g:condition>
+      <g:image_link>https://img.example/dyson.jpg</g:image_link>
+    </item>
+  </channel>
+</rss>`;
+
 describe("extrairePrix", () => {
   it("lit les formats de prix français", () => {
     expect(collect.extrairePrix("699,00 €")).toBe(699);
@@ -101,6 +148,70 @@ describe("extrairePrix", () => {
     // « 15 eurêka » n'est pas « 15 euros » : sans garde après le mot, la
     // lecture partait sur n'importe quel nombre suivi d'un mot en « eur ».
     expect(collect.extrairePrix("Lot 15 eurêka")).toBeNull();
+  });
+});
+
+describe("ce qu'un flux dit en plus du titre et du prix", () => {
+  it("lit le vendeur, le prix barré, l'image et l'état", async () => {
+    const offres = await collect.parseFluxRSS(FLUX_RICHE);
+    expect(offres).toHaveLength(3);
+
+    // Prix barré en balise <del> : le cas le plus explicite.
+    const casque = offres.find((o) => o.name.includes("Casque"));
+    expect(casque.price).toBe(279.99);
+    expect(casque.refPriceAnnonce).toBe(349);
+    expect(casque.img).toBe("https://img.example/vignette.jpg");
+    expect(casque.itemCondition).toBe("neuf");
+
+    // « au lieu de » en toutes lettres, et un état qui n'est dit que
+    // dans le titre.
+    const ipad = offres.find((o) => o.name.includes("iPad"));
+    expect(ipad.price).toBe(399);
+    expect(ipad.refPriceAnnonce).toBe(599);
+    expect(ipad.itemCondition).toBe("reconditionne");
+
+    // Remise annoncée en pourcentage, sans prix d'avant : on le retrouve
+    // par le calcul plutôt que de n'afficher aucune remise.
+    const nespresso = offres.find((o) => o.name.includes("Nespresso"));
+    expect(nespresso.price).toBe(89.9);
+    expect(nespresso.refPriceAnnonce).toBeCloseTo(149.83, 1);
+  });
+
+  it("déduit le vendeur du domaine du lien, sauf chez un agrégateur", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => reponse({ texte: FLUX_RICHE }))
+    );
+    const offres = await collect.collecterCible({
+      feedUrl: "https://exemple-agregateur.fr/rss",
+      merchant: null,
+      searchDomains: [],
+      query: "test",
+    });
+
+    // Le lien sort du site du flux : c'est ce domaine qui vend.
+    expect(offres.find((o) => o.name.includes("Casque")).seller).toBe("Boulanger");
+    expect(offres.find((o) => o.name.includes("iPad")).seller).toBe("Backmarket");
+    // Le lien reste chez l'agrégateur : on préfère ne rien dire que de lui
+    // attribuer une vente qu'il ne fait pas.
+    expect(offres.find((o) => o.name.includes("Nespresso")).seller).toBeNull();
+  });
+
+  it("lit un feed Google Shopping : g:sale_price est le prix payé", () => {
+    const [o] = collect.parseFluxXML(FLUX_MARCHAND);
+    expect(o.externalId).toBe("SKU-1");
+    expect(o.price).toBe(549);
+    expect(o.refPriceAnnonce).toBe(649);
+    expect(o.seller).toBe("Dyson");
+    expect(o.img).toBe("https://img.example/dyson.jpg");
+    expect(o.itemCondition).toBe("reconditionne");
+  });
+
+  it("refuse une référence qui n'est pas au-dessus du prix payé", () => {
+    // Une source qui annonce « au lieu de 10 € » sur un article à 20 €
+    // s'est trompée : afficher une remise négative serait pire que rien.
+    expect(collect.prixReference("20 € au lieu de 10 €", 20)).toBeNull();
+    expect(collect.prixReference("aucune mention", 20)).toBeNull();
   });
 });
 
