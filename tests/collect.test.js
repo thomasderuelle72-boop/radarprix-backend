@@ -539,27 +539,21 @@ describe("un flux d'agrégateur réel", () => {
   });
 });
 
-describe("semis des cibles depuis le registre", () => {
-  it("crée une cible par enseigne qui publie une page promotions", () => {
+describe("semis des cibles", () => {
+  it("crée les sources qui fonctionnent, et rien d'autre", () => {
     const premier = collect.semerCibles();
-    expect(premier.creees).toBeGreaterThan(20);
+    expect(premier.creees).toBe(1);
 
     const cibles = collect.listTargets();
-    const amazon = cibles.find((c) => c.merchant === "Amazon");
-    expect(amazon).toBeDefined();
-    expect(amazon.promoUrl).toMatch(/^https:\/\/www\.amazon\.fr\//);
-    expect(amazon.active).toBe(true);
+    expect(cibles.map((c) => c.promoUrl)).toContain("https://www.dealabs.com/");
+    // Les pages « promotions » des enseignes ne sont plus semées : mesurées
+    // une à une, aucune ne rend de produit.
+    expect(cibles.filter((c) => c.promoUrl && c.promoUrl.includes("fnac"))).toHaveLength(0);
   });
 
   it("ne recrée rien au second passage — il tourne à chaque démarrage", () => {
     collect.semerCibles();
-    const apres = collect.semerCibles();
-    expect(apres.creees).toBe(0);
-  });
-
-  it("respecte une limite, parce que chaque cible active coûte un appel", () => {
-    const r = collect.semerCibles({ limite: 3 });
-    expect(r.creees).toBe(3);
+    expect(collect.semerCibles().creees).toBe(0);
   });
 });
 

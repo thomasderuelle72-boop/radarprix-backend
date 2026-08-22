@@ -412,67 +412,6 @@ function publierDeal(id) {
   db.prepare("UPDATE deals SET published_at = datetime('now') WHERE id = ? AND published_at IS NULL").run(id);
 }
 
-/** Retire un deal du flux public sans le supprimer (modération). */
-function depublierDeal(id) {
-  db.prepare("UPDATE deals SET published_at = NULL WHERE id = ?").run(id);
-}
-
-/**
- * Retire du flux le deal d'une source donnée, désigné par son identifiant
- * chez elle. Utilisé quand une fiche cesse de rendre un prix exploitable :
- * le produit ne doit plus être servi sur la foi d'une lecture ancienne.
- */
-function depublierParSource(source, externalId) {
-  const info = db
-    .prepare("UPDATE deals SET published_at = NULL WHERE source = ? AND external_id = ? AND published_at IS NOT NULL")
-    .run(source, String(externalId));
-  return info.changes;
-}
-
-/** Répartition par type et par détecteur — sert au tableau de bord admin. */
-function statsDeals() {
-  return db
-    .prepare(
-      `SELECT detector, type,
-              COUNT(*) AS total,
-              SUM(CASE WHEN published_at IS NOT NULL THEN 1 ELSE 0 END) AS publies,
-              SUM(CASE WHEN removed_at IS NOT NULL THEN 1 ELSE 0 END) AS retires
-       FROM deals GROUP BY detector, type ORDER BY detector, type`
-    )
-    .all();
-}
-
-/**
- * Repasse les deals publiés au crible des règles de publication actuelles, et
- * dépublie ceux qui ne les passent plus.
- *
- * Sans cela, un durcissement des règles ne vaut que pour l'avenir : les
- * offres déjà en ligne y échappent, puisqu'elles ont été jugées à l'ancienne
- * règle. C'est ce qui laissait des promotions de marchands inconnus visibles
- * sur le site alors même que le filtre qui les écarte était déployé.
- *
- * On ne supprime rien : une offre dépubliée reste en base, et une collecte
- * ultérieure la republiera si elle redevient conforme.
- *
- * @param {(deal: object) => boolean} regle - décide si un deal reste publié
- * @returns {{examines: number, depublies: number}}
- */
-function reappliquerRegles(regle) {
-  const publies = db.prepare("SELECT * FROM deals WHERE published_at IS NOT NULL AND removed_at IS NULL").all();
-  const depublier = db.prepare("UPDATE deals SET published_at = NULL WHERE id = ?");
-
-  let depublies = 0;
-  const lot = db.transaction((lignes) => {
-    for (const ligne of lignes) {
-      if (regle(enJson(ligne))) continue;
-      depublier.run(ligne.id);
-      depublies++;
-    }
-  });
-  lot(publies);
-
-  return { examines: publies.length, depublies };
-}
 
 /** Un deal par son identifiant, quel que soit son état de publication. */
 function getDeal(id) {
@@ -480,21 +419,6 @@ function getDeal(id) {
   return row ? enJson(row) : null;
 }
 
-/**
- * Purge les deals retirés ou expirés depuis longtemps. La table est en
- * écriture continue (chaque passage de flux la met à jour) : sans purge elle
- * grossit indéfiniment alors que rien ne lit ces lignes.
- */
-function purgerDeals(jours = 90) {
-  const res = db
-    .prepare(
-      `DELETE FROM deals
-       WHERE (removed_at IS NOT NULL AND removed_at < datetime('now', ?))
-          OR (expires_at IS NOT NULL AND expires_at < datetime('now', ?))`
-    )
-    .run(`-${jours} days`, `-${jours} days`);
-  return res.changes;
-}
 
 module.exports = {
   TYPES_DEAL,
@@ -505,12 +429,7 @@ module.exports = {
   upsertDeals,
   markMissingAsRemoved,
   listDeals,
-  reappliquerRegles,
   publierDeal,
-  depublierDeal,
-  depublierParSource,
-  statsDeals,
   getDeal,
-  purgerDeals,
   enJson,
 };

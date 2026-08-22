@@ -20,7 +20,6 @@ const TABLES = [
   ["watched_prices", "relevés de prix de ces fiches"],
   ["collectes_scraper", "collectes Bright Data en cours"],
   ["snapshots", "observations des scans SerpApi"],
-  ["rejected_offers", "anomalies écartées à la main"],
 ];
 
 /** Tables réellement présentes dans la base. */

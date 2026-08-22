@@ -24,7 +24,7 @@
 const { db, insertSnapshots, debuterScan, terminerScan, logSourceEvent } = require("./db");
 const { analyzeOffers } = require("./algorithm");
 const { upsertDeal, publierDeal, markMissingAsRemoved } = require("./dealsStore");
-const { MARCHANDS, reconnaitreMarchand, pagePromo } = require("./marchands");
+const { reconnaitreMarchand } = require("./marchands");
 const { produitDepuisHtml, produitsDepuisHtml } = require("./extraction");
 const { categorieDepuisLibelle } = require("./categories");
 const { estPepper, extraireFils, offreDePepper } = require("./pepper");
@@ -934,18 +934,11 @@ function semerCibles({ limite = Infinity } = {}) {
     if (r.ok) creees++;
   }
 
-  for (const m of MARCHANDS) {
-    if (creees >= limite) break;
-    const url = pagePromo(m);
-    if (!url || existantes.has(url)) continue;
-    const r = addTarget({
-      query: `Promotions ${m.nom}`,
-      category: m.categorie,
-      merchant: m.nom,
-      promoUrl: url,
-    });
-    if (r.ok) creees++;
-  }
+  // Les pages « promotions » des enseignes ne sont plus semées : sondées
+  // une à une, aucune ne rend de produit. Douze répondent 403, six
+  // n'existent pas, dix chargent leur contenu en JavaScript. Vingt-huit
+  // cibles qui échouaient à chaque scan, pour rien. Le champ `promo` du
+  // registre reste pour une adresse un jour VÉRIFIÉE.
   return { creees, total: db.prepare("SELECT COUNT(*) AS n FROM watch_targets").get().n };
 }
 

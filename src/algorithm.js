@@ -4,7 +4,7 @@
 //     produit sont comparées à leur médiane (dispo dès le 1er scan).
 //  2) Comparaison "historique" : le prix est comparé à la moyenne des
 //     prix déjà vus pour ce produit exact (s'améliore avec le temps).
-const { priceHistoryBatch, reglages, offreBannie } = require("./db");
+const { priceHistoryBatch, reglages } = require("./db");
 const { significantWords, estMarqueurVariante, productKey } = require("./productKey.js");
 
 // Titres à écarter d'office : ce sont presque toujours des accessoires
@@ -83,30 +83,10 @@ function filterRelevantOffers(offers, query, { inclureReconditionne = false } = 
     (o) =>
       !isAccessoryTitle(o.name) &&
       (inclureReconditionne || !estReconditionne(o)) &&
-      titleMatchesQuery(o.name, query) &&
-      // Liste noire tenue à la main : elle rattrape ce que les règles
-      // automatiques laissent passer — une gamme d'accessoires dont le nom
-      // ressemble trop au produit, un marchand systématiquement trompeur.
-      !offreBannie(o)
+      titleMatchesQuery(o.name, query)
   );
 }
 
-/**
- * Sépare un lot en offres neuves et offres reconditionnées.
- *
- * Le reconditionné était purement et simplement jeté. Maintenant qu'il
- * dispose de sa propre section, l'écarter du calcul de la référence du neuf
- * reste indispensable — mais le perdre serait dommage : c'est un marché à
- * part entière, avec ses propres bonnes affaires, qu'il suffit de comparer
- * à lui-même.
- */
-function separerOffres(offers, query) {
-  const pertinentes = filterRelevantOffers(offers, query, { inclureReconditionne: true });
-  return {
-    neuf: pertinentes.filter((o) => !estReconditionne(o)),
-    reconditionne: pertinentes.filter((o) => estReconditionne(o)),
-  };
-}
 
 // "Même produit" = correspondance dans les deux sens (contrairement à
 // titleMatchesQuery(title, query) qui n'exige la correspondance que d'un
@@ -485,7 +465,6 @@ function analyzeOffers(offers) {
 module.exports = {
   analyzeOffers,
   filterRelevantOffers,
-  separerOffres,
   median,
   mean,
   trimmedMedian,

@@ -88,6 +88,7 @@ const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, 
 const { hotScore } = require("./ranking");
 const { calculerBadges, prochainsBadges } = require("./badges");
 const { validerTexte, limiterFrequence, refuserDoublon } = require("./moderation");
+const { diagnostic: diagnosticAwin } = require("./awin");
 const {
   listTargets,
   getTarget,
@@ -1257,6 +1258,24 @@ if (require.main === module) {
     // Un semis qui échoue ne doit pas empêcher le site de démarrer.
     console.error(`[cibles] semis impossible : ${e.message}`);
   }
+
+  // Awin est la voie vers l'indépendance : les marchands refusent un robot
+  // anonyme mais publient leur catalogue à leurs partenaires affiliés. Le
+  // diagnostic dit tout de suite si le compte répond, plutôt que de laisser
+  // découvrir au prochain scan qu'il manque une variable.
+  diagnosticAwin()
+    .then((d) => {
+      if (d.actif) {
+        console.log(
+          `[awin] compte actif — ${d.programmes} programme(s) rejoint(s)` +
+            (d.catalogues ? "" : ", mais AWIN_FEED_KEY manque pour les catalogues") +
+            (d.exemples.length ? ` : ${d.exemples.join(", ")}` : "")
+        );
+      } else {
+        console.log(`[awin] inactif — ${d.raison}`);
+      }
+    })
+    .catch((e) => console.error(`[awin] diagnostic impossible : ${e.message}`));
 
   const serveur = app.listen(PORT, () => console.log(`RadarPrix backend en écoute sur le port ${PORT}`));
 

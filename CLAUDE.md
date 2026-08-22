@@ -30,6 +30,11 @@ Point d'entrée : `npm start` → `src/server.js` (port `PORT` ou 3001).
 | `algorithm.js` | Analyse des prix : référence entre pairs + historique, verdicts `erreur`/`deal`, scores Deal/Confidence |
 | `dealsStore.js` | Table unifiée `deals` (détecteurs D1–D4), ingestion idempotente `UNIQUE(source, external_id)`, flux public paginé |
 | `productKey.js` | Normalisation de titres produits (clé d'identité pour l'historique) |
+| `marchands.js` | Registre de 122 enseignes et marques françaises : reconnaissance d'un vendeur par domaine ou par son nom dans un texte, et construction du lien de sortie vers le marchand |
+| `categories.js` | Rubriques des sources ramenées aux catégories RadarPrix |
+| `extraction.js` | Lecture d'une fiche produit telle que le marchand la publie : JSON-LD schema.org, microdata, OpenGraph |
+| `pepper.js` | Lecture des sites de bons plans bâtis sur Pepper (Dealabs, Mydealz…) |
+| `awin.js` | Catalogues produits des marchands via le réseau d'affiliation — la voie vers l'indépendance |
 | `auth.js`, `moderation.js`, `messagerie.js`, `forum.js`, `notifications.js`, `badges.js`, `ranking.js`, `reputation.js`, `persistance.js`, `radarEtat.js`, `reinitialisation.js`, `env.js` | Comptes/sécurité, validation/anti-spam, salon + MP, forum, notifications, badges, score hot, fiabilité marchands, sauvegarde/restauration de la base, état public du radar, reset admin, chargement env |
 
 ## Moteur de détection (ce qui a été construit récemment)
@@ -93,13 +98,39 @@ remplace jamais une variable déjà présente dans l'environnement réel.
 
 ```bash
 npm install
-npm test        # vitest — 69 tests (tests/*.test.js, base SQLite temporaire isolée par fichier)
+npm test        # vitest — 134 tests (tests/*.test.js, base SQLite temporaire isolée par fichier)
 npm run lint    # eslint
 npm run scan    # un scan complet de toutes les cibles actives (cron)
 ```
 
-Les scripts legacy `test-*.js` à la racine ne font pas partie de `npm test`
-(programmes à console.log conservés pour lecture).
+Les seize scripts `test-*.js` de la racine ont été supprimés : aucun n'était
+lancé par `npm test`, ils ne servaient qu'à être lus.
+
+## Ce que la collecte peut et ne peut pas
+
+Mesuré, pas supposé, le 22 août 2026 :
+
+- **Scraper les marchands en direct ne marche pas.** Douze fiches produits
+  sondées chez les grandes enseignes françaises : **une seule** répond en
+  HTTP direct. Les autres rendent 403 (Cloudflare, DataDome) ou chargent
+  tout en JavaScript. Vingt-huit pages « promotions » sondées : **zéro
+  produit extrait**. Les chemins devinés ont été retirés du registre.
+- **Les agrégateurs marchent, mais ce ne sont pas nos données.** Une page
+  Dealabs rend cinquante offres avec prix de référence, marchand, image et
+  date de fin. C'est ce qui remplit le site aujourd'hui — un dépannage, pas
+  une fondation.
+- **La voie indépendante est le réseau d'affiliation** (`awin.js`). Un
+  marchand qui refuse un robot anonyme publie volontiers son catalogue à
+  ses partenaires : nom, description, image, prix, prix conseillé, EAN, et
+  un lien qui mène chez lui. Il faut `AWIN_PUBLISHER_ID`, `AWIN_API_TOKEN`
+  et `AWIN_FEED_KEY`. Le diagnostic au démarrage dit ce qui manque.
+
+## Règle de sortie
+
+Une carte n'envoie **jamais** vers l'agrégateur qui nous a renseignés, quel
+que soit le canal. Le lien est reconstruit vers le marchand (recherche
+maison pour 37 enseignes, page d'accueil sinon) et l'offre n'est pas
+publiée si aucun lien n'est constructible.
 
 ## Limites connues / pistes
 

@@ -15,41 +15,45 @@
 //               Darty »). Sans ça, un flux d'agrégateur ne nomme jamais son
 //               marchand et ses offres finissent sans vendeur ;
 //   categorie — la catégorie RadarPrix dominante de l'enseigne ;
-//   promo     — le chemin public où l'enseigne regroupe ses promotions,
-//               quand elle en a un. C'est le point d'entrée du collecteur.
+//   promo     — chemin public des promotions. Toutes les valeurs devinées
+//               ont été retirées après mesure : sur vingt-huit pages
+//               sondées, douze répondent 403 (Cloudflare, DataDome), six
+//               n'existent pas, et les dix restantes chargent leurs
+//               produits en JavaScript. Zéro produit extrait. Le champ
+//               reste pour une adresse VÉRIFIÉE, jamais supposée.
 //
 // Rien ici n'est une clé d'API ni un accès privilégié : ce sont des adresses
 // publiques. Ce qu'on en fait est encadré dans collect.js.
 
 const MARCHANDS = [
   // ── Généralistes et marketplaces ──
-  { nom: "Amazon", domaine: "amazon.fr", recherche: "https://www.amazon.fr/s?k={q}", alias: ["amazon"], categorie: "tout", promo: "/gp/goldbox" },
-  { nom: "Cdiscount", domaine: "cdiscount.com", recherche: "https://www.cdiscount.com/search/10/{q}.html", alias: ["cdiscount"], categorie: "tout", promo: "/bonnes-affaires/" },
-  { nom: "Fnac", domaine: "fnac.com", recherche: "https://www.fnac.com/SearchResult/ResultList.aspx?Search={q}", alias: ["fnac"], categorie: "hightech", promo: "/bons-plans" },
-  { nom: "Darty", domaine: "darty.com", recherche: "https://www.darty.com/nav/recherche?text={q}", alias: ["darty"], categorie: "maison", promo: "/nav/promotions" },
-  { nom: "Boulanger", domaine: "boulanger.com", recherche: "https://www.boulanger.com/resultats?tr={q}", alias: ["boulanger"], categorie: "hightech", promo: "/c/bons-plans" },
-  { nom: "Rakuten", domaine: "rakuten.fr", recherche: "https://fr.shopping.rakuten.com/search/{q}", alias: ["rakuten", "priceminister"], categorie: "tout", promo: "/bons-plans" },
-  { nom: "E.Leclerc", domaine: "e.leclerc", alias: ["leclerc", "e leclerc"], categorie: "alimentaire", promo: "/promotions" },
-  { nom: "Carrefour", domaine: "carrefour.fr", recherche: "https://www.carrefour.fr/s?q={q}", alias: ["carrefour"], categorie: "alimentaire", promo: "/promotions" },
-  { nom: "Auchan", domaine: "auchan.fr", recherche: "https://www.auchan.fr/recherche?text={q}", alias: ["auchan"], categorie: "alimentaire", promo: "/promotions" },
-  { nom: "Intermarché", domaine: "intermarche.com", recherche: "https://www.intermarche.com/recherche/{q}", alias: ["intermarche", "intermarché"], categorie: "alimentaire", promo: "/promotions" },
+  { nom: "Amazon", domaine: "amazon.fr", recherche: "https://www.amazon.fr/s?k={q}", alias: ["amazon"], categorie: "tout", promo: null },
+  { nom: "Cdiscount", domaine: "cdiscount.com", recherche: "https://www.cdiscount.com/search/10/{q}.html", alias: ["cdiscount"], categorie: "tout", promo: null },
+  { nom: "Fnac", domaine: "fnac.com", recherche: "https://www.fnac.com/SearchResult/ResultList.aspx?Search={q}", alias: ["fnac"], categorie: "hightech", promo: null },
+  { nom: "Darty", domaine: "darty.com", recherche: "https://www.darty.com/nav/recherche?text={q}", alias: ["darty"], categorie: "maison", promo: null },
+  { nom: "Boulanger", domaine: "boulanger.com", recherche: "https://www.boulanger.com/resultats?tr={q}", alias: ["boulanger"], categorie: "hightech", promo: null },
+  { nom: "Rakuten", domaine: "rakuten.fr", recherche: "https://fr.shopping.rakuten.com/search/{q}", alias: ["rakuten", "priceminister"], categorie: "tout", promo: null },
+  { nom: "E.Leclerc", domaine: "e.leclerc", alias: ["leclerc", "e leclerc"], categorie: "alimentaire", promo: null },
+  { nom: "Carrefour", domaine: "carrefour.fr", recherche: "https://www.carrefour.fr/s?q={q}", alias: ["carrefour"], categorie: "alimentaire", promo: null },
+  { nom: "Auchan", domaine: "auchan.fr", recherche: "https://www.auchan.fr/recherche?text={q}", alias: ["auchan"], categorie: "alimentaire", promo: null },
+  { nom: "Intermarché", domaine: "intermarche.com", recherche: "https://www.intermarche.com/recherche/{q}", alias: ["intermarche", "intermarché"], categorie: "alimentaire", promo: null },
   { nom: "Casino", domaine: "casino.fr", alias: ["geant casino", "casino"], categorie: "alimentaire", promo: null },
-  { nom: "Monoprix", domaine: "monoprix.fr", alias: ["monoprix"], categorie: "alimentaire", promo: "/promotions" },
+  { nom: "Monoprix", domaine: "monoprix.fr", alias: ["monoprix"], categorie: "alimentaire", promo: null },
   { nom: "Cora", domaine: "cora.fr", alias: ["cora"], categorie: "alimentaire", promo: null },
   { nom: "Super U", domaine: "coursesu.com", alias: ["super u", "hyper u", "magasins u"], categorie: "alimentaire", promo: null },
-  { nom: "Lidl", domaine: "lidl.fr", recherche: "https://www.lidl.fr/q/search?q={q}", alias: ["lidl"], categorie: "alimentaire", promo: "/c/offres" },
+  { nom: "Lidl", domaine: "lidl.fr", recherche: "https://www.lidl.fr/q/search?q={q}", alias: ["lidl"], categorie: "alimentaire", promo: null },
   { nom: "Aldi", domaine: "aldi.fr", alias: ["aldi"], categorie: "alimentaire", promo: null },
   { nom: "Veepee", domaine: "veepee.fr", alias: ["veepee", "vente privee", "vente-privee"], categorie: "tout", promo: null },
   { nom: "ShowroomPrivé", domaine: "showroomprive.com", alias: ["showroomprive", "showroomprivé"], categorie: "mode", promo: null },
-  { nom: "La Redoute", domaine: "laredoute.fr", alias: ["la redoute", "redoute"], categorie: "maison", promo: "/promotions" },
+  { nom: "La Redoute", domaine: "laredoute.fr", alias: ["la redoute", "redoute"], categorie: "maison", promo: null },
   { nom: "La Poste", domaine: "laposte.fr", alias: ["la poste"], categorie: "tout", promo: null },
 
   // ── High-tech et informatique ──
-  { nom: "LDLC", domaine: "ldlc.com", recherche: "https://www.ldlc.com/navigation/{q}/", alias: ["ldlc"], categorie: "hightech", promo: "/bons-plans/" },
-  { nom: "Materiel.net", domaine: "materiel.net", recherche: "https://www.materiel.net/recherche/{q}/", alias: ["materiel.net", "materiel net"], categorie: "hightech", promo: "/bons-plans/" },
-  { nom: "TopAchat", domaine: "topachat.com", alias: ["topachat", "top achat"], categorie: "hightech", promo: "/pages/promotions.php" },
+  { nom: "LDLC", domaine: "ldlc.com", recherche: "https://www.ldlc.com/navigation/{q}/", alias: ["ldlc"], categorie: "hightech", promo: null },
+  { nom: "Materiel.net", domaine: "materiel.net", recherche: "https://www.materiel.net/recherche/{q}/", alias: ["materiel.net", "materiel net"], categorie: "hightech", promo: null },
+  { nom: "TopAchat", domaine: "topachat.com", alias: ["topachat", "top achat"], categorie: "hightech", promo: null },
   { nom: "GrosBill", domaine: "grosbill.com", alias: ["grosbill"], categorie: "hightech", promo: null },
-  { nom: "Rue du Commerce", domaine: "rueducommerce.fr", alias: ["rue du commerce", "rueducommerce"], categorie: "hightech", promo: "/promotions" },
+  { nom: "Rue du Commerce", domaine: "rueducommerce.fr", alias: ["rue du commerce", "rueducommerce"], categorie: "hightech", promo: null },
   { marque: true, nom: "Apple", domaine: "apple.com", alias: ["apple", "apple store"], categorie: "hightech", promo: null },
   { marque: true, nom: "Samsung", domaine: "samsung.com", alias: ["samsung"], categorie: "hightech", promo: null },
   { marque: true, nom: "Xiaomi", domaine: "mi.com", alias: ["xiaomi"], categorie: "hightech", promo: null },
@@ -70,8 +74,8 @@ const MARCHANDS = [
   { nom: "Free", domaine: "free.fr", alias: ["free mobile", "free"], categorie: "hightech", promo: null },
 
   // ── Gaming ──
-  { nom: "Micromania", domaine: "micromania.fr", recherche: "https://www.micromania.fr/recherche?q={q}", alias: ["micromania", "micromania-zing"], categorie: "gaming", promo: "/promotions/" },
-  { nom: "Instant Gaming", domaine: "instant-gaming.com", recherche: "https://www.instant-gaming.com/fr/rechercher/?q={q}", alias: ["instant gaming", "instant-gaming"], categorie: "gaming", promo: "/fr/promotions/" },
+  { nom: "Micromania", domaine: "micromania.fr", recherche: "https://www.micromania.fr/recherche?q={q}", alias: ["micromania", "micromania-zing"], categorie: "gaming", promo: null },
+  { nom: "Instant Gaming", domaine: "instant-gaming.com", recherche: "https://www.instant-gaming.com/fr/rechercher/?q={q}", alias: ["instant gaming", "instant-gaming"], categorie: "gaming", promo: null },
   { nom: "Gamesplanet", domaine: "gamesplanet.com", alias: ["gamesplanet"], categorie: "gaming", promo: null },
   { marque: true, nom: "Nintendo", domaine: "nintendo.com", alias: ["nintendo", "nintendo eshop"], categorie: "gaming", promo: null },
   { marque: true, nom: "PlayStation Store", domaine: "playstation.com", alias: ["playstation", "psn", "ps store"], categorie: "gaming", promo: null },
@@ -83,16 +87,16 @@ const MARCHANDS = [
 
   // ── Maison, bricolage, jardin ──
   { nom: "Ikea", domaine: "ikea.com", recherche: "https://www.ikea.com/fr/fr/search/?q={q}", alias: ["ikea"], categorie: "maison", promo: null },
-  { nom: "Conforama", domaine: "conforama.fr", recherche: "https://www.conforama.fr/recherche?q={q}", alias: ["conforama"], categorie: "maison", promo: "/promotions" },
-  { nom: "But", domaine: "but.fr", recherche: "https://www.but.fr/recherche?q={q}", alias: ["but.fr", "but "], categorie: "maison", promo: "/promotions" },
+  { nom: "Conforama", domaine: "conforama.fr", recherche: "https://www.conforama.fr/recherche?q={q}", alias: ["conforama"], categorie: "maison", promo: null },
+  { nom: "But", domaine: "but.fr", recherche: "https://www.but.fr/recherche?q={q}", alias: ["but.fr", "but "], categorie: "maison", promo: null },
   { nom: "Maisons du Monde", domaine: "maisonsdumonde.com", recherche: "https://www.maisonsdumonde.com/FR/fr/search?q={q}", alias: ["maisons du monde", "maisonsdumonde"], categorie: "maison", promo: null },
   { nom: "Alinéa", domaine: "alinea.com", alias: ["alinea", "alinéa"], categorie: "maison", promo: null },
-  { nom: "Leroy Merlin", domaine: "leroymerlin.fr", recherche: "https://www.leroymerlin.fr/produits/recherche.html?mot={q}", alias: ["leroy merlin", "leroymerlin"], categorie: "maison", promo: "/promotions" },
-  { nom: "Castorama", domaine: "castorama.fr", recherche: "https://www.castorama.fr/search?q={q}", alias: ["castorama", "casto"], categorie: "maison", promo: "/promotions" },
+  { nom: "Leroy Merlin", domaine: "leroymerlin.fr", recherche: "https://www.leroymerlin.fr/produits/recherche.html?mot={q}", alias: ["leroy merlin", "leroymerlin"], categorie: "maison", promo: null },
+  { nom: "Castorama", domaine: "castorama.fr", recherche: "https://www.castorama.fr/search?q={q}", alias: ["castorama", "casto"], categorie: "maison", promo: null },
   { nom: "Brico Dépôt", domaine: "bricodepot.fr", alias: ["brico depot", "brico dépôt", "bricodepot"], categorie: "maison", promo: null },
   { nom: "Bricomarché", domaine: "bricomarche.com", alias: ["bricomarche", "bricomarché"], categorie: "maison", promo: null },
   { nom: "Mr Bricolage", domaine: "mr-bricolage.fr", alias: ["mr bricolage", "monsieur bricolage"], categorie: "maison", promo: null },
-  { nom: "ManoMano", domaine: "manomano.fr", recherche: "https://www.manomano.fr/recherche/{q}", alias: ["manomano", "mano mano"], categorie: "maison", promo: "/promotions" },
+  { nom: "ManoMano", domaine: "manomano.fr", recherche: "https://www.manomano.fr/recherche/{q}", alias: ["manomano", "mano mano"], categorie: "maison", promo: null },
   { nom: "Gamm Vert", domaine: "gammvert.fr", alias: ["gamm vert", "gammvert"], categorie: "maison", promo: null },
   { nom: "Jardiland", domaine: "jardiland.com", alias: ["jardiland"], categorie: "maison", promo: null },
   { nom: "Truffaut", domaine: "truffaut.com", recherche: "https://www.truffaut.com/recherche?q={q}", alias: ["truffaut"], categorie: "maison", promo: null },
@@ -112,10 +116,10 @@ const MARCHANDS = [
   { marque: true, nom: "Nespresso", domaine: "nespresso.com", alias: ["nespresso"], categorie: "alimentaire", promo: null },
 
   // ── Mode et chaussures ──
-  { nom: "Zalando", domaine: "zalando.fr", recherche: "https://www.zalando.fr/recherche/?q={q}", alias: ["zalando"], categorie: "mode", promo: "/promo/" },
-  { nom: "Kiabi", domaine: "kiabi.com", recherche: "https://www.kiabi.com/recherche?text={q}", alias: ["kiabi"], categorie: "mode", promo: "/promotions" },
+  { nom: "Zalando", domaine: "zalando.fr", recherche: "https://www.zalando.fr/recherche/?q={q}", alias: ["zalando"], categorie: "mode", promo: null },
+  { nom: "Kiabi", domaine: "kiabi.com", recherche: "https://www.kiabi.com/recherche?text={q}", alias: ["kiabi"], categorie: "mode", promo: null },
   { nom: "Vertbaudet", domaine: "vertbaudet.fr", alias: ["vertbaudet"], categorie: "mode", promo: null },
-  { nom: "Decathlon", domaine: "decathlon.fr", recherche: "https://www.decathlon.fr/search?Ntt={q}", alias: ["decathlon", "décathlon"], categorie: "sport", promo: "/promotions" },
+  { nom: "Decathlon", domaine: "decathlon.fr", recherche: "https://www.decathlon.fr/search?Ntt={q}", alias: ["decathlon", "décathlon"], categorie: "sport", promo: null },
   { nom: "Go Sport", domaine: "go-sport.com", recherche: "https://www.go-sport.com/recherche?q={q}", alias: ["go sport", "gosport"], categorie: "sport", promo: null },
   { nom: "Intersport", domaine: "intersport.fr", recherche: "https://www.intersport.fr/recherche/?q={q}", alias: ["intersport"], categorie: "sport", promo: null },
   { marque: true, nom: "Nike", domaine: "nike.com", recherche: "https://www.nike.com/fr/w?q={q}", alias: ["nike"], categorie: "sport", promo: null },
@@ -155,7 +159,7 @@ const MARCHANDS = [
   { nom: "Momox", domaine: "momox-shop.fr", alias: ["momox"], categorie: "tout", promo: null },
 
   // ── Auto et mobilité ──
-  { nom: "Norauto", domaine: "norauto.fr", recherche: "https://www.norauto.fr/recherche?q={q}", alias: ["norauto"], categorie: "auto", promo: "/promotions" },
+  { nom: "Norauto", domaine: "norauto.fr", recherche: "https://www.norauto.fr/recherche?q={q}", alias: ["norauto"], categorie: "auto", promo: null },
   { nom: "Feu Vert", domaine: "feuvert.fr", alias: ["feu vert", "feuvert"], categorie: "auto", promo: null },
   { nom: "Midas", domaine: "midas.fr", alias: ["midas"], categorie: "auto", promo: null },
   { nom: "Oscaro", domaine: "oscaro.com", recherche: "https://www.oscaro.com/recherche?q={q}", alias: ["oscaro"], categorie: "auto", promo: null },

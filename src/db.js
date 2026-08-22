@@ -229,17 +229,6 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_source_events ON source_events(source, id);
 
-  -- Emails envoyés : si une alerte ne part pas, personne ne le savait.
-  CREATE TABLE IF NOT EXISTS email_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    to_email TEXT NOT NULL,
-    subject TEXT,
-    motif TEXT,                        -- erreur | seuil | admin
-    ok INTEGER NOT NULL,
-    error TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX IF NOT EXISTS idx_email_log_date ON email_log(id);
 
   -- ── Qualité de la détection ───────────────────────────────────
 
@@ -255,40 +244,10 @@ db.exec(`
 
   -- Produits ou marchands bannis des résultats. Répond au cas concret
   -- "ça annonce un téléphone et c'est une coque" quand le filtrage
-  -- automatique ne suffit pas.
-  CREATE TABLE IF NOT EXISTS blacklist (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT NOT NULL,          -- marchand | motif
-    valeur TEXT NOT NULL,
-    note TEXT,
-    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(type, valeur)
-  );
 
   -- Anomalies écartées à la main : un faux positif visible en ligne devait
-  -- pouvoir être retiré sans attendre un correctif de l'algorithme.
-  CREATE TABLE IF NOT EXISTS rejected_offers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    product_key TEXT NOT NULL,
-    seller TEXT,
-    price REAL,
-    motif TEXT,
-    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(product_key, seller, price)
-  );
 
   -- Produits ajoutés ou désactivés à la main, par-dessus catalog.js. Le
-  -- fichier reste la référence ; cette table n'enregistre que les écarts.
-  CREATE TABLE IF NOT EXISTS catalog_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    category TEXT NOT NULL DEFAULT 'tout',
-    actif INTEGER NOT NULL DEFAULT 1,
-    created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
 `);
 
 // Catégories de forum par défaut — insérées une seule fois (slug UNIQUE).
@@ -331,7 +290,6 @@ for (const stmt of [
   // ("128 15 iphone") : la liste des anomalies écartées était illisible.
   // On garde désormais le libellé d'origine, sans toucher à la clé qui
   // reste ce sur quoi la comparaison se fait.
-  "ALTER TABLE rejected_offers ADD COLUMN label TEXT",
   // Frais de port : une offre à 200 € plus 40 € de livraison n'est pas une
   // affaire face à 220 € livrés. La source renvoyait l'information depuis le
   // début, elle n'était simplement pas lue.
@@ -447,27 +405,6 @@ function priceHistoryFor(nameOrKey, excludeLastMinutes = 0) {
   return rows.map((r) => r.price);
 }
 
-/**
- * Historique détaillé : le prix, mais aussi QUI le pratiquait et QUAND.
- *
- * priceHistoryFor ne renvoie qu'une liste de nombres, ce qui perd les deux
- * dimensions dont dépend une référence honnête — le marchand et la date. Sans
- * elles, impossible de pondérer par la récence ni d'empêcher un marchand très
- * bavard de peser plus lourd que les autres (voir referenceHistorique dans
- * algorithm.js). La fenêtre par défaut est en jours, non en nombre de lignes :
- * sur un produit scanné souvent, 200 lignes ne couvraient qu'une vingtaine
- * d'heures — l'« historique » n'existait pas.
- */
-function priceHistoryDetailed(nameOrKey, { jours = 60, limit = 800 } = {}) {
-  const key = productKey(nameOrKey);
-  return db
-    .prepare(
-      `SELECT price, seller, scraped_at FROM snapshots
-       WHERE product_key = ? AND scraped_at > datetime('now', ?)
-       ORDER BY scraped_at DESC LIMIT ?`
-    )
-    .all(key, `-${jours} days`, limit);
-}
 
 /**
  * Même chose pour plusieurs produits d'un coup.
@@ -679,26 +616,6 @@ function topScannedProducts(limit = 10) {
     .all(limit);
 }
 
-/**
- * Liste, pour chaque produit déjà scanné (par le cron ou un scan précédent),
- * le dernier lot d'offres observé. Un "produit" = une valeur de `query`.
- * Optionnellement filtré par catégorie.
- */
-function latestBatchPerProduct(category) {
-  const queries = db
-    .prepare(
-      category && category !== "tout"
-        ? "SELECT DISTINCT query FROM snapshots WHERE category = ?"
-        : "SELECT DISTINCT query FROM snapshots"
-    )
-    .all(...(category && category !== "tout" ? [category] : []))
-    .map((r) => r.query);
-
-  return queries.map((q) => ({
-    query: q,
-    offers: latestSnapshots(q, 50),
-  }));
-}
 
 // ── Favoris / recherches suivies ──────────────────────────────
 /**
@@ -736,29 +653,6 @@ function getWatchlist(userId) {
     .all(userId);
 }
 
-/** Membres qui suivent cette requête (favoris), avec leur email — pour l'envoi d'alertes. */
-function watchersFor(query) {
-  return db
-    .prepare(
-      `SELECT u.id AS user_id, u.email, w.target_price
-       FROM watchlist w JOIN users u ON u.id = w.user_id
-       WHERE w.query = ?`
-    )
-    .all(query.toLowerCase().trim());
-}
-
-/**
- * Enregistre qu'une alerte a été envoyée à ce membre pour ce produit à ce
- * prix. INSERT OR IGNORE + UNIQUE(user_id, query, price) : renvoie true la
- * première fois (à notifier), false si déjà envoyée pour ce même prix (pas
- * de re-notification tant que le prix ne change pas).
- */
-function recordAlertSent(userId, query, price) {
-  const info = db
-    .prepare("INSERT OR IGNORE INTO watchlist_alerts_sent (user_id, query, price) VALUES (?, ?, ?)")
-    .run(userId, query.toLowerCase().trim(), price);
-  return info.changes > 0;
-}
 
 // ── Communauté : deals soumis par les membres + votes ───────────
 /** Enregistre un deal soumis par un membre de la communauté. */
@@ -1392,31 +1286,11 @@ function sourceHealth() {
   });
 }
 
-/** Consigne un envoi d'email, réussi ou non. */
-function logEmail({ to, subject, motif, ok, error }) {
-  db.prepare("INSERT INTO email_log (to_email, subject, motif, ok, error) VALUES (?, ?, ?, ?, ?)")
-    .run(to, subject || null, motif || null, ok ? 1 : 0, error ? String(error).slice(0, 300) : null);
-}
-
-function listEmailLog(limit = 50) {
-  return db.prepare("SELECT * FROM email_log ORDER BY id DESC LIMIT ?").all(limit);
-}
-
-function emailStats() {
-  const r = db
-    .prepare(
-      `SELECT COUNT(*) AS total, SUM(ok) AS envoyes FROM email_log
-       WHERE created_at > datetime('now', '-7 day')`
-    )
-    .get();
-  return { total7j: r.total || 0, envoyes7j: r.envoyes || 0, echecs7j: (r.total || 0) - (r.envoyes || 0) };
-}
 
 /** Supprime les lignes de journal trop anciennes pour être utiles. */
 function purgerJournaux() {
   const limite = `-${RETENTION_JOURS} day`;
   db.prepare("DELETE FROM source_events WHERE created_at < datetime('now', ?)").run(limite);
-  db.prepare("DELETE FROM email_log WHERE created_at < datetime('now', ?)").run(limite);
   db.prepare("DELETE FROM scan_runs WHERE started_at < datetime('now', ?)").run(limite);
 }
 
@@ -1454,207 +1328,6 @@ function reglages() {
     ])
   );
   return cacheReglages;
-}
-
-/** Réglages accompagnés de leurs bornes et de leur valeur d'origine, pour l'interface. */
-function reglagesDetailles() {
-  const actuels = reglages();
-  return Object.entries(REGLAGES_DEFAUT).map(([cle, d]) => ({
-    cle,
-    libelle: d.libelle,
-    valeur: actuels[cle],
-    defaut: d.valeur,
-    min: d.min,
-    max: d.max,
-    modifie: actuels[cle] !== d.valeur,
-  }));
-}
-
-/** Change un réglage. `null` remet la valeur d'origine. */
-function definirReglage(adminId, cle, valeur) {
-  const d = REGLAGES_DEFAUT[cle];
-  if (!d) return { ok: false, error: "Réglage inconnu." };
-
-  if (valeur === null || valeur === undefined || valeur === "") {
-    db.prepare("DELETE FROM settings WHERE cle = ?").run(cle);
-    cacheReglages = null;
-    journaliser(adminId, "réglage réinitialisé", { detail: `${cle} → ${d.valeur} (valeur d'origine)` });
-    return { ok: true, valeur: d.valeur };
-  }
-
-  const n = Number(valeur);
-  if (!Number.isFinite(n) || n < d.min || n > d.max) {
-    return { ok: false, error: `Valeur hors bornes (${d.min} à ${d.max}).` };
-  }
-  db.prepare(
-    "INSERT INTO settings (cle, valeur) VALUES (?, ?) ON CONFLICT(cle) DO UPDATE SET valeur = excluded.valeur, updated_at = datetime('now')"
-  ).run(cle, String(n));
-  cacheReglages = null;
-  journaliser(adminId, "réglage modifié", { detail: `${cle} → ${n}` });
-  return { ok: true, valeur: n };
-}
-
-// ── Liste noire ──────────────────────────────────────────────────
-//
-// Deux natures : un marchand entier, ou un motif de titre. Le second sert
-// aux cas que le filtrage automatique laisse passer — une gamme
-// d'accessoires dont le nom ressemble trop au produit, par exemple.
-let cacheBlacklist = null;
-
-function blacklist() {
-  if (!cacheBlacklist) {
-    const lignes = db.prepare("SELECT type, valeur FROM blacklist").all();
-    cacheBlacklist = {
-      marchands: lignes.filter((l) => l.type === "marchand").map((l) => l.valeur.toLowerCase()),
-      motifs: lignes.filter((l) => l.type === "motif").map((l) => l.valeur.toLowerCase()),
-    };
-  }
-  return cacheBlacklist;
-}
-
-function listBlacklist() {
-  return db
-    .prepare(
-      `SELECT b.*, COALESCE(NULLIF(u.pseudo, ''), u.email) AS ajoute_par
-       FROM blacklist b LEFT JOIN users u ON u.id = b.created_by ORDER BY b.type, b.valeur`
-    )
-    .all();
-}
-
-function ajouterBlacklist(adminId, type, valeur, note) {
-  if (!["marchand", "motif"].includes(type)) return { ok: false, error: "Type inconnu." };
-  const propre = String(valeur || "").trim();
-  if (propre.length < 2) return { ok: false, error: "Valeur trop courte." };
-  try {
-    db.prepare("INSERT INTO blacklist (type, valeur, note, created_by) VALUES (?, ?, ?, ?)")
-      .run(type, propre, note || null, adminId);
-  } catch (e) {
-    if (/UNIQUE constraint/i.test(e.message)) return { ok: false, error: "Cette entrée existe déjà." };
-    throw e;
-  }
-  cacheBlacklist = null;
-  journaliser(adminId, "liste noire — ajout", { detail: `${type} : ${propre}` });
-  return { ok: true };
-}
-
-function retirerBlacklist(adminId, id) {
-  const ligne = db.prepare("SELECT type, valeur FROM blacklist WHERE id = ?").get(id);
-  if (!ligne) return { ok: false, error: "Entrée introuvable." };
-  db.prepare("DELETE FROM blacklist WHERE id = ?").run(id);
-  cacheBlacklist = null;
-  journaliser(adminId, "liste noire — retrait", { detail: `${ligne.type} : ${ligne.valeur}` });
-  return { ok: true };
-}
-
-/** Une offre est-elle bannie ? (marchand entier ou motif dans le titre) */
-function offreBannie(offre) {
-  const b = blacklist();
-  const vendeur = (offre.seller || "").toLowerCase();
-  if (b.marchands.some((m) => vendeur.includes(m))) return true;
-  const titre = (offre.name || "").toLowerCase();
-  return b.motifs.some((m) => titre.includes(m));
-}
-
-// ── Anomalies rejetées à la main ─────────────────────────────────
-let cacheRejets = null;
-
-function rejets() {
-  if (!cacheRejets) {
-    cacheRejets = new Set(
-      db.prepare("SELECT product_key, seller, price FROM rejected_offers").all()
-        .map((r) => cleRejet(r.product_key, r.seller, r.price))
-    );
-  }
-  return cacheRejets;
-}
-
-const cleRejet = (pk, seller, price) =>
-  `${pk}|${(seller || "").toLowerCase()}|${Number(price).toFixed(2)}`;
-
-/** Cette offre précise a-t-elle été écartée à la main ? */
-function offreRejetee(offre) {
-  return rejets().has(cleRejet(productKey(offre.name), offre.seller, offre.price));
-}
-
-function rejeterOffre(adminId, { name, seller, price, motif }) {
-  if (!name || !Number.isFinite(Number(price))) return { ok: false, error: "Offre incomplète." };
-  const pk = productKey(name);
-  try {
-    db.prepare("INSERT INTO rejected_offers (product_key, label, seller, price, motif, created_by) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(pk, String(name).trim(), seller || null, Number(price), motif || null, adminId);
-  } catch (e) {
-    if (/UNIQUE constraint/i.test(e.message)) return { ok: true, deja: true };
-    throw e;
-  }
-  cacheRejets = null;
-  journaliser(adminId, "anomalie rejetée", { detail: `${name} — ${seller} à ${price} €${motif ? " — " + motif : ""}` });
-  return { ok: true };
-}
-
-function listRejets(limit = 100) {
-  return db
-    .prepare(
-      `SELECT r.*, COALESCE(NULLIF(r.label, ''), r.product_key) AS produit,
-              COALESCE(NULLIF(u.pseudo, ''), u.email) AS rejete_par
-       FROM rejected_offers r LEFT JOIN users u ON u.id = r.created_by
-       ORDER BY r.id DESC LIMIT ?`
-    )
-    .all(limit);
-}
-
-function annulerRejet(adminId, id) {
-  const info = db.prepare("DELETE FROM rejected_offers WHERE id = ?").run(id);
-  if (info.changes === 0) return { ok: false, error: "Rejet introuvable." };
-  cacheRejets = null;
-  journaliser(adminId, "rejet annulé", { contentId: id });
-  return { ok: true };
-}
-
-// ── Catalogue ────────────────────────────────────────────────────
-function listCatalogItems() {
-  return db
-    .prepare(
-      `SELECT c.*, COALESCE(NULLIF(u.pseudo, ''), u.email) AS ajoute_par
-       FROM catalog_items c LEFT JOIN users u ON u.id = c.created_by
-       ORDER BY c.category, c.name`
-    )
-    .all();
-}
-
-function ajouterCatalogItem(adminId, name, category) {
-  const propre = String(name || "").trim();
-  if (propre.length < 3) return { ok: false, error: "Nom de produit trop court." };
-  try {
-    db.prepare("INSERT INTO catalog_items (name, category, created_by) VALUES (?, ?, ?)")
-      .run(propre, category || "tout", adminId);
-  } catch (e) {
-    if (/UNIQUE constraint/i.test(e.message)) return { ok: false, error: "Ce produit est déjà dans le catalogue." };
-    throw e;
-  }
-  journaliser(adminId, "catalogue — ajout", { detail: propre });
-  return { ok: true };
-}
-
-/** Active ou désactive un produit ajouté à la main. */
-function basculerCatalogItem(adminId, id, actif) {
-  const item = db.prepare("SELECT name FROM catalog_items WHERE id = ?").get(id);
-  if (!item) return { ok: false, error: "Produit introuvable." };
-  db.prepare("UPDATE catalog_items SET actif = ? WHERE id = ?").run(actif ? 1 : 0, id);
-  journaliser(adminId, actif ? "catalogue — réactivation" : "catalogue — désactivation", { detail: item.name });
-  return { ok: true };
-}
-
-function supprimerCatalogItem(adminId, id) {
-  const item = db.prepare("SELECT name FROM catalog_items WHERE id = ?").get(id);
-  if (!item) return { ok: false, error: "Produit introuvable." };
-  db.prepare("DELETE FROM catalog_items WHERE id = ?").run(id);
-  journaliser(adminId, "catalogue — retrait", { detail: item.name });
-  return { ok: true };
-}
-
-/** Produits ajoutés à la main et actifs, à fusionner avec catalog.js. */
-function catalogItemsActifs() {
-  return db.prepare("SELECT name, category FROM catalog_items WHERE actif = 1").all();
 }
 
 
@@ -1840,42 +1513,6 @@ function exportDeals() {
     .all();
 }
 
-/**
- * Enregistre le vrai lien marchand d'une offre, une fois résolu.
- *
- * Les scans stockent le lien de l'agrégateur (product_link), pas celui du
- * marchand : c'est tout ce que renvoie la recherche. Le vrai lien demande une
- * requête supplémentaire, facturée — et son résultat n'était jusqu'ici que
- * renvoyé à l'écran, jamais conservé. Chaque scan achetait donc cette
- * information puis la jetait, et la surveillance des fiches n'avait aucune
- * adresse exploitable à se mettre sous la dent.
- */
-function enregistrerLienMarchand(name, seller, url) {
-  if (!url || !name) return 0;
-  const info = db
-    .prepare(
-      `UPDATE snapshots SET url = ?
-       WHERE product_key = ? AND seller IS ?
-         AND (url IS NULL OR url = '' OR url LIKE '%google.%')`
-    )
-    .run(url, productKey(name), seller || null);
-  return info.changes;
-}
-
-/**
- * Déclenche une copie de sécurité de la base à chaud.
- *
- * `sauvegarderBase` tourne déjà à l'ouverture du fichier, donc une fois par
- * déploiement. Cette fonction permet au cron de la rejouer chaque nuit : un
- * service qui tient trois semaines sans redéploiement n'avait sinon qu'une
- * copie vieille de trois semaines.
- *
- * Le chemin de la base ne quitte pas ce module : le cron n'a pas à le
- * connaître pour demander une sauvegarde.
- */
-function sauvegarderMaintenant() {
-  return sauvegarderBase(db, DB_PATH);
-}
 
 /**
  * Consolide le journal WAL dans le fichier principal puis ferme la base.
@@ -1893,8 +1530,6 @@ function fermerBase() {
 module.exports = {
   db,
   fermerBase,
-  enregistrerLienMarchand,
-  sauvegarderMaintenant,
   listUsersAdmin,
   userAdminSheet,
   seriesQuotidiennes,
@@ -1904,29 +1539,11 @@ module.exports = {
   REGLAGES_DEFAUT,
   etatPersistance,
   reglages,
-  reglagesDetailles,
-  definirReglage,
-  listBlacklist,
-  ajouterBlacklist,
-  retirerBlacklist,
-  offreBannie,
-  offreRejetee,
-  rejeterOffre,
-  listRejets,
-  annulerRejet,
-  listCatalogItems,
-  ajouterCatalogItem,
-  basculerCatalogItem,
-  supprimerCatalogItem,
-  catalogItemsActifs,
   debuterScan,
   terminerScan,
   listScanRuns,
   logSourceEvent,
   sourceHealth,
-  logEmail,
-  listEmailLog,
-  emailStats,
   purgerJournaux,
   TYPES_CONTENU,
   lireContenu,
@@ -1957,7 +1574,6 @@ module.exports = {
   pseudoDejaPris,
   insertSnapshots,
   priceHistoryFor,
-  priceHistoryDetailed,
   priceHistoryBatch,
   priceHistoryByDay,
   latestSnapshots,
@@ -1974,12 +1590,9 @@ module.exports = {
   countUsers,
   countScans,
   topScannedProducts,
-  latestBatchPerProduct,
   addToWatchlist,
   removeFromWatchlist,
   getWatchlist,
-  watchersFor,
-  recordAlertSent,
   addComment,
   listComments,
   submitCommunityDeal,
