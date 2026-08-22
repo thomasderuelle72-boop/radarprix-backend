@@ -156,24 +156,71 @@ const rssParser = new Parser({
   },
 });
 
+/* Contextes qui désignent autre chose que le prix de l'article. Sans ce
+   filtre, « Livraison 4,99 € — Casque 199 € » retenait le port : le premier
+   montant rencontré gagnait, quel qu'il soit. */
+const AVANT_NON_PRIX = /(livraison|frais de port|port|[ée]conomis\w*|remise|r[ée]duction|offert\w*|cashback|rembours\w*|cr[ée]dit\w*)[^.;,]{0,20}$/i;
+const APRES_NON_PRIX = /^[^.;]{0,20}(d'achats?|offerts?|de r[ée]duction|de remise|rembours[ée]s?)/i;
+
+/** Un nombre monétaire, séparateurs de milliers compris : 1 299,00 · 1.299,00 · 499.99 */
+const NOMBRE = String.raw`\d{1,3}(?:[ .\u202F\u2009,]\d{3})*(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?`;
+
 /**
- * Extrait un prix d'une chaîne ("699,00 €", "EUR 499.99", "12,99 euros").
+ * Convertit un nombre monétaire écrit à la française ou à l'anglaise.
+ *
+ * La règle qui lève l'ambiguïté : un séparateur suivi d'exactement une ou
+ * deux décimales en fin de nombre EST la virgule décimale ; tout le reste
+ * sépare des milliers. « 1.299,00 » vaut donc 1299, et « 499.99 » vaut
+ * 499,99 — sans avoir à deviner la langue de la source.
+ */
+function versNombre(brut) {
+  const decimal = brut.match(/[.,](\d{1,2})$/);
+  const entier = (decimal ? brut.slice(0, -decimal[0].length) : brut).replace(/[^\d]/g, "");
+  const n = parseFloat(decimal ? `${entier}.${decimal[1]}` : entier);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Extrait un prix d'une chaîne ("699,00 €", "EUR 499.99", "1 299,00 €").
  *
  * Volontairement prudent : le prix doit être collé à un symbole ou mot
  * monétaire. Sans cette exigence, un titre « iPhone 15 128 Go » ferait
  * croire à un prix de 15 € ou 128 € — c'est le genre de faux signal qui
  * pollue toute la détection en aval. On accepte la monnaie avant comme
  * après le nombre, les deux conventions existant selon la source.
+ *
+ * Deux prudences supplémentaires, apprises en sondant des libellés réels :
+ * les séparateurs de milliers sont respectés (« 1 299 € » ne vaut pas
+ * 299 €), et les montants qui désignent un port, une remise ou un seuil
+ * d'achat sont écartés. Les deux erreurs tiraient le prix vers le bas, donc
+ * fabriquaient de fausses anomalies sur les articles chers — exactement là
+ * où une vraie erreur de prix compte.
+ *
+ * Quand plusieurs prix subsistent, le premier gagne : c'est la convention
+ * du prix barré, où le prix de vente précède le prix de référence.
  */
 function extrairePrix(texte) {
   if (!texte) return null;
-  const propre = String(texte).replace(/\u00A0/g, " ");
-  const m =
-    propre.match(/(\d+(?:[.,]\d{1,2})?)\s*(?:€|euros?|eur)/i) ||
-    propre.match(/(?:€|euros?|eur)\s*(\d+(?:[.,]\d{1,2})?)/i);
-  if (!m) return null;
-  const n = parseFloat(m[1].replace(",", "."));
-  return Number.isFinite(n) && n > 0 ? n : null;
+  const propre = String(texte).replace(/[\u00A0\u202F\u2009]/g, " ");
+  // La garde de fin est \p{L} et non \w : « eurêka » commence par « eur »
+  // suivi d'un « ê » que \w ne couvre pas, et le lot devenait un prix.
+  const motif = new RegExp(
+    String.raw`(?:(${NOMBRE})\s*(?:€|euros?|eur)(?![\p{L}\p{N}])|(?:€|euros?|eur)\s*(${NOMBRE}))`,
+    "giu",
+  );
+
+  // Le contexte examiné s'arrête au montant précédent : sinon un « Livraison »
+  // en tête de ligne disqualifierait aussi le prix de l'article qui suit.
+  let curseur = 0;
+  for (const m of propre.matchAll(motif)) {
+    const avant = propre.slice(curseur, m.index);
+    const apres = propre.slice(m.index + m[0].length);
+    curseur = m.index + m[0].length;
+    if (AVANT_NON_PRIX.test(avant) || APRES_NON_PRIX.test(apres)) continue;
+    const n = versNombre(m[1] || m[2]);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return null;
 }
 
 /** Offre brute d'un flux, ramenée aux champs que la détection attend. */

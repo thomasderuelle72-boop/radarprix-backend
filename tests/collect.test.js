@@ -77,6 +77,31 @@ describe("extrairePrix", () => {
     expect(collect.extrairePrix(null)).toBeNull();
     expect(collect.extrairePrix("")).toBeNull();
   });
+
+  // Ces deux familles de cas renvoyaient un prix trop bas, et un prix trop
+  // bas se transforme en fausse « erreur de prix » publiée aux membres :
+  // c'est le pire défaut possible pour ce moteur, et il frappait surtout les
+  // articles chers, ceux où une vraie erreur compte le plus.
+  it("garde les milliers d'un montant séparé", () => {
+    expect(collect.extrairePrix("1 299,00 €")).toBe(1299);        // espace
+    expect(collect.extrairePrix("1\u202F299,00 €")).toBe(1299);    // espace fine insécable
+    expect(collect.extrairePrix("1.299,00 €")).toBe(1299);        // point de milliers
+    expect(collect.extrairePrix("2 499,99 €")).toBe(2499.99);
+    expect(collect.extrairePrix("12 000 €")).toBe(12000);
+  });
+
+  it("ignore les montants qui ne sont pas le prix de l'article", () => {
+    expect(collect.extrairePrix("Économisez 50 € — MacBook à 1 899 €")).toBe(1899);
+    expect(collect.extrairePrix("Livraison 4,99 € — Casque 199 €")).toBe(199);
+    expect(collect.extrairePrix("30 € de réduction, soit 169,99 €")).toBe(169.99);
+    expect(collect.extrairePrix("Frais de port 3,90 €")).toBeNull();
+  });
+
+  it("ne confond pas une unité avec la monnaie", () => {
+    // « 15 eurêka » n'est pas « 15 euros » : sans garde après le mot, la
+    // lecture partait sur n'importe quel nombre suivi d'un mot en « eur ».
+    expect(collect.extrairePrix("Lot 15 eurêka")).toBeNull();
+  });
 });
 
 describe("parsers de flux", () => {
