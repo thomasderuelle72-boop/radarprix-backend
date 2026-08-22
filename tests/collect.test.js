@@ -331,6 +331,72 @@ describe("scan complet", () => {
     expect(collect.etatCollecte().find((s) => s.source === "flux").etat).toBe("ok");
   });
 
+  it("écarte un article sans vendeur ni prix de référence, et le dit", async () => {
+    // Deux articles d'un agrégateur : le lien ne sort pas du site, donc
+    // aucun vendeur déductible. Seul celui qui annonce un prix barré est
+    // présentable — l'autre se réduirait à un titre et un nombre.
+    const flux = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Flux</title>
+  <item>
+    <title>Barbecue Weber</title>
+    <link>https://agregateur.fr/visit/1</link><guid>g1</guid>
+    <description><![CDATA[<del>299,00 €</del> 199,00 €]]></description>
+  </item>
+  <item>
+    <title>Gourde isotherme</title>
+    <link>https://agregateur.fr/visit/2</link><guid>g2</guid>
+    <description><![CDATA[14,90 €]]></description>
+  </item>
+</channel></rss>`;
+    vi.stubGlobal("fetch", vi.fn(async () => reponse({ texte: flux })));
+    collect.addTarget({ query: "Bons plans", feedUrl: "https://agregateur.fr/rss" });
+
+    const bilan = await collect.lancerScan({});
+    expect(bilan.offres).toBe(2);
+    // Aucun des deux ne passe : le barbecue annonce bien un prix barré,
+    // mais son lien ne sort pas de l'agrégateur, donc son vendeur reste
+    // inconnu. C'est la conséquence assumée de la règle — un flux qui ne
+    // nomme jamais ses marchands ne publiera rien tant qu'on ne lui donne
+    // pas ce nom.
+    expect(bilan.publies).toBe(0);
+    expect(bilan.ignorees).toBe(2);
+
+    // Et le tri se lit, plutôt que de laisser un site vide inexplicable.
+    const flux0 = collect.etatCollecte().find((s) => s.source === "flux");
+    expect(flux0.dernierBilan).toContain("2 écartée(s) faute de vendeur ou de prix de référence");
+  });
+
+  it("le marchand déclaré sur la cible suffit à débloquer le tri", async () => {
+    // Le levier prévu pour un flux dont tous les articles viennent du même
+    // vendeur : le nom est renseigné une fois sur la cible.
+    const flux = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Flux</title>
+  <item>
+    <title>Barbecue Weber</title>
+    <link>https://agregateur.fr/visit/1</link><guid>g1</guid>
+    <description><![CDATA[<del>299,00 €</del> 199,00 €]]></description>
+  </item>
+  <item>
+    <title>Gourde isotherme</title>
+    <link>https://agregateur.fr/visit/2</link><guid>g2</guid>
+    <description><![CDATA[14,90 €]]></description>
+  </item>
+</channel></rss>`;
+    vi.stubGlobal("fetch", vi.fn(async () => reponse({ texte: flux })));
+    collect.addTarget({ query: "Bons plans", merchant: "Weber Store", feedUrl: "https://agregateur.fr/rss" });
+
+    const bilan = await collect.lancerScan({});
+    // Celui qui annonce un prix barré passe ; la gourde, qui ne dit
+    // toujours rien de plus qu'un prix, reste écartée.
+    expect(bilan.publies).toBe(1);
+    expect(bilan.ignorees).toBe(1);
+
+    const titres = db
+      .prepare("SELECT title, merchant FROM deals WHERE source = ?")
+      .all(`d3-${collect.listTargets()[0].id}`);
+    expect(titres).toEqual([{ title: "Barbecue Weber", merchant: "Weber Store" }]);
+  });
+
   it("passe par Firecrawl (recherche + scrape) quand la cible n'a pas de flux", async () => {
     process.env.FIRECRAWL_API_KEY = "cle-de-test";
     const fetchMock = vi.fn(async (url, options) => {

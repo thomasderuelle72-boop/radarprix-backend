@@ -583,7 +583,7 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
     : listTargets({ actives: true });
 
   if (cibles.length === 0) {
-    return { runId: null, cibles: 0, offres: 0, analyses: 0, publies: 0, erreurs: 0, details: [] };
+    return { runId: null, cibles: 0, offres: 0, analyses: 0, publies: 0, ignorees: 0, erreurs: 0, details: [] };
   }
   if (scanEnCours) {
     throw new Error("Un scan est déjà en cours.");
@@ -591,11 +591,11 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
   scanEnCours = true;
 
   const runId = debuterScan(source, cibles.length, userId);
-  const bilan = { runId, cibles: cibles.length, offres: 0, analyses: 0, publies: 0, erreurs: 0, details: [] };
+  const bilan = { runId, cibles: cibles.length, offres: 0, analyses: 0, publies: 0, ignorees: 0, erreurs: 0, details: [] };
 
   try {
     for (const cible of cibles) {
-      const ligne = { cible: cible.id, requete: cible.query, offres: 0, publies: 0, erreur: null };
+      const ligne = { cible: cible.id, requete: cible.query, offres: 0, publies: 0, ignorees: 0, erreur: null };
       try {
         const offres = await collecterCible(cible);
         if (offres.length === 0) throw new Error("aucune offre exploitable");
@@ -620,7 +620,20 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         // Une cible Firecrawl, elle, existe pour comparer les prix d'un
         // produit précis chez plusieurs marchands. Y publier chaque page
         // visitée noierait la mesure sous les pages ordinaires.
-        const aPublier = cible.feedUrl ? analyses : anomalies;
+        // Un article qu'on ne peut pas présenter correctement ne monte pas.
+        // Sans vendeur ni prix de référence, une carte se réduit à un titre
+        // et un nombre : elle n'apprend rien, et elle occupe la place d'une
+        // offre qui, elle, dit quelque chose.
+        //
+        // Une anomalie mesurée échappe à ce tri : elle porte par définition
+        // une référence constatée, et c'est la raison d'être du site.
+        const presentable = (a) =>
+          a.verdict !== "normal" ||
+          (Boolean(a.seller || cible.merchant) && Number.isFinite(a.refPrice ?? a.refPriceAnnonce));
+
+        const retenues = cible.feedUrl ? analyses.filter(presentable) : anomalies;
+        const ignorees = cible.feedUrl ? analyses.length - retenues.length : 0;
+        const aPublier = retenues;
 
         let publies = 0;
         for (const a of aPublier) {
@@ -674,9 +687,20 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         // c'est le chiffre que le tableau de bord présente comme détections.
         bilan.analyses += anomalies.length;
         bilan.publies += publies;
+        bilan.ignorees += ignorees;
         ligne.offres = offres.length;
         ligne.publies = publies;
-        logSourceEvent(cible.feedUrl ? "flux" : "firecrawl", true, `${offres.length} offre(s) — ${cible.query}`);
+        ligne.ignorees = ignorees;
+        // Le nombre d'articles écartés part dans le journal de la source :
+        // un flux qui ne publie rien doit dire pourquoi, sinon on retombe
+        // sur un site vide dont la collecte a l'air de marcher.
+        logSourceEvent(
+          cible.feedUrl ? "flux" : "firecrawl",
+          true,
+          `${cible.query} : ${offres.length} offre(s), ${publies} publiée(s)` +
+            // « ou » et non « ni » : il suffit qu'une des deux manque.
+            (ignorees > 0 ? `, ${ignorees} écartée(s) faute de vendeur ou de prix de référence` : "")
+        );
       } catch (e) {
         bilan.erreurs++;
         ligne.erreur = e.message;
@@ -727,6 +751,9 @@ function etatCollecte() {
       dernierSucces: succes?.created_at || null,
       dernierEchec: echec?.created_at || null,
       dernierMessage: echec?.detail || null,
+      // Un scan qui réussit peut n'avoir rien publié. Sans ce message, le
+      // panneau afficherait « opérationnel » devant un site vide.
+      dernierBilan: succes?.detail || null,
       serieEchecs,
       etat: recents.length === 0 ? "inconnu" : serieEchecs === 0 ? "ok" : serieEchecs >= 5 ? "panne" : "instable",
       appels24h: sur24h?.total || 0,

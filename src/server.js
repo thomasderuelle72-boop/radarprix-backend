@@ -1135,7 +1135,10 @@ app.post("/api/admin/scan", autoriserScan, (req, res) => {
     targetId,
   })
     .then((bilan) =>
-      console.log(`[scan] #${bilan.runId} : ${bilan.cibles} cible(s), ${bilan.offres} offre(s), ${bilan.publies} publiée(s), ${bilan.erreurs} erreur(s)`)
+      console.log(
+        `[scan] #${bilan.runId} : ${bilan.cibles} cible(s), ${bilan.offres} offre(s), ` +
+          `${bilan.publies} publiée(s), ${bilan.ignorees} écartée(s), ${bilan.erreurs} erreur(s)`
+      )
     )
     .catch((e) => console.error(`[scan] échec : ${e.message}`));
   res.status(202).json({
