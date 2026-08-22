@@ -563,10 +563,15 @@ describe("réparation des liens déjà publiés", () => {
     publierDeal(a);
     publierDeal(b);
 
+    // Et une offre du moteur publiée sans aucun lien : place occupée sur
+    // l'accueil, qui ne mène nulle part.
+    const c = upsertDeal({ ...base, source: "vieux", externalId: "c", title: "Sans lien", merchant: "Fnac" });
+    publierDeal(c);
+
     const r = collect.reparerLiensAgregateur();
-    expect(r.examinees).toBe(2);
+    expect(r.examinees).toBe(3);
     expect(r.repares).toBe(1);
-    expect(r.retires).toBe(1);
+    expect(r.retires).toBe(2);
 
     const lignes = db.prepare("SELECT id, url, removed_at FROM deals WHERE source = 'vieux' ORDER BY external_id").all();
     // Boulanger est au registre : le lien devient une recherche chez lui.

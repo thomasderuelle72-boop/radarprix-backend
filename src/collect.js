@@ -868,6 +868,19 @@ function reparerLiensAgregateur() {
 
   let repares = 0;
   let retires = 0;
+
+  // Même raisonnement pour les offres du moteur publiées sans aucun lien,
+  // avant que celui-ci ne devienne obligatoire : elles occupent une place
+  // sur la page d'accueil sans mener nulle part. Restreint au détecteur D3
+  // pour ne pas toucher aux deals proposés par les membres.
+  const sansLien = db
+    .prepare("SELECT id FROM deals WHERE detector = 'D3' AND published_at IS NOT NULL AND removed_at IS NULL AND (url IS NULL OR url = '')")
+    .all();
+  for (const l of sansLien) {
+    db.prepare("UPDATE deals SET removed_at = datetime('now') WHERE id = ?").run(l.id);
+    retires++;
+  }
+
   for (const l of lignes) {
     const lien = lienMarchand({
       marchand: l.merchant ? marchandDepuisTexte(l.merchant) : null,
@@ -881,7 +894,7 @@ function reparerLiensAgregateur() {
       retires++;
     }
   }
-  return { examinees: lignes.length, repares, retires };
+  return { examinees: lignes.length + sansLien.length, repares, retires };
 }
 
 /* Sites de bons plans bâtis sur Pepper. Leur page d'accueil porte une
