@@ -9,7 +9,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:legacy": "node test-algorithm.js",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "scan:distant": "node src/declencherScan.js"
   },
   "keywords": [],
   "author": "",
