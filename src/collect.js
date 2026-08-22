@@ -184,6 +184,11 @@ const rssParser = new Parser({
       ["media:content", "mediaContent", { keepArray: true }],
       ["media:thumbnail", "mediaThumbnail"],
       ["source", "sourceName"],
+      // Espace de nom Pepper (Dealabs, Hotukdeals, Mydealz…). Il déclare le
+      // marchand et le prix en clair, dans des attributs : la source la plus
+      // sûre qui soit, et elle était ignorée. Vingt-neuf articles sur trente
+      // du flux Dealabs la portent.
+      ["pepper:merchant", "pepperMerchant"],
     ],
   },
 });
@@ -354,6 +359,79 @@ function etatArticle(condition, texte) {
   return "neuf";
 }
 
+/* Catégories telles que les agrégateurs français les nomment, ramenées aux
+   nôtres. Sans cette table, tout un flux atterrissait dans « tout » et les
+   filtres du site ne servaient à rien. */
+const CATEGORIES_FLUX = [
+  [/high[-\s]?tech|informatique|t[ée]l[ée]phon|image\s*&?\s*son|photo/i, "hightech"],
+  [/console|jeux?\s*vid[ée]o|gaming|jeu\s*pc/i, "gaming"],
+  [/maison|habitat|jardin|bricolage|[ée]lectrom[ée]nager|meuble|d[ée]co/i, "maison"],
+  [/mode|accessoire|v[êe]tement|chaussure|bijou|montre/i, "mode"],
+  [/beaut[ée]|hygi[èe]ne|parfum|sant[ée]|cosm[ée]tique/i, "beaute"],
+  [/course|alimentation|alimentaire|boisson|[ée]picerie|caf[ée]/i, "alimentaire"],
+  [/sport|plein\s*air|fitness|v[ée]lo|randonn/i, "sport"],
+  [/auto|moto|v[ée]hicule|pneu|garage/i, "auto"],
+];
+
+/** Catégorie RadarPrix d'après le libellé de la source, « tout » à défaut. */
+function categorieDeFlux(libelles) {
+  const texte = [].concat(libelles || []).join(" ");
+  for (const [motif, categorie] of CATEGORIES_FLUX) {
+    if (motif.test(texte)) return categorie;
+  }
+  return null;
+}
+
+/* Les agrégateurs décrivent un produit en listant ses points en gras :
+   « <strong>Matériau</strong> : résine ». C'est la seule forme structurée
+   de caractéristiques qu'on trouve dans un flux, et elle est exploitable. */
+const PUCE_CARACTERISTIQUE = /<li[^>]*>\s*(?:<p[^>]*>)?\s*<strong>([^<]{2,40})<\/strong>\s*:?\s*([^<]{1,160})/gi;
+
+function caracteristiquesDeTexte(html) {
+  const sortie = [];
+  for (const m of String(html || "").matchAll(PUCE_CARACTERISTIQUE)) {
+    const nom = m[1].replace(/\s*:\s*$/, "").trim();
+    const valeur = m[2].replace(/^\s*:\s*/, "").trim();
+    if (nom && valeur) sortie.push({ nom, valeur });
+    if (sortie.length >= 12) break; // une carte n'en montrera jamais plus
+  }
+  return sortie;
+}
+
+/**
+ * Retire l'en-tête « 39€ - Outlet Moto » d'une description.
+ *
+ * Les agrégateurs l'ouvrent par le prix et le vendeur, que la carte affiche
+ * déjà juste à côté. On retire les valeurs EXACTES qu'on connaît, jamais un
+ * motif approchant : une première version devinait la fin du nom et coupait
+ * « Outlet Moto » en deux, laissant une description qui commençait par
+ * « Moto ».
+ */
+function sansEnTeteRedondante(texte, prixBrut, vendeur) {
+  let sortie = String(texte || "").trimStart();
+  for (const valeur of [prixBrut, vendeur]) {
+    if (!valeur) continue;
+    const mot = String(valeur).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    sortie = sortie.replace(new RegExp(`^${mot}\\s*[-–—:]?\\s*`, "i"), "");
+  }
+  return sortie.trim();
+}
+
+/** Texte lisible d'un fragment HTML, entités courantes comprises. */
+function texteLisible(html) {
+  return String(html || "")
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<\/(p|li|ul|div|h\d)>/gi, " ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&(?:quot|#34);/gi, '"')
+    .replace(/&(?:#39|apos|rsquo);/gi, "'")
+    .replace(/&(?:lt|gt);/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /** Offre brute d'un flux, ramenée aux champs que la détection attend. */
 function offreDeFlux(item, i, merchant) {
   const name = String(item.title || "").trim();
@@ -366,10 +444,15 @@ function offreDeFlux(item, i, merchant) {
     .filter(Boolean)
     .join(" \n ");
 
+  // Balise Pepper : le marchand et le prix, déclarés en clair par la source.
+  // C'est la lecture la plus sûre disponible — aucune interprétation.
+  const pepper = item.pepperMerchant && item.pepperMerchant.$ ? item.pepperMerchant.$ : null;
+
   // Le prix payé se cherche sur un texte débarrassé des prix barrés.
   const sansBarre = (v) => String(v || "").replace(TOUTES_BARRES, " ");
 
   const prix =
+    extrairePrix(pepper && pepper.price) ||
     extrairePrix(item.salePrice) ||
     extrairePrix(item.price) ||
     extrairePrix(sansBarre(item.content)) ||
@@ -402,14 +485,28 @@ function offreDeFlux(item, i, merchant) {
       ? item.sourceName
       : item.sourceName && item.sourceName._ ? item.sourceName._ : null;
 
+  const corps = item.content || item.contentSnippet || item.summary || "";
   return {
     externalId: String(item.guid || item.link || `item-${i}`),
     name,
     price: prix,
     refPriceAnnonce: Number.isFinite(refAnnoncee) ? refAnnoncee : null,
     url,
-    seller: item.brand || nomSource || merchant || null,
+    seller: (pepper && pepper.name) || item.brand || nomSource || merchant || null,
     img: img || null,
+    category: categorieDeFlux(item.categories),
+    // La description du flux est du HTML : on en garde le texte, borné,
+    // et on en tire les caractéristiques listées en gras.
+    // Les agrégateurs ouvrent leur description par « 39€ - Outlet Moto »,
+    // soit le prix et le vendeur que la carte affiche déjà juste à côté.
+    // Répéter les deux mange la place de ce qui décrit vraiment l'article.
+    description:
+      sansEnTeteRedondante(
+        texteLisible(corps),
+        pepper && pepper.price,
+        (pepper && pepper.name) || merchant
+      ).slice(0, 1200) || null,
+    caracteristiques: caracteristiquesDeTexte(corps),
     itemCondition: etatArticle(item.condition, texte),
   };
 }
@@ -773,22 +870,23 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         // Une cible Firecrawl, elle, existe pour comparer les prix d'un
         // produit précis chez plusieurs marchands. Y publier chaque page
         // visitée noierait la mesure sous les pages ordinaires.
-        // Un article qu'on ne peut pas présenter correctement ne monte pas :
-        // sans prix de référence, une carte se réduit à un titre et un
-        // nombre, sans remise ni pourcentage à montrer.
+        // Ce qui fait une carte digne d'être montrée, mesuré sur le vrai
+        // flux Dealabs plutôt que supposé : marchand et prix y sont déclarés
+        // dans 29 articles sur 30, l'image dans 30 sur 30 — mais le prix
+        // barré dans AUCUN. Exiger une référence, comme le faisait la règle
+        // précédente, écartait donc cent pour cent des articles. C'est ce qui
+        // affichait « 29 offres, 0 publiée » en production.
         //
-        // Le vendeur ne fait PAS partie de la condition, et c'est une leçon
-        // payée cash : l'avoir exigé a fait passer la production de vingt-
-        // neuf offres collectées à zéro publiée, parce qu'un agrégateur ne
-        // nomme pas ses marchands dans ses liens. Une condition capable de
-        // vider le site entier n'a pas sa place ici — le registre des
-        // enseignes retrouve le vendeur dans la plupart des cas, et son
-        // absence n'empêche plus rien.
+        // La condition porte sur ce qui rend une carte lisible : on sait qui
+        // vend, et on a de quoi montrer l'article. Le pourcentage s'affiche
+        // quand la référence existe, et se tait sinon — plutôt que de
+        // retenir l'article en otage.
         //
-        // Une anomalie mesurée échappe au tri : elle porte par construction
-        // une référence constatée, et c'est la raison d'être du site.
+        // Une anomalie mesurée échappe au tri : c'est la raison d'être du
+        // site, et elle porte sa référence par construction.
         const presentable = (a) =>
-          a.verdict !== "normal" || Number.isFinite(a.refPrice ?? a.refPriceAnnonce);
+          a.verdict !== "normal" ||
+          (Boolean(a.seller) && Boolean(a.img || a.description));
 
         // Un flux et une page « promotions » sont tous deux des listes déjà
         // choisies par le marchand : ce qu'elles annoncent vaut d'être
@@ -821,7 +919,10 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
             url: a.url,
             imageUrl: a.img || null,
             merchant: a.seller || cible.merchant || null,
-            category: cible.category,
+            // La catégorie de l'article prime : un flux généraliste porte
+            // du high-tech et de l'alimentaire, et tout ranger sous la
+            // catégorie de la cible rendrait les filtres du site inutiles.
+            category: a.category || cible.category,
             itemCondition: a.itemCondition || "neuf",
             // La description vient de la fiche du marchand ; on la borne
             // parce qu'une fiche peut contenir une page entière.
@@ -880,7 +981,7 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
           true,
           `${cible.query} : ${offres.length} offre(s), ${publies} publiée(s)` +
             // « ou » et non « ni » : il suffit qu'une des deux manque.
-            (ignorees > 0 ? `, ${ignorees} écartée(s) faute de prix de référence` : "")
+            (ignorees > 0 ? `, ${ignorees} écartée(s) faute de vendeur ou de visuel` : "")
         );
       } catch (e) {
         bilan.erreurs++;

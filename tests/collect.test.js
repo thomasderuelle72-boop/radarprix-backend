@@ -6,6 +6,7 @@
 // réseau »).
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 
 const require = createRequire(import.meta.url);
 const collect = require("../src/collect.js");
@@ -21,12 +22,16 @@ const FLUX_RSS = `<?xml version="1.0" encoding="UTF-8"?>
       <link>https://magasin.fr/iphone-15-128</link>
       <guid>https://magasin.fr/iphone-15-128</guid>
       <price>999,00 €</price>
+      <description>Smartphone Apple, écran 6,1 pouces.</description>
+      <enclosure url="https://img.magasin.fr/iphone.jpg" type="image/jpeg" />
     </item>
     <item>
       <title>iPhone 15 128 Go</title>
       <link>https://magasin.fr/iphone-15-128-solde</link>
       <guid>https://magasin.fr/iphone-15-128-solde</guid>
       <price>349,00 €</price>
+      <description>Smartphone Apple, écran 6,1 pouces.</description>
+      <enclosure url="https://img.magasin.fr/iphone.jpg" type="image/jpeg" />
     </item>
   </channel>
 </rss>`;
@@ -334,16 +339,16 @@ describe("scan complet", () => {
     expect(collect.etatCollecte().find((s) => s.source === "flux").etat).toBe("ok");
   });
 
-  it("écarte un article sans vendeur ni prix de référence, et le dit", async () => {
-    // Deux articles d'un agrégateur : le lien ne sort pas du site, donc
-    // aucun vendeur déductible. Seul celui qui annonce un prix barré est
-    // présentable — l'autre se réduirait à un titre et un nombre.
+  it("écarte un article dont on ne sait ni qui le vend ni quoi montrer", async () => {
+    // Deux articles d'un agrégateur, sans balise marchand. Le premier
+    // nomme son enseigne dans le titre et porte une image ; du second on
+    // ne saurait afficher qu'un titre et un nombre.
     const flux = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel><title>Flux</title>
   <item>
-    <title>Barbecue Weber</title>
+    <title>Barbecue Weber chez Leroy Merlin</title>
     <link>https://agregateur.fr/visit/1</link><guid>g1</guid>
-    <description><![CDATA[<del>299,00 €</del> 199,00 €]]></description>
+    <description><![CDATA[<del>299,00 €</del> 199,00 € <img src="https://img.fr/bbq.jpg" />]]></description>
   </item>
   <item>
     <title>Gourde isotherme</title>
@@ -356,14 +361,12 @@ describe("scan complet", () => {
 
     const bilan = await collect.lancerScan({});
     expect(bilan.offres).toBe(2);
-    // Le barbecue annonce un prix barré : il est publiable, même si son
-    // vendeur reste inconnu. La gourde ne dit rien de plus qu'un prix.
     expect(bilan.publies).toBe(1);
     expect(bilan.ignorees).toBe(1);
 
     // Et le tri se lit, plutôt que de laisser un site vide inexplicable.
     const flux0 = collect.etatCollecte().find((s) => s.source === "flux");
-    expect(flux0.dernierBilan).toContain("1 écartée(s) faute de prix de référence");
+    expect(flux0.dernierBilan).toContain("1 écartée(s) faute de vendeur ou de visuel");
   });
 
   it("nomme le vendeur cité dans le titre, même chez un agrégateur", async () => {
@@ -449,6 +452,71 @@ describe("scan complet", () => {
     expect(bilan.erreurs).toBe(1);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(collect.etatCollecte().find((s) => s.source === "firecrawl").etat).toBe("instable");
+  });
+});
+
+/* ── Le vrai flux Dealabs ──────────────────────────────────────────
+   Cinq articles copiés tels quels du flux public, le 22 août 2026. Les
+   fixtures inventées avaient laissé passer trois défauts que ces cinq
+   lignes attrapent : la balise pepper:merchant ignorée, la catégorie
+   perdue, et un filtre qui écartait cent pour cent des articles parce
+   qu'il exigeait un prix barré — qu'aucun d'eux ne porte. */
+describe("un flux d'agrégateur réel", () => {
+  const FLUX_REEL = readFileSync(new URL("./fixtures/dealabs.xml", import.meta.url), "utf8");
+
+  it("lit le marchand et le prix déclarés par la balise pepper", async () => {
+    const offres = await collect.parseFluxRSS(FLUX_REEL);
+    expect(offres).toHaveLength(5);
+    expect(offres.map((o) => o.seller)).toEqual([
+      "Outlet Moto", "Amazon", "Boulanger", "Auchan", "Loaded",
+    ]);
+    expect(offres.map((o) => o.price)).toEqual([39, 6.99, 179, 12.76, 0.95]);
+  });
+
+  it("range chaque article dans sa catégorie, pas dans celle de la cible", async () => {
+    const offres = await collect.parseFluxRSS(FLUX_REEL);
+    expect(offres[0].category).toBe("auto");      // Auto-Moto
+    expect(offres[1].category).toBe("hightech");  // High-Tech
+    expect(offres[4].category).toBe("gaming");    // Consoles & Jeux vidéo
+  });
+
+  it("rapporte une image pour chaque article", async () => {
+    const offres = await collect.parseFluxRSS(FLUX_REEL);
+    expect(offres.every((o) => o.img && o.img.startsWith("https://"))).toBe(true);
+  });
+
+  it("tire les caractéristiques listées en gras dans la description", async () => {
+    const offres = await collect.parseFluxRSS(FLUX_REEL);
+    const casque = offres[0];
+    expect(casque.caracteristiques.length).toBeGreaterThan(5);
+    expect(casque.caracteristiques[0]).toEqual({
+      nom: "Matériau",
+      valeur: "Coque en résine thermoplastique haute pression (HPTT).",
+    });
+  });
+
+  it("ne répète pas le prix et le vendeur en tête de description", async () => {
+    const offres = await collect.parseFluxRSS(FLUX_REEL);
+    // « 39€ - Outlet Moto » ouvre la description d'origine.
+    expect(offres[0].description).not.toMatch(/^39/);
+    expect(offres[0].description).toMatch(/^Caractéristiques/);
+  });
+
+  it("publie ces articles, alors qu'aucun ne porte de prix barré", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => reponse({ texte: FLUX_REEL })));
+    collect.addTarget({ query: "Bons plans", feedUrl: "https://www.dealabs.com/rss" });
+
+    const bilan = await collect.lancerScan({});
+    // Le point exact qui affichait « 29 offres, 0 publiée » en production.
+    expect(bilan.offres).toBe(5);
+    expect(bilan.publies).toBe(5);
+    expect(bilan.ignorees).toBe(0);
+
+    const lignes = db
+      .prepare("SELECT merchant, price, category, image_url, description FROM deals WHERE source = ?")
+      .all(`d3-${collect.listTargets().at(-1).id}`);
+    expect(lignes).toHaveLength(5);
+    expect(lignes.every((l) => l.merchant && l.price > 0 && l.image_url && l.description)).toBe(true);
   });
 });
 
