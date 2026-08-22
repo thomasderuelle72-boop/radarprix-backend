@@ -4,14 +4,11 @@ API du site : comptes, profils, forum, salon, messagerie privée, notifications,
 deals publiés par les membres, modération. Base SQLite locale, persistée sur un
 disque monté par l'hébergeur.
 
-> **La machinerie de détection a été retirée.** Le backend ne va plus chercher
-> d'offres nulle part : ni SerpApi, ni Bright Data, ni eBay, ni Awin, ni
-> Strackr, ni les sitemaps marchands. Les détecteurs, la surveillance des
-> fiches, la curation, le scoring et le cron ont été supprimés pour repartir
-> d'une base propre. Les tables (`deals`, `snapshots`, `watched_urls`,
-> `watched_prices`, `rejected_offers`, `watchlist`) sont conservées vides,
-> ainsi que les routes qui les lisent : un futur moteur pourra s'y brancher
-> sans migration.
+> **L'ancienne machinerie de détection a été retirée** (ni SerpApi, ni Bright
+> Data, ni eBay, ni Awin, ni sitemaps, ni cron maison) et **remplacée par un
+> moteur neuf** : acquisition via flux RSS/feeds marchands et scraping SaaS
+> (Firecrawl), analyse par `algorithm.js`, publication dans le flux unifié
+> (`deals`, détecteur D3). Voir « Détection » plus bas.
 
 ## Ce qui tourne aujourd'hui
 
@@ -20,7 +17,8 @@ disque monté par l'hébergeur.
 | Comptes et sécurité | `auth.js`, `moderation.js` |
 | Communauté | `forum.js`, `messagerie.js`, `notifications.js`, `badges.js`, `ranking.js`, `reputation.js` |
 | Données | `db.js`, `dealsStore.js`, `persistance.js`, `radarEtat.js`, `reinitialisation.js` |
-| Lecture des relevés | `algorithm.js`, `productKey.js` — sert à `/api/latest`, qui relit ce qui est déjà en base |
+| Acquisition des offres | `collect.js`, `scan.js` — flux RSS/feeds marchands + scraping Firecrawl |
+| Analyse des prix | `algorithm.js`, `productKey.js` — référence entre pairs + historique, publication des anomalies (D3) |
 
 ## Installation
 
@@ -46,6 +44,37 @@ npm run lint
 | `PORT` | Port d'écoute (fourni par l'hébergeur). |
 | `ADMIN_EMAIL` | Adresse qui obtient le rôle administrateur à l'inscription. |
 | `CORS_ORIGINS` | Origines autorisées, séparées par des virgules. |
+| `FIRECRAWL_API_KEY` | Clé du scraping SaaS (Firecrawl). Sans elle, seules les cibles à flux RSS/feed fonctionnent. |
+| `SCAN_TOKEN` | Jeton qui permet au planificateur (cron) de déclencher les scans via `POST /api/admin/scan` + en-tête `x-scan-token`. |
+
+## Détection
+
+Le moteur de détection suit des **cibles** (`watch_targets`) : un produit et
+de quoi aller le chercher.
+
+- **Flux RSS / feeds marchands** (`feedUrl`) : RSS/Atom ou XML type Google
+  Shopping, lus tels quels — aucune clé requise.
+- **Scraping SaaS** (`domains`, ex. `["amazon.fr", "cdiscount.com"]`) :
+  Firecrawl trouve les pages produits chez ces marchands et en extrait le
+  contenu (markdown structuré). Nécessite `FIRECRAWL_API_KEY`.
+
+À chaque scan, chaque cible produit des offres qui sont stockées dans
+`snapshots`, analysées par `algorithm.js` (référence entre pairs du lot +
+historique), puis les anomalies détectées sont publiées dans le flux unifié
+`deals` (détecteur D3) — ce sont elles que `/api/feed` et `/api/deals` servent.
+
+Déclenchement :
+
+```bash
+npm run scan                        # un scan complet, synchrone (cron)
+# ou via l'API :
+#   POST /api/admin/scan            (jeton admin, ou x-scan-token si SCAN_TOKEN est défini)
+#   GET  /api/admin/scan/status     exécutions récentes + santé des canaux
+#   GET/POST/PATCH/DELETE /api/admin/targets…
+```
+
+Un planificateur (Railway cron, cron-job.org…) peut appeler
+`POST /api/admin/scan` avec l'en-tête `x-scan-token`.
 
 ## Déploiement
 

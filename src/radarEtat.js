@@ -11,6 +11,10 @@
 // justement à ce que n'importe quel visiteur puisse la lire. Le jour où le
 // radar tombe en panne, elle le montre : une promesse qui se vérifie vaut
 // mieux qu'une promesse qui se répète.
+//
+// Le nouveau moteur d'acquisition (voir collect.js) suit des « cibles »
+// (watch_targets) et horodate chaque balayage dans scan_runs : c'est de là
+// que vient l'état, plus des tables de la machinerie retirée.
 const { db } = require("./db");
 
 /** Table présente ? Les modules qui les créent ne sont pas tous chargés. */
@@ -34,12 +38,13 @@ function etatRadar() {
     actif: false,
   };
 
-  if (existe("watched_urls")) {
-    const r = db
-      .prepare("SELECT COUNT(*) AS n, MAX(last_checked_at) AS dernier FROM watched_urls WHERE active = 1")
-      .get();
+  if (existe("watch_targets")) {
+    const r = db.prepare("SELECT COUNT(*) AS n FROM watch_targets WHERE active = 1").get();
     etat.fiches = r.n || 0;
-    etat.dernierBalayage = r.dernier || null;
+  }
+  if (existe("scan_runs")) {
+    const r = db.prepare("SELECT MAX(finished_at) AS d FROM scan_runs").get();
+    etat.dernierBalayage = r.d || null;
   }
 
   if (existe("deals")) {

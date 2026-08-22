@@ -1,6 +1,7 @@
 // server.js — API RadarPrix. Ne parle jamais directement au navigateur
 // des visiteurs à SerpApi : la clé API reste ici, côté serveur, secrète.
-require("dotenv").config();
+require("./env");
+const crypto = require("crypto");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -65,6 +66,7 @@ const {
   voteCommunityDeal,
   removeCommunityVote,
   getUserVote,
+  listScanRuns,
   fermerBase,
 } = require("./db");
 const {
@@ -86,6 +88,15 @@ const { hashPassword, verifyPassword, generateToken, requireAuth, optionalAuth, 
 const { hotScore } = require("./ranking");
 const { calculerBadges, prochainsBadges } = require("./badges");
 const { validerTexte, limiterFrequence, refuserDoublon } = require("./moderation");
+const {
+  listTargets,
+  getTarget,
+  addTarget,
+  updateTarget,
+  deleteTarget,
+  lancerScan,
+  etatCollecte,
+} = require("./collect");
 
 const app = express();
 
@@ -199,6 +210,25 @@ function requireModerator(req, res, next) {
     return res.status(403).json({ error: "Accès réservé à la modération." });
   }
   next();
+}
+
+/**
+ * Porte d'entrée du déclencheur de scan : le panneau d'administration
+ * passe par son jeton, le planificateur de l'hébergeur (Railway cron…)
+ * par un jeton dédié dans l'en-tête x-scan-token.
+ *
+ * La comparaison se fait en temps constant : sans SCAN_TOKEN défini, seule
+ * la voie administrateur reste ouverte.
+ */
+function autoriserScan(req, res, next) {
+  const attendu = process.env.SCAN_TOKEN;
+  if (attendu) {
+    const fourni = String(req.headers["x-scan-token"] || "");
+    const a = Buffer.from(fourni);
+    const b = Buffer.from(attendu);
+    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return next();
+  }
+  requireAuth(req, res, next);
 }
 
 // GET /api/deals?category=gaming&page=1&pageSize=15&q=pc
@@ -962,6 +992,12 @@ app.get("/api/admin/health", requireAuth, requireModerator, (req, res) => {
     // « est-ce que les comptes vont survivre au prochain déploiement ? »,
     // qui exigeait jusqu'ici d'aller lire les journaux de l'hébergeur.
     persistance: etatPersistance(),
+    // Ce que la détection suit et quand elle a balayé pour la dernière
+    // fois — le minimum pour savoir si le radar tourne encore.
+    detection: {
+      cibles: listTargets({ actives: true }).length,
+      dernierScan: listScanRuns(1)[0] || null,
+    },
   });
 });
 
@@ -1041,6 +1077,70 @@ app.get("/api/admin/stats", requireAuth, requireModerator, (req, res) => {
 
 app.get("/api/admin/users", requireAuth, requireAdmin, (req, res) => {
   res.json({ users: listUsers(200) });
+});
+
+// ── Détection : cibles suivies et scans ─────────────────────────
+//
+// Le nouveau moteur d'acquisition (voir collect.js) : des cibles — un
+// produit et de quoi aller le chercher (flux RSS/feed marchand, ou domaines
+// pour le scraping Firecrawl) — et un scan qui les passe toutes au crible
+// pour publier les anomalies dans le flux public.
+
+// GET /api/admin/targets — les recherches suivies par la détection.
+app.get("/api/admin/targets", requireAuth, requireModerator, (req, res) => {
+  res.json({ items: listTargets() });
+});
+
+// POST /api/admin/targets  { query, category?, merchant?, feedUrl?, domains? }
+// Au moins un flux ou un domaine est requis : une cible sans source ne
+// produirait que des échecs à chaque scan.
+app.post("/api/admin/targets", requireAuth, requireAdmin, (req, res) => {
+  const r = addTarget(req.body || {});
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.status(201).json({ target: r.target });
+});
+
+// PATCH /api/admin/targets/:id  { active?, category?, merchant?, feedUrl?, domains? }
+app.patch("/api/admin/targets/:id", requireAuth, requireAdmin, (req, res) => {
+  const r = updateTarget(parseInt(req.params.id, 10), req.body || {});
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json({ target: r.target });
+});
+
+// DELETE /api/admin/targets/:id — retire la cible (les historiques restent).
+app.delete("/api/admin/targets/:id", requireAuth, requireAdmin, (req, res) => {
+  if (!deleteTarget(parseInt(req.params.id, 10))) {
+    return res.status(404).json({ error: "Cible introuvable." });
+  }
+  res.json({ ok: true });
+});
+
+// POST /api/admin/scan  { targetId? } — lance un scan et répond aussitôt :
+// le travail continue en arrière-plan et se suit sur GET /api/admin/scan/status.
+// Accessible au cron via l'en-tête x-scan-token (voir autoriserScan).
+app.post("/api/admin/scan", autoriserScan, (req, res) => {
+  const targetId = parseInt(req.body?.targetId, 10) || undefined;
+  if (targetId && !getTarget(targetId)) {
+    return res.status(404).json({ error: "Cible introuvable." });
+  }
+  lancerScan({
+    userId: req.user ? req.user.sub : null,
+    source: req.user ? "manuel" : "cron",
+    targetId,
+  })
+    .then((bilan) =>
+      console.log(`[scan] #${bilan.runId} : ${bilan.cibles} cible(s), ${bilan.offres} offre(s), ${bilan.publies} publiée(s), ${bilan.erreurs} erreur(s)`)
+    )
+    .catch((e) => console.error(`[scan] échec : ${e.message}`));
+  res.status(202).json({
+    demarre: true,
+    message: "Scan lancé — suis son avancement sur GET /api/admin/scan/status.",
+  });
+});
+
+// GET /api/admin/scan/status — exécutions récentes + santé des canaux de collecte.
+app.get("/api/admin/scan/status", requireAuth, requireModerator, (req, res) => {
+  res.json({ runs: listScanRuns(20), collecte: etatCollecte() });
 });
 
 app.get("/api/radar", (req, res) => {
