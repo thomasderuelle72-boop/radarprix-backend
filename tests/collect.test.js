@@ -177,7 +177,7 @@ describe("ce qu'un flux dit en plus du titre et du prix", () => {
     expect(nespresso.refPriceAnnonce).toBeCloseTo(149.83, 1);
   });
 
-  it("déduit le vendeur du domaine du lien, sauf chez un agrégateur", async () => {
+  it("nomme le vendeur par le domaine du lien, la marque en repli", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => reponse({ texte: FLUX_RICHE }))
@@ -191,10 +191,13 @@ describe("ce qu'un flux dit en plus du titre et du prix", () => {
 
     // Le lien sort du site du flux : c'est ce domaine qui vend.
     expect(offres.find((o) => o.name.includes("Casque")).seller).toBe("Boulanger");
-    expect(offres.find((o) => o.name.includes("iPad")).seller).toBe("Backmarket");
-    // Le lien reste chez l'agrégateur : on préfère ne rien dire que de lui
-    // attribuer une vente qu'il ne fait pas.
-    expect(offres.find((o) => o.name.includes("Nespresso")).seller).toBeNull();
+    // Le registre donne le nom tel qu'il s'écrit, pas le domaine rhabillé.
+    expect(offres.find((o) => o.name.includes("iPad")).seller).toBe("Back Market");
+    // Le lien reste chez l'agrégateur, donc le domaine ne dit rien — mais le
+    // titre nomme une marque, et à défaut d'enseigne citée le registre la
+    // retient. Repli assumé : une marque qui apparaît seule vend souvent en
+    // direct. Jamais l'agrégateur lui-même, qui ne vend rien.
+    expect(offres.find((o) => o.name.includes("Nespresso")).seller).toBe("Nespresso");
   });
 
   it("lit un feed Google Shopping : g:sale_price est le prix payé", () => {
@@ -353,48 +356,43 @@ describe("scan complet", () => {
 
     const bilan = await collect.lancerScan({});
     expect(bilan.offres).toBe(2);
-    // Aucun des deux ne passe : le barbecue annonce bien un prix barré,
-    // mais son lien ne sort pas de l'agrégateur, donc son vendeur reste
-    // inconnu. C'est la conséquence assumée de la règle — un flux qui ne
-    // nomme jamais ses marchands ne publiera rien tant qu'on ne lui donne
-    // pas ce nom.
-    expect(bilan.publies).toBe(0);
-    expect(bilan.ignorees).toBe(2);
+    // Le barbecue annonce un prix barré : il est publiable, même si son
+    // vendeur reste inconnu. La gourde ne dit rien de plus qu'un prix.
+    expect(bilan.publies).toBe(1);
+    expect(bilan.ignorees).toBe(1);
 
     // Et le tri se lit, plutôt que de laisser un site vide inexplicable.
     const flux0 = collect.etatCollecte().find((s) => s.source === "flux");
-    expect(flux0.dernierBilan).toContain("2 écartée(s) faute de vendeur ou de prix de référence");
+    expect(flux0.dernierBilan).toContain("1 écartée(s) faute de prix de référence");
   });
 
-  it("le marchand déclaré sur la cible suffit à débloquer le tri", async () => {
-    // Le levier prévu pour un flux dont tous les articles viennent du même
-    // vendeur : le nom est renseigné une fois sur la cible.
+  it("nomme le vendeur cité dans le titre, même chez un agrégateur", async () => {
+    // Le lien ne sort pas de l'agrégateur, donc le domaine ne dit rien —
+    // mais le titre nomme l'enseigne, et le registre la reconnaît.
     const flux = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0"><channel><title>Flux</title>
   <item>
-    <title>Barbecue Weber</title>
+    <title>Barbecue Weber à 199 € chez Leroy Merlin</title>
     <link>https://agregateur.fr/visit/1</link><guid>g1</guid>
     <description><![CDATA[<del>299,00 €</del> 199,00 €]]></description>
   </item>
   <item>
-    <title>Gourde isotherme</title>
+    <title>Casque Sony WH-1000XM5 en promo sur Amazon</title>
     <link>https://agregateur.fr/visit/2</link><guid>g2</guid>
-    <description><![CDATA[14,90 €]]></description>
+    <description><![CDATA[<del>419,00 €</del> 279,99 €]]></description>
   </item>
 </channel></rss>`;
     vi.stubGlobal("fetch", vi.fn(async () => reponse({ texte: flux })));
-    collect.addTarget({ query: "Bons plans", merchant: "Weber Store", feedUrl: "https://agregateur.fr/rss" });
+    collect.addTarget({ query: "Bons plans", feedUrl: "https://agregateur.fr/rss" });
 
-    const bilan = await collect.lancerScan({});
-    // Celui qui annonce un prix barré passe ; la gourde, qui ne dit
-    // toujours rien de plus qu'un prix, reste écartée.
-    expect(bilan.publies).toBe(1);
-    expect(bilan.ignorees).toBe(1);
-
-    const titres = db
-      .prepare("SELECT title, merchant FROM deals WHERE source = ?")
+    await collect.lancerScan({});
+    const lignes = db
+      .prepare("SELECT title, merchant FROM deals WHERE source = ? ORDER BY title")
       .all(`d3-${collect.listTargets()[0].id}`);
-    expect(titres).toEqual([{ title: "Barbecue Weber", merchant: "Weber Store" }]);
+
+    // Sony est une marque, Amazon l'enseigne : c'est Amazon qui vend.
+    // Tri par titre : « Barbecue… » précède « Casque… ».
+    expect(lignes.map((l) => l.merchant)).toEqual(["Leroy Merlin", "Amazon"]);
   });
 
   it("passe par Firecrawl (recherche + scrape) quand la cible n'a pas de flux", async () => {

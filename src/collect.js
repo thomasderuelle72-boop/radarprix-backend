@@ -24,6 +24,7 @@
 const { db, insertSnapshots, debuterScan, terminerScan, logSourceEvent } = require("./db");
 const { analyzeOffers } = require("./algorithm");
 const { upsertDeal, publierDeal, markMissingAsRemoved } = require("./dealsStore");
+const { reconnaitreMarchand } = require("./marchands");
 const Parser = require("rss-parser");
 const { XMLParser } = require("fast-xml-parser");
 
@@ -454,16 +455,20 @@ async function collecterFlux(cible) {
   let offres = await parseFluxRSS(texte);
   if (offres.length === 0) offres = parseFluxXML(texte);
 
-  // Quand le flux ne nomme pas le vendeur, le lien le trahit souvent : un
-  // article qui pointe ailleurs que chez l'éditeur du flux est vendu par
-  // ce domaine-là. Si le lien reste sur le site du flux — cas des
-  // agrégateurs, qui redirigent par chez eux — on ne déduit rien plutôt
-  // que d'attribuer la vente à l'agrégateur, ce qui serait faux.
+  // Quand le flux ne nomme pas le vendeur, on interroge le registre des
+  // enseignes (marchands.js) : d'abord le domaine du lien, puis le texte de
+  // l'annonce. C'est ce second chemin qui rend exploitables les flux
+  // d'agrégateurs — leurs liens repassent par leur propre domaine, mais
+  // leurs titres nomment le marchand (« … à 199 € chez Boulanger »).
+  //
+  // Reste le repli maison sur le domaine, pour les enseignes absentes du
+  // registre : cent vingt noms ne couvrent pas tout le commerce français.
   const hoteDuFlux = hote(cible.feedUrl);
   return offres.map((o) => {
+    const connu = reconnaitreMarchand({ url: o.url, texte: `${o.name} ${o.description || ""}` });
     const hoteDuLien = hote(o.url);
     const deduit = hoteDuLien && hoteDuLien !== hoteDuFlux ? nomDeMarchand(hoteDuLien) : null;
-    return { ...o, seller: o.seller || cible.merchant || deduit || null };
+    return { ...o, seller: o.seller || (connu && connu.nom) || cible.merchant || deduit || null };
   });
 }
 
@@ -620,16 +625,22 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         // Une cible Firecrawl, elle, existe pour comparer les prix d'un
         // produit précis chez plusieurs marchands. Y publier chaque page
         // visitée noierait la mesure sous les pages ordinaires.
-        // Un article qu'on ne peut pas présenter correctement ne monte pas.
-        // Sans vendeur ni prix de référence, une carte se réduit à un titre
-        // et un nombre : elle n'apprend rien, et elle occupe la place d'une
-        // offre qui, elle, dit quelque chose.
+        // Un article qu'on ne peut pas présenter correctement ne monte pas :
+        // sans prix de référence, une carte se réduit à un titre et un
+        // nombre, sans remise ni pourcentage à montrer.
         //
-        // Une anomalie mesurée échappe à ce tri : elle porte par définition
+        // Le vendeur ne fait PAS partie de la condition, et c'est une leçon
+        // payée cash : l'avoir exigé a fait passer la production de vingt-
+        // neuf offres collectées à zéro publiée, parce qu'un agrégateur ne
+        // nomme pas ses marchands dans ses liens. Une condition capable de
+        // vider le site entier n'a pas sa place ici — le registre des
+        // enseignes retrouve le vendeur dans la plupart des cas, et son
+        // absence n'empêche plus rien.
+        //
+        // Une anomalie mesurée échappe au tri : elle porte par construction
         // une référence constatée, et c'est la raison d'être du site.
         const presentable = (a) =>
-          a.verdict !== "normal" ||
-          (Boolean(a.seller || cible.merchant) && Number.isFinite(a.refPrice ?? a.refPriceAnnonce));
+          a.verdict !== "normal" || Number.isFinite(a.refPrice ?? a.refPriceAnnonce);
 
         const retenues = cible.feedUrl ? analyses.filter(presentable) : anomalies;
         const ignorees = cible.feedUrl ? analyses.length - retenues.length : 0;
@@ -699,7 +710,7 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
           true,
           `${cible.query} : ${offres.length} offre(s), ${publies} publiée(s)` +
             // « ou » et non « ni » : il suffit qu'une des deux manque.
-            (ignorees > 0 ? `, ${ignorees} écartée(s) faute de vendeur ou de prix de référence` : "")
+            (ignorees > 0 ? `, ${ignorees} écartée(s) faute de prix de référence` : "")
         );
       } catch (e) {
         bilan.erreurs++;

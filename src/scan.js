@@ -19,7 +19,7 @@ async function main() {
     const bilan = await lancerScan({ source });
     console.log(`[scan] ${bilan.cibles} cible(s) — ${bilan.offres} offre(s) collectée(s), ` +
       `${bilan.analyses} anomalie(s), ${bilan.publies} publiée(s), ` +
-      `${bilan.ignorees} écartée(s) faute de vendeur ou de prix de référence, ${bilan.erreurs} erreur(s).`);
+      `${bilan.ignorees} écartée(s) faute de prix de référence, ${bilan.erreurs} erreur(s).`);
     if (bilan.details.some((d) => d.erreur)) {
       for (const d of bilan.details.filter((x) => x.erreur)) {
         console.warn(`[scan] cible #${d.cible} (${d.requete}) : ${d.erreur}`);
