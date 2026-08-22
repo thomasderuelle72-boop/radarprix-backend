@@ -95,6 +95,7 @@ const {
   updateTarget,
   deleteTarget,
   semerCibles,
+  reparerLiensAgregateur,
   lancerScan,
   etatCollecte,
 } = require("./collect");
@@ -1235,6 +1236,18 @@ if (require.main === module) {
   // publient une page « promotions » deviennent des cibles au démarrage.
   // L'opération est idempotente — elle ne recrée rien et ne réactive rien
   // de ce que l'administration a mis en pause.
+  // Les offres publiées avant la règle « jamais vers l'agrégateur » gardent
+  // leur ancien lien tant qu'un scan ne les retouche pas — et il ne les
+  // retouchera jamais si l'annonce a disparu de la source.
+  try {
+    const r = reparerLiensAgregateur();
+    if (r.examinees > 0) {
+      console.log(`[liens] ${r.repares} lien(s) réorienté(s) vers le marchand, ${r.retires} offre(s) retirée(s) faute de lien.`);
+    }
+  } catch (e) {
+    console.error(`[liens] réparation impossible : ${e.message}`);
+  }
+
   try {
     const semis = semerCibles();
     if (semis.creees > 0) {

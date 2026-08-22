@@ -826,13 +826,6 @@ function lienAbsolu(lien, base) {
   }
 }
 
-/** Deux adresses partagent-elles le même hôte ? */
-function memeHote(a, b) {
-  const x = hote(a);
-  const y = hote(b);
-  return Boolean(x && y && x === y);
-}
-
 /** Le canal de collecte d'une cible, selon ce qu'elle sait fournir. */
 function collecterCible(cible) {
   if (cible.feedUrl) return collecterFlux(cible);
@@ -844,6 +837,51 @@ function collecterCible(cible) {
   if (cible.promoUrl) return collecterPagePromo(cible);
   if (cible.searchDomains && cible.searchDomains.length > 0) return collecterFirecrawl(cible);
   return Promise.reject(new Error("ni flux, ni page promotions, ni domaines de recherche"));
+}
+
+/**
+ * Répare les liens des offres déjà publiées qui pointent vers un agrégateur.
+ *
+ * La règle « jamais vers l'agrégateur » s'applique à la publication, donc
+ * aux offres que le prochain scan touchera. Les autres — celles dont
+ * l'annonce a disparu de la source entre-temps — resteraient en base avec
+ * leur ancien lien, et personne n'a de moyen simple de les corriger :
+ * seize d'entre elles renvoyaient encore chez Dealabs après le correctif.
+ *
+ * On réécrit ce qu'on peut à partir du marchand déjà enregistré, et on
+ * retire de la publication ce qu'on ne peut pas réparer. Une offre qu'on
+ * ne sait pas atteindre n'a rien à faire sur le site.
+ *
+ * Idempotent : la seconde exécution ne trouve plus rien.
+ */
+function reparerLiensAgregateur() {
+  const lignes = db
+    // `removed_at IS NULL` rend l'opération vraiment idempotente : sans
+    // cette clause, les offres retirées faute de lien étaient réexaminées
+    // et « retirées » à nouveau à chaque démarrage.
+    .prepare(
+      `SELECT id, title, merchant, url FROM deals
+       WHERE url IS NOT NULL AND published_at IS NOT NULL AND removed_at IS NULL`
+    )
+    .all()
+    .filter((l) => estPepper(l.url));
+
+  let repares = 0;
+  let retires = 0;
+  for (const l of lignes) {
+    const lien = lienMarchand({
+      marchand: l.merchant ? marchandDepuisTexte(l.merchant) : null,
+      titre: l.title,
+    });
+    if (lien) {
+      db.prepare("UPDATE deals SET url = ? WHERE id = ?").run(lien, l.id);
+      repares++;
+    } else {
+      db.prepare("UPDATE deals SET removed_at = datetime('now') WHERE id = ?").run(l.id);
+      retires++;
+    }
+  }
+  return { examinees: lignes.length, repares, retires };
 }
 
 /* Sites de bons plans bâtis sur Pepper. Leur page d'accueil porte une
@@ -974,11 +1012,34 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         // quand la référence existe, et se tait sinon — plutôt que de
         // retenir l'article en otage.
         //
+        // Règle absolue, appliquée quel que soit le canal et AVANT le tri :
+        // on n'envoie jamais l'acheteur chez l'agrégateur qui nous a
+        // renseignés. Ce serait lui offrir le visiteur qu'on vient de
+        // convaincre, et RadarPrix n'existe pas pour ça.
+        //
+        // Le test porte sur l'agrégateur, PAS sur « même hôte que la
+        // source » : le flux d'un marchand pointe légitimement vers son
+        // propre site, et une première version de cette garde effaçait
+        // donc les liens des catalogues marchands — exactement ceux qu'il
+        // faut suivre.
+        for (const a of analyses) {
+          if (estPepper(a.url)) {
+            a.url = lienMarchand({
+              marchand: a.seller ? marchandDepuisTexte(a.seller) : null,
+              titre: a.name,
+            });
+          }
+        }
+
         // Une anomalie mesurée échappe au tri : c'est la raison d'être du
         // site, et elle porte sa référence par construction.
         const presentable = (a) =>
           a.verdict !== "normal" ||
-          (Boolean(a.seller) && Boolean(a.img || a.description));
+          // Un lien marchand est indispensable : une carte qu'on ne peut
+          // pas ouvrir n'est pas une offre, c'est une frustration. Et il ne
+          // doit jamais mener à l'agrégateur, d'où le contrôle après
+          // réécriture plutôt qu'avant.
+          (Boolean(a.seller) && Boolean(a.url) && Boolean(a.img || a.description));
 
         // Un flux et une page « promotions » sont tous deux des listes déjà
         // choisies par le marchand : ce qu'elles annoncent vaut d'être
@@ -992,16 +1053,6 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
 
         let publies = 0;
         for (const a of aPublier) {
-          // Règle absolue, appliquée quel que soit le canal : on n'envoie
-          // jamais l'acheteur chez l'agrégateur qui nous a renseignés. Ce
-          // serait lui offrir notre visiteur, et RadarPrix n'existe pas
-          // pour ça. Faute de lien marchand, la carte n'en porte aucun.
-          if (estPepper(a.url) || (cible.feedUrl && memeHote(a.url, cible.feedUrl))) {
-            a.url = lienMarchand({
-              marchand: a.seller ? marchandDepuisTexte(a.seller) : null,
-              titre: a.name,
-            });
-          }
 
           const id = upsertDeal({
             source: `d3-${cible.id}`,
@@ -1152,6 +1203,7 @@ module.exports = {
   getTarget,
   addTarget,
   semerCibles,
+  reparerLiensAgregateur,
   updateTarget,
   deleteTarget,
   parseFluxRSS,

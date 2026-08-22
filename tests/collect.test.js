@@ -507,16 +507,26 @@ describe("un flux d'agrégateur réel", () => {
     collect.addTarget({ query: "Bons plans", feedUrl: "https://www.dealabs.com/rss" });
 
     const bilan = await collect.lancerScan({});
-    // Le point exact qui affichait « 29 offres, 0 publiée » en production.
+    // Le point exact qui affichait « 29 offres, 0 publiée » en production :
+    // plus aucun article n'est écarté faute de prix barré.
     expect(bilan.offres).toBe(5);
-    expect(bilan.publies).toBe(5);
-    expect(bilan.ignorees).toBe(0);
+
+    // Trois sur cinq passent, et les deux manquants disent une limite du
+    // flux : il nomme le marchand (« Outlet Moto », « Loaded ») sans jamais
+    // donner son domaine. Hors registre, aucun lien n'est constructible, et
+    // une carte qu'on ne peut pas ouvrir n'est pas une offre. C'est
+    // précisément pourquoi la page du site est lue plutôt que son flux :
+    // elle, porte le domaine du marchand pour chaque bon plan.
+    expect(bilan.publies).toBe(3);
+    expect(bilan.ignorees).toBe(2);
 
     const lignes = db
-      .prepare("SELECT merchant, price, category, image_url, description FROM deals WHERE source = ?")
+      .prepare("SELECT merchant, price, url, image_url, description FROM deals WHERE source = ?")
       .all(`d3-${collect.listTargets().at(-1).id}`);
-    expect(lignes).toHaveLength(5);
+    expect(lignes).toHaveLength(3);
     expect(lignes.every((l) => l.merchant && l.price > 0 && l.image_url && l.description)).toBe(true);
+    // Et aucun ne renvoie chez l'agrégateur.
+    expect(lignes.every((l) => l.url && !/dealabs/i.test(l.url))).toBe(true);
   });
 });
 
@@ -541,5 +551,31 @@ describe("semis des cibles depuis le registre", () => {
   it("respecte une limite, parce que chaque cible active coûte un appel", () => {
     const r = collect.semerCibles({ limite: 3 });
     expect(r.creees).toBe(3);
+  });
+});
+
+describe("réparation des liens déjà publiés", () => {
+  it("réoriente vers le marchand, et retire ce qui reste inatteignable", () => {
+    const { upsertDeal, publierDeal } = require("../src/dealsStore.js");
+    const base = { detector: "D3", type: "produit", price: 10, category: "tout" };
+    const a = upsertDeal({ ...base, source: "vieux", externalId: "a", title: "Casque Sony", merchant: "Boulanger", url: "https://www.dealabs.com/bons-plans/casque-1" });
+    const b = upsertDeal({ ...base, source: "vieux", externalId: "b", title: "Casque Moto", merchant: "Outlet Moto", url: "https://www.dealabs.com/bons-plans/casque-2" });
+    publierDeal(a);
+    publierDeal(b);
+
+    const r = collect.reparerLiensAgregateur();
+    expect(r.examinees).toBe(2);
+    expect(r.repares).toBe(1);
+    expect(r.retires).toBe(1);
+
+    const lignes = db.prepare("SELECT id, url, removed_at FROM deals WHERE source = 'vieux' ORDER BY external_id").all();
+    // Boulanger est au registre : le lien devient une recherche chez lui.
+    expect(lignes[0].url).toContain("boulanger.com");
+    expect(lignes[0].removed_at).toBeNull();
+    // « Outlet Moto » ne l'est pas : sans domaine, l'offre sort du site.
+    expect(lignes[1].removed_at).not.toBeNull();
+
+    // Une seconde exécution ne trouve plus rien à faire.
+    expect(collect.reparerLiensAgregateur().examinees).toBe(0);
   });
 });
