@@ -100,3 +100,23 @@ describe("urlImage", () => {
     expect(urlImage({ path: "x" })).toBeNull();
   });
 });
+
+describe("le lien d'une carte", () => {
+  const offres = extraireFils(PAGE).map((f) => offreDePepper(f)).filter(Boolean);
+
+  it("ne renvoie JAMAIS vers l'agrégateur", () => {
+    // La règle qui compte le plus pour le produit : RadarPrix envoie chez
+    // le marchand. Renvoyer sur la page du bon plan chez l'agrégateur
+    // reviendrait à lui offrir le visiteur qu'on vient de convaincre.
+    for (const o of offres) {
+      if (!o.url) continue;
+      expect(o.url).not.toMatch(/dealabs|mydealz|hotukdeals|pepper/i);
+    }
+  });
+
+  it("envoie chez le marchand quand on sait le nommer", () => {
+    const avecLien = offres.filter((o) => o.url);
+    expect(avecLien.length).toBeGreaterThan(0);
+    for (const o of avecLien) expect(o.url).toMatch(/^https:\/\//);
+  });
+});

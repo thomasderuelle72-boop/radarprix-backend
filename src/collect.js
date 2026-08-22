@@ -28,6 +28,7 @@ const { MARCHANDS, reconnaitreMarchand, pagePromo } = require("./marchands");
 const { produitDepuisHtml, produitsDepuisHtml } = require("./extraction");
 const { categorieDepuisLibelle } = require("./categories");
 const { estPepper, extraireFils, offreDePepper } = require("./pepper");
+const { lienMarchand, marchandDepuisTexte } = require("./marchands");
 
 /* Agent unique, au format conventionnel des robots — celui de Googlebot :
    « Mozilla/5.0 (compatible; Nom/version; +adresse) ». Il nomme RadarPrix
@@ -825,6 +826,13 @@ function lienAbsolu(lien, base) {
   }
 }
 
+/** Deux adresses partagent-elles le même hôte ? */
+function memeHote(a, b) {
+  const x = hote(a);
+  const y = hote(b);
+  return Boolean(x && y && x === y);
+}
+
 /** Le canal de collecte d'une cible, selon ce qu'elle sait fournir. */
 function collecterCible(cible) {
   if (cible.feedUrl) return collecterFlux(cible);
@@ -984,6 +992,17 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
 
         let publies = 0;
         for (const a of aPublier) {
+          // Règle absolue, appliquée quel que soit le canal : on n'envoie
+          // jamais l'acheteur chez l'agrégateur qui nous a renseignés. Ce
+          // serait lui offrir notre visiteur, et RadarPrix n'existe pas
+          // pour ça. Faute de lien marchand, la carte n'en porte aucun.
+          if (estPepper(a.url) || (cible.feedUrl && memeHote(a.url, cible.feedUrl))) {
+            a.url = lienMarchand({
+              marchand: a.seller ? marchandDepuisTexte(a.seller) : null,
+              titre: a.name,
+            });
+          }
+
           const id = upsertDeal({
             source: `d3-${cible.id}`,
             externalId: a.externalId,

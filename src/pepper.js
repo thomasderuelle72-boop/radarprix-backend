@@ -19,6 +19,7 @@
 // est moins chère qu'ailleurs.
 
 const { categorieDepuisLibelle } = require("./categories");
+const { lienMarchand, marchandDepuisDomaine } = require("./marchands");
 
 const HOTES = [
   "dealabs.com", "mydealz.de", "hotukdeals.com", "pepper.pl",
@@ -134,12 +135,20 @@ function dateDe(v) {
  * Rend null pour une offre expirée ou sans prix : le site ne doit pas
  * afficher ce que plus personne ne peut acheter.
  */
-function offreDePepper(fil, { hoteImages, hote } = {}) {
+function offreDePepper(fil, { hoteImages } = {}) {
   const prix = nombre(fil.price);
   if (!prix || fil.isExpired) return null;
 
   const reference = nombre(fil.nextBestPrice);
-  const lien = fil.shareableLink || (hote && fil.threadId ? `https://${hote}/share-deal/${fil.threadId}` : null);
+
+  // Jamais un lien vers l'agrégateur. Il ne publie pas l'URL du produit —
+  // c'est son fonds de commerce — mais il dit qui vend, et c'est chez ce
+  // marchand qu'on envoie l'acheteur. Renvoyer sur la page du bon plan
+  // reviendrait à offrir notre visiteur à un concurrent.
+  const lien = lienMarchand({
+    domaine: fil.linkHost || null,
+    titre: fil.title,
+  });
 
   return {
     externalId: String(fil.threadId),
@@ -149,7 +158,13 @@ function offreDePepper(fil, { hoteImages, hote } = {}) {
     // annoncée, pas une mesure RadarPrix, et elle est étiquetée comme telle.
     refPriceAnnonce: reference && reference > prix ? reference : null,
     url: lien,
-    seller: (fil.merchant && fil.merchant.merchantName) || null,
+    // Le registre l'emporte sur le libellé de la source quand il connaît
+    // l'enseigne : « Micromania Zing » et « Micromania » désignent la même,
+    // et deux orthographes feraient deux marchands sur le site.
+    seller:
+      (marchandDepuisDomaine(fil.linkHost) || {}).nom ||
+      (fil.merchant && fil.merchant.merchantName) ||
+      null,
     img: urlImage(fil.mainImage, hoteImages),
     category: categorieDepuisLibelle(fil.mainGroup && fil.mainGroup.threadGroupName),
     finOffre: dateDe(fil.endDate),
