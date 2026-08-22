@@ -443,7 +443,13 @@ app.patch("/api/auth/me", requireAuth, (req, res) => {
     // ici obligerait à déployer les deux côtés pour en ajouter un. Un jeton
     // inconnu retombe proprement sur l'initiale colorée.
     const panoplie = /^rp:[a-z]{2,20}-[a-z]{2,20}$/.test(avatarUrl);
-    if (!lien && !integree && !panoplie) {
+    // Quatrième forme : un chasseur, quatorze indices de couche en base36
+    // (voir components/hunters.jsx côté frontend). Comme pour la panoplie,
+    // on ne valide que la forme : la liste des pièces vit dans le frontend,
+    // et la dupliquer ici obligerait à déployer les deux côtés pour en
+    // ajouter une. Un index hors bornes retombe sur l'initiale colorée.
+    const chasseur = /^rh:[0-9a-z]{14}$/.test(avatarUrl);
+    if (!lien && !integree && !panoplie && !chasseur) {
       return res.status(400).json({ error: "Avatar invalide : choisis-en un dans la galerie, une photo, ou indique un lien http(s)." });
     }
     // La photo est stockée dans la base et renvoyée avec chaque commentaire :
