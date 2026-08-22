@@ -26,6 +26,18 @@ const { analyzeOffers } = require("./algorithm");
 const { upsertDeal, publierDeal, markMissingAsRemoved } = require("./dealsStore");
 const { MARCHANDS, reconnaitreMarchand, pagePromo } = require("./marchands");
 const { produitDepuisHtml, produitsDepuisHtml } = require("./extraction");
+const { categorieDepuisLibelle } = require("./categories");
+const { estPepper, extraireFils, offreDePepper } = require("./pepper");
+
+/* Agent unique, au format conventionnel des robots — celui de Googlebot :
+   « Mozilla/5.0 (compatible; Nom/version; +adresse) ». Il nomme RadarPrix
+   et laisse une adresse où nous joindre ; le préfixe Mozilla n'est pas un
+   déguisement mais la forme que des serveurs exigent, refusant par un 403
+   tout agent qui ne commence pas ainsi. Dealabs le fait, alors que son
+   robots.txt autorise « / » et n'interdit ni /hot ni /rss — le filtre est
+   grossier, pas une consigne. Les consignes, elles, se lisent dans
+   robots.txt, et on les respecte. */
+const AGENT = "Mozilla/5.0 (compatible; RadarPrix/1.0; +https://radarprix.fr)";
 const Parser = require("rss-parser");
 const { XMLParser } = require("fast-xml-parser");
 
@@ -359,29 +371,6 @@ function etatArticle(condition, texte) {
   return "neuf";
 }
 
-/* Catégories telles que les agrégateurs français les nomment, ramenées aux
-   nôtres. Sans cette table, tout un flux atterrissait dans « tout » et les
-   filtres du site ne servaient à rien. */
-const CATEGORIES_FLUX = [
-  [/high[-\s]?tech|informatique|t[ée]l[ée]phon|image\s*&?\s*son|photo/i, "hightech"],
-  [/console|jeux?\s*vid[ée]o|gaming|jeu\s*pc/i, "gaming"],
-  [/maison|habitat|jardin|bricolage|[ée]lectrom[ée]nager|meuble|d[ée]co/i, "maison"],
-  [/mode|accessoire|v[êe]tement|chaussure|bijou|montre/i, "mode"],
-  [/beaut[ée]|hygi[èe]ne|parfum|sant[ée]|cosm[ée]tique/i, "beaute"],
-  [/course|alimentation|alimentaire|boisson|[ée]picerie|caf[ée]/i, "alimentaire"],
-  [/sport|plein\s*air|fitness|v[ée]lo|randonn/i, "sport"],
-  [/auto|moto|v[ée]hicule|pneu|garage/i, "auto"],
-];
-
-/** Catégorie RadarPrix d'après le libellé de la source, « tout » à défaut. */
-function categorieDeFlux(libelles) {
-  const texte = [].concat(libelles || []).join(" ");
-  for (const [motif, categorie] of CATEGORIES_FLUX) {
-    if (motif.test(texte)) return categorie;
-  }
-  return null;
-}
-
 /* Les agrégateurs décrivent un produit en listant ses points en gras :
    « <strong>Matériau</strong> : résine ». C'est la seule forme structurée
    de caractéristiques qu'on trouve dans un flux, et elle est exploitable. */
@@ -494,7 +483,7 @@ function offreDeFlux(item, i, merchant) {
     url,
     seller: (pepper && pepper.name) || item.brand || nomSource || merchant || null,
     img: img || null,
-    category: categorieDeFlux(item.categories),
+    category: categorieDepuisLibelle(item.categories),
     // La description du flux est du HTML : on en garde le texte, borné,
     // et on en tire les caractéristiques listées en gras.
     // Les agrégateurs ouvrent leur description par « 39€ - Outlet Moto »,
@@ -565,7 +554,7 @@ function parseFluxXML(xml) {
  */
 async function collecterFlux(cible) {
   const rep = await fetch(cible.feedUrl, {
-    headers: { "User-Agent": "RadarPrix/1.0 (+https://radarprix.fr)" },
+    headers: { "User-Agent": AGENT },
     signal: AbortSignal.timeout(15000),
   });
   if (!rep.ok) throw new Error(`flux indisponible (HTTP ${rep.status})`);
@@ -697,6 +686,79 @@ async function collecterFirecrawl(cible) {
 }
 
 /**
+ * Collecte un site de bons plans bâti sur Pepper (Dealabs et ses jumeaux).
+ *
+ * Deux requêtes, et une carte complète en sortie :
+ *
+ *   la page de rayon porte le prix, le prix de référence, le marchand,
+ *   l'image, la catégorie et la date de fin — mais pas la description ;
+ *   le flux RSS du même site porte la description et les caractéristiques,
+ *   mais aucun prix de référence.
+ *
+ * On les réunit par l'identifiant du fil, que le flux laisse à la fin de
+ * ses liens. Prendre l'un sans l'autre laissait des cartes sans remise ou
+ * sans texte ; c'est la seule raison de faire deux appels.
+ */
+async function collecterPepper(cible) {
+  const origine = new URL(cible.promoUrl).origin;
+  const hote = new URL(cible.promoUrl).hostname;
+
+  const page = await fetch(cible.promoUrl, {
+    headers: { "User-Agent": AGENT },
+    signal: AbortSignal.timeout(25000),
+  });
+  if (!page.ok) throw new Error(`page indisponible (HTTP ${page.status})`);
+
+  const fils = extraireFils(await page.text());
+  if (fils.length === 0) throw new Error("aucun bon plan lisible sur la page");
+
+  const offres = fils
+    .map((f) => offreDePepper(f, { hote, hoteImages: hoteImagesPepper(hote) }))
+    .filter(Boolean);
+
+  // Les descriptions sont un bonus : si le flux ne répond pas, on publie
+  // sans plutôt que de perdre toutes les offres déjà récupérées.
+  const textes = await descriptionsDuFlux(origine).catch(() => new Map());
+  for (const o of offres) {
+    const t = textes.get(o.externalId);
+    if (!t) continue;
+    o.description = t.description;
+    o.caracteristiques = t.caracteristiques;
+    if (!o.url && t.url) o.url = t.url;
+  }
+  return offres;
+}
+
+/** Le serveur d'images d'un site Pepper porte le préfixe « static-pepper ». */
+function hoteImagesPepper(hote) {
+  return `static-pepper.${hote.replace(/^www\./, "")}`;
+}
+
+/**
+ * Descriptions du flux RSS d'un site Pepper, indexées par identifiant de fil.
+ *
+ * L'identifiant est le nombre qui termine l'adresse d'un bon plan
+ * (« …-titre-3398373 ») : c'est la seule clé commune entre le flux et la
+ * page, qui ne partagent aucun autre champ fiable.
+ */
+async function descriptionsDuFlux(origine) {
+  const rep = await fetch(`${origine}/rss`, {
+    headers: { "User-Agent": AGENT },
+    signal: AbortSignal.timeout(20000),
+    redirect: "follow",
+  });
+  if (!rep.ok) return new Map();
+
+  const offres = await parseFluxRSS(await rep.text());
+  const index = new Map();
+  for (const o of offres) {
+    const m = String(o.url || o.externalId || "").match(/(\d{5,})\s*$/);
+    if (m) index.set(m[1], { description: o.description, caracteristiques: o.caracteristiques, url: o.url });
+  }
+  return index;
+}
+
+/**
  * Collecte la page « promotions » publique d'une enseigne.
  *
  * Un seul appel réseau rapporte tous les articles que la page annonce,
@@ -722,7 +784,7 @@ async function collecterPagePromo(cible) {
     html = donnees.rawHtml || null;
   } else {
     const rep = await fetch(cible.promoUrl, {
-      headers: { "User-Agent": "RadarPrix/1.0 (+https://radarprix.fr)" },
+      headers: { "User-Agent": AGENT },
       signal: AbortSignal.timeout(20000),
     });
     if (!rep.ok) throw new Error(`page promotions indisponible (HTTP ${rep.status})`);
@@ -768,10 +830,21 @@ function collecterCible(cible) {
   if (cible.feedUrl) return collecterFlux(cible);
   // La page promotions passe avant la recherche : un appel qui rapporte
   // vingt articles vaut mieux que sept appels qui en rapportent six.
+  // Les sites Pepper ont leur propre lecteur : ils ne balisent pas leurs
+  // pages en schema.org, mais y embarquent bien mieux que ça.
+  if (cible.promoUrl && estPepper(cible.promoUrl)) return collecterPepper(cible);
   if (cible.promoUrl) return collecterPagePromo(cible);
   if (cible.searchDomains && cible.searchDomains.length > 0) return collecterFirecrawl(cible);
   return Promise.reject(new Error("ni flux, ni page promotions, ni domaines de recherche"));
 }
+
+/* Sites de bons plans bâtis sur Pepper. Leur page d'accueil porte une
+   cinquantaine d'offres avec prix de référence, marchand, image et date de
+   fin — mesuré : 53 offres dont 34 avec référence, contre 30 offres et zéro
+   référence dans le flux RSS du même site. */
+const SOURCES_COMMUNAUTAIRES = [
+  { nom: "Bons plans Dealabs", url: "https://www.dealabs.com/" },
+];
 
 /**
  * Crée les cibles à partir du registre des enseignes.
@@ -795,6 +868,17 @@ function semerCibles({ limite = Infinity } = {}) {
   );
 
   let creees = 0;
+
+  // Les agrégateurs d'abord : une seule page en rend cinquante d'un coup,
+  // avec le prix de référence que les enseignes, elles, ne publient pas.
+  // C'est la source qui remplit le site le plus vite et le plus richement.
+  for (const source of SOURCES_COMMUNAUTAIRES) {
+    if (creees >= limite) break;
+    if (existantes.has(source.url)) continue;
+    const r = addTarget({ query: source.nom, category: "tout", promoUrl: source.url });
+    if (r.ok) creees++;
+  }
+
   for (const m of MARCHANDS) {
     if (creees >= limite) break;
     const url = pagePromo(m);
