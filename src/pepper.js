@@ -19,7 +19,7 @@
 // est moins chère qu'ailleurs.
 
 const { categorieDepuisLibelle } = require("./categories");
-const { lienMarchand, marchandDepuisDomaine } = require("./marchands");
+const { sortieMarchand, marchandDepuisDomaine } = require("./marchands");
 
 const HOTES = [
   "dealabs.com", "mydealz.de", "hotukdeals.com", "pepper.pl",
@@ -145,7 +145,7 @@ function offreDePepper(fil, { hoteImages } = {}) {
   // c'est son fonds de commerce — mais il dit qui vend, et c'est chez ce
   // marchand qu'on envoie l'acheteur. Renvoyer sur la page du bon plan
   // reviendrait à offrir notre visiteur à un concurrent.
-  const lien = lienMarchand({
+  const sortie = sortieMarchand({
     domaine: fil.linkHost || null,
     titre: fil.title,
   });
@@ -157,7 +157,10 @@ function offreDePepper(fil, { hoteImages } = {}) {
     // Le prix « ailleurs » relevé par la communauté : c'est une référence
     // annoncée, pas une mesure RadarPrix, et elle est étiquetée comme telle.
     refPriceAnnonce: reference && reference > prix ? reference : null,
-    url: lien,
+    url: sortie.url,
+    // Jamais "produit" : l'agrégateur ne donne pas l'adresse de la fiche,
+    // donc ce lien mène au mieux à une recherche chez le marchand.
+    lienType: sortie.type,
     // Le registre l'emporte sur le libellé de la source quand il connaît
     // l'enseigne : « Micromania Zing » et « Micromania » désignent la même,
     // et deux orthographes feraient deux marchands sur le site.

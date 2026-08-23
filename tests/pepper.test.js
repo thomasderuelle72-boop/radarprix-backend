@@ -120,3 +120,15 @@ describe("le lien d'une carte", () => {
     for (const o of avecLien) expect(o.url).toMatch(/^https:\/\//);
   });
 });
+
+describe("la nature du lien", () => {
+  it("n'annonce jamais une fiche produit sur une offre d'agrégateur", () => {
+    // L'agrégateur ne publie pas l'adresse du produit. Annoncer « Voir le
+    // produit » pour aboutir sur une recherche perd le visiteur.
+    const offres = extraireFils(PAGE).map((f) => offreDePepper(f)).filter(Boolean);
+    for (const o of offres) {
+      if (!o.url) continue;
+      expect(["recherche", "marchand"]).toContain(o.lienType);
+    }
+  });
+});

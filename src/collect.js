@@ -1331,7 +1331,10 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
               balisage: a.balisage || null,
               // Ce que le lien ouvre vraiment. Annoncer « Voir le produit »
               // pour aboutir sur une page de résultats trompe le lecteur.
-              lienType: a.lienType || (a.url ? "produit" : null),
+              // Pas de repli optimiste : un canal qui ne dit pas ce qu'il
+              // ouvre n'ouvre pas une fiche produit. Le supposer a fait
+              // annoncer « Voir le produit » sur des liens de recherche.
+              lienType: a.lienType || null,
               // Domaine de l'enseigne, pour afficher son logo plutôt que
               // son initiale.
               marchandDomaine: domaineDeMarchand(a.seller || cible.merchant),
