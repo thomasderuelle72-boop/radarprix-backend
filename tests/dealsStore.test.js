@@ -169,3 +169,47 @@ describe("flux public", () => {
     expect(scores).toEqual([...scores].sort((a, b) => b - a));
   });
 });
+
+/* La même serrure Nuki s'affichait deux fois sur l'accueil — une carte
+   Amazon, une carte Boulanger, au même prix — sans que rien ne dise qu'il
+   s'agissait du même article. Le regroupement par clé produit répare ça. */
+describe("regroupement par produit", () => {
+  it("rattache les autres marchands du même article", () => {
+    const a = store.upsertDeal(
+      dealDe({ source: "grp", externalId: "nuki-amazon", title: "Serrure connectée Nuki Smart Lock Ultra", merchant: "Amazon", price: 299.99 })
+    );
+    const b = store.upsertDeal(
+      dealDe({ source: "grp", externalId: "nuki-boulanger", title: "Serrure connectée Nuki smart lock Ultra - Cy", merchant: "Boulanger", price: 289 })
+    );
+    store.publierDeal(a);
+    store.publierDeal(b);
+
+    const items = store.listDeals({ pageSize: 50 }).items;
+    const cote = items.find((d) => d.id === a);
+    expect(cote.autresMarchands.map((m) => m.marchand)).toEqual(["Boulanger"]);
+    // Le prix le plus bas connu est celui de l'autre marchand, pas le sien.
+    expect(cote.meilleurPrix).toBe(289);
+    expect(cote.nbMarchands).toBe(2);
+  });
+
+  it("ne rattache pas deux articles différents", () => {
+    const id = store.upsertDeal(
+      dealDe({ source: "grp2", externalId: "seul", title: "Cafetière Delonghi Magnifica", merchant: "Darty", price: 399 })
+    );
+    store.publierDeal(id);
+    const seul = store.listDeals({ pageSize: 50 }).items.find((d) => d.id === id);
+    expect(seul.autresMarchands).toEqual([]);
+    expect(seul.meilleurPrix).toBe(399);
+  });
+
+  it("ignore le même marchand publié deux fois", () => {
+    const a = store.upsertDeal(dealDe({ source: "grp3", externalId: "dup-a", title: "Casque Bose QuietComfort Ultra", merchant: "Fnac", price: 349 }));
+    const b = store.upsertDeal(dealDe({ source: "grp3", externalId: "dup-b", title: "Casque Bose QuietComfort ultra", merchant: "Fnac", price: 359 }));
+    store.publierDeal(a);
+    store.publierDeal(b);
+
+    const cote = store.listDeals({ pageSize: 50 }).items.find((d) => d.id === a);
+    expect(cote.autresMarchands).toEqual([]);
+    expect(cote.nbMarchands).toBe(1);
+  });
+});

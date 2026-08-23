@@ -16,6 +16,7 @@
 // Elle vit dans son propre module plutôt que dans db.js, déjà à 2 000 lignes :
 // la connexion SQLite est partagée, le schéma est local.
 const { db } = require("./db");
+const { productKey } = require("./productKey");
 
 // ── Vocabulaire contrôlé ────────────────────────────────────────────
 // Écrit une fois ici plutôt que dupliqué en chaînes libres dans chaque
@@ -117,6 +118,32 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_deals_expiry ON deals(expires_at);
 `);
 
+/* Clé produit : ce qui permet de reconnaître le MÊME article chez deux
+   marchands. Sans elle, la serrure Nuki apparaissait deux fois — une carte
+   Amazon, une carte Boulanger, au même prix — au lieu d'une seule ligne
+   disant « aussi chez Boulanger ». Un comparateur qui ne compare pas. */
+try {
+  db.exec("ALTER TABLE deals ADD COLUMN product_key TEXT");
+} catch (e) {
+  if (!/duplicate column/i.test(e.message)) throw e;
+}
+db.exec("CREATE INDEX IF NOT EXISTS idx_deals_product_key ON deals(product_key)");
+
+/* Les lignes déjà en base n'ont pas de clé : sans ce rattrapage, le
+   regroupement ne marcherait que sur les offres publiées après la mise à
+   jour, et les doublons visibles aujourd'hui resteraient. */
+try {
+  const aCombler = db.prepare("SELECT id, title FROM deals WHERE product_key IS NULL").all();
+  if (aCombler.length) {
+    const maj = db.prepare("UPDATE deals SET product_key = ? WHERE id = ?");
+    db.transaction((lignes) => {
+      for (const l of lignes) maj.run(productKey(l.title), l.id);
+    })(aCombler);
+  }
+} catch (e) {
+  console.error(`[deals] clé produit non comblée : ${e.message}`);
+}
+
 /**
  * Convertit une date ISO 8601 ("2026-08-21T15:00:00.000Z") au format que
  * produit datetime('now') en SQLite ("2026-08-21 15:00:00").
@@ -167,6 +194,7 @@ function normaliser(d) {
   return {
     source: d.source,
     external_id: String(d.externalId),
+    product_key: productKey(d.title),
     detector: d.detector,
     type: d.type,
     title: d.title,
@@ -195,12 +223,12 @@ function normaliser(d) {
 
 const upsertStmt = db.prepare(`
   INSERT INTO deals (
-    source, external_id, detector, type, title, description, url, image_url,
+    source, external_id, product_key, detector, type, title, description, url, image_url,
     merchant, category, item_condition, price, reference_price, discount_pct,
     currency, voucher_code, score, confidence, starts_at, expires_at,
     published_at, payload
   ) VALUES (
-    @source, @external_id, @detector, @type, @title, @description, @url, @image_url,
+    @source, @external_id, @product_key, @detector, @type, @title, @description, @url, @image_url,
     @merchant, @category, @item_condition, @price, @reference_price, @discount_pct,
     @currency, @voucher_code, @score, @confidence, @starts_at, @expires_at,
     @published_at, @payload
@@ -359,8 +387,82 @@ function listDeals({
     pageSize: taille,
     total,
     hasMore: numero * taille < total,
-    items: items.map(enJson),
+    items: avecConcurrents(items),
   };
+}
+
+/**
+ * Attache à chaque offre les autres marchands du même produit.
+ *
+ * On ne garde que ceux qui apportent une information : un marchand de plus
+ * au même prix n'aide pas à décider, un marchand moins cher change tout.
+ */
+function avecConcurrents(lignes) {
+  const parCle = concurrentsPour(lignes);
+  return lignes.map((l) => {
+    const groupe = parCle.get(l.product_key) || [];
+    const autres = groupe.filter((g) => g.id !== l.id && g.merchant && g.merchant !== l.merchant);
+    const j = enJson(l);
+    j.autresMarchands = autres.slice(0, 4).map((a) => ({
+      marchand: a.merchant,
+      prix: a.price,
+      url: a.url,
+      // Le domaine sert au logo : sans lui la comparaison s'affiche en
+      // initiales, ce qui rend une liste de marchands illisible d'un coup
+      // d'œil — or c'est exactement l'usage qu'on en fait.
+      domaine: domaineDePayload(a.payload),
+    }));
+    // Le prix le plus bas connu pour cet article, tous marchands confondus.
+    j.meilleurPrix = groupe.length ? groupe[0].price : l.price;
+    // Le décompte complet, alors que la liste ci-dessus est plafonnée à
+    // quatre : sans lui, une carte annoncerait « 5 marchands » là où il y
+    // en a sept. Un comparateur qui compte faux ne vaut pas mieux qu'un
+    // comparateur qui ne compte pas.
+    j.nbMarchands = new Set(groupe.map((g) => g.merchant).filter(Boolean)).size || (l.merchant ? 1 : 0);
+    return j;
+  });
+}
+
+/**
+ * Les autres marchands qui vendent le même article, moins cher d'abord.
+ *
+ * C'est la fonction même d'un comparateur, et elle manquait : la serrure
+ * Nuki s'affichait deux fois, une carte Amazon et une carte Boulanger au
+ * même prix, sans que rien ne dise qu'il s'agit du même produit.
+ *
+ * Un seul appel pour toute la page plutôt qu'un par offre : une page de
+ * cinquante cartes ferait sinon cinquante et une requêtes.
+ */
+function concurrentsPour(lignes) {
+  const cles = [...new Set(lignes.map((l) => l.product_key).filter(Boolean))];
+  if (!cles.length) return new Map();
+
+  const trous = cles.map(() => "?").join(",");
+  const toutes = db
+    .prepare(
+      `SELECT id, product_key, merchant, price, url, payload FROM deals
+       WHERE product_key IN (${trous})
+         AND published_at IS NOT NULL AND removed_at IS NULL AND price > 0
+       ORDER BY price ASC`
+    )
+    .all(...cles);
+
+  const parCle = new Map();
+  for (const l of toutes) {
+    if (!parCle.has(l.product_key)) parCle.set(l.product_key, []);
+    parCle.get(l.product_key).push(l);
+  }
+  return parCle;
+}
+
+/** Domaine de l'enseigne rangé dans le payload, sans lever si le JSON est cassé. */
+function domaineDePayload(brut) {
+  if (!brut) return null;
+  try {
+    return JSON.parse(brut).marchandDomaine || null;
+  } catch {
+    return null;
+  }
 }
 
 /** Forme servie à l'API : camelCase, payload décodé, champs internes retirés. */

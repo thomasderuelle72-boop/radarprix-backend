@@ -319,6 +319,10 @@ function enFormeHeritee(d) {
     // Ce que le lien ouvre : "produit", "recherche" ou "marchand". La carte
     // doit promettre ce qu'elle tient.
     lienType: (d.payload && d.payload.lienType) || null,
+    // Les autres marchands du même article, et le prix le plus bas connu.
+    autresMarchands: d.autresMarchands || [],
+    meilleurPrix: d.meilleurPrix ?? d.price,
+    nbMarchands: d.nbMarchands ?? (d.merchant ? 1 : 0),
     // Domaine de l'enseigne, pour son logo.
     marchandDomaine: (d.payload && d.payload.marchandDomaine) || null,
   };
