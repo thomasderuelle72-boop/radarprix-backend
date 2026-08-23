@@ -192,6 +192,53 @@ describe("regroupement par produit", () => {
     expect(cote.nbMarchands).toBe(2);
   });
 
+  it("rapproche deux marchands qui n'emploient pas les mêmes mots", () => {
+    // Le cas vu en production : la clé stricte diffère de « cylindre » et
+    // « universel », et la comparaison n'avait donc jamais lieu.
+    const a = store.upsertDeal(
+      dealDe({ source: "res", externalId: "n-a", title: "Serrure connectée Somfy Keytis Origin", merchant: "Amazon", price: 299.99 })
+    );
+    const b = store.upsertDeal(
+      dealDe({ source: "res", externalId: "n-b", title: "Serrure connectée Somfy Keytis Origin - Cylindre universel", merchant: "Boulanger", price: 299.99 })
+    );
+    store.publierDeal(a);
+    store.publierDeal(b);
+
+    const cote = store.listDeals({ pageSize: 50 }).items.find((d) => d.id === a);
+    expect(cote.autresMarchands.map((m) => m.marchand)).toEqual(["Boulanger"]);
+    expect(cote.nbMarchands).toBe(2);
+  });
+
+  it("ne confond pas deux générations ni deux gammes", () => {
+    const base = store.upsertDeal(
+      dealDe({ source: "gamme", externalId: "g-base", title: "Carte graphique Asus GeForce RTX 4060", merchant: "LDLC", price: 320 })
+    );
+    const ti = store.upsertDeal(
+      dealDe({ source: "gamme", externalId: "g-ti", title: "Carte graphique Asus GeForce RTX 4060 Ti", merchant: "Materiel", price: 360 })
+    );
+    store.publierDeal(base);
+    store.publierDeal(ti);
+
+    const cote = store.listDeals({ pageSize: 50 }).items.find((d) => d.id === base);
+    expect(cote.autresMarchands).toEqual([]);
+  });
+
+  it("s'abstient quand l'écart de prix trahit une variante non dite", () => {
+    // Deux titres ressemblants mais un prix du simple au double : c'est un
+    // pack ou une autre finition, pas une aubaine.
+    const nu = store.upsertDeal(
+      dealDe({ source: "pack", externalId: "p-nu", title: "Aspirateur balai Dyson Detect Absolute", merchant: "Darty", price: 599 })
+    );
+    const pack = store.upsertDeal(
+      dealDe({ source: "pack", externalId: "p-pack", title: "Aspirateur balai Dyson Detect Absolute Submarine", merchant: "Boulanger", price: 899 })
+    );
+    store.publierDeal(nu);
+    store.publierDeal(pack);
+
+    const cote = store.listDeals({ pageSize: 50 }).items.find((d) => d.id === nu);
+    expect(cote.autresMarchands).toEqual([]);
+  });
+
   it("ne rattache pas deux articles différents", () => {
     const id = store.upsertDeal(
       dealDe({ source: "grp2", externalId: "seul", title: "Cafetière Delonghi Magnifica", merchant: "Darty", price: 399 })
@@ -200,6 +247,17 @@ describe("regroupement par produit", () => {
     const seul = store.listDeals({ pageSize: 50 }).items.find((d) => d.id === id);
     expect(seul.autresMarchands).toEqual([]);
     expect(seul.meilleurPrix).toBe(399);
+  });
+
+  it("ne montre un marchand qu'une fois, à son meilleur prix", () => {
+    const ref = store.upsertDeal(dealDe({ source: "uniq", externalId: "u-ref", title: "Enceinte portable Marshall Emberton", merchant: "Fnac", price: 129 }));
+    const d1 = store.upsertDeal(dealDe({ source: "uniq", externalId: "u-1", title: "Enceinte portable Marshall Emberton", merchant: "Darty", price: 125 }));
+    const d2 = store.upsertDeal(dealDe({ source: "uniq", externalId: "u-2", title: "Enceinte portable Marshall Emberton - Noir", merchant: "Darty", price: 135 }));
+    [ref, d1, d2].forEach(store.publierDeal);
+
+    const cote = store.listDeals({ pageSize: 50 }).items.find((d) => d.id === ref);
+    expect(cote.autresMarchands).toEqual([expect.objectContaining({ marchand: "Darty", prix: 125 })]);
+    expect(cote.nbMarchands).toBe(2);
   });
 
   it("ignore le même marchand publié deux fois", () => {

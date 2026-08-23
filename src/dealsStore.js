@@ -16,7 +16,7 @@
 // Elle vit dans son propre module plutôt que dans db.js, déjà à 2 000 lignes :
 // la connexion SQLite est partagée, le schéma est local.
 const { db } = require("./db");
-const { productKey } = require("./productKey");
+const { productKey, VARIANT_MARKERS } = require("./productKey");
 
 // ── Vocabulaire contrôlé ────────────────────────────────────────────
 // Écrit une fois ici plutôt que dupliqué en chaînes libres dans chaque
@@ -403,7 +403,13 @@ function avecConcurrents(lignes) {
     const groupe = parCle.get(l.product_key) || [];
     const autres = groupe.filter((g) => g.id !== l.id && g.merchant && g.merchant !== l.merchant);
     const j = enJson(l);
-    j.autresMarchands = autres.slice(0, 4).map((a) => ({
+    // Un marchand ne figure qu'une fois, à son prix le plus bas : le même
+    // article peut lui être rattaché par deux annonces, et « Boulanger,
+    // Boulanger » sur une carte ne compare rien.
+    const vus = new Set();
+    const uniques = autres.filter((a) => (vus.has(a.merchant) ? false : vus.add(a.merchant)));
+
+    j.autresMarchands = uniques.slice(0, 4).map((a) => ({
       marchand: a.merchant,
       prix: a.price,
       url: a.url,
@@ -421,6 +427,68 @@ function avecConcurrents(lignes) {
     j.nbMarchands = new Set(groupe.map((g) => g.merchant).filter(Boolean)).size || (l.merchant ? 1 : 0);
     return j;
   });
+}
+
+/* ── Rapprochement de deux titres pour le même article ──────────────
+   product_key est volontairement strict : même ensemble de mots ou rien.
+   C'est ce qu'il faut pour l'historique de prix, où un faux rapprochement
+   inventerait une baisse. Mais deux marchands ne décrivent presque jamais
+   un produit avec les mêmes mots — « Serrure connectée Nuki Smart Lock
+   Ultra » chez Amazon, « ... Ultra - Cylindre universel » chez Boulanger —
+   et la comparaison n'avait donc jamais lieu.
+
+   On garde donc la clé stricte telle quelle, et on ajoute UNIQUEMENT pour
+   l'affichage un rapprochement plus souple, tenu par quatre garde-fous :
+   un ensemble de mots inclus dans l'autre, au moins quatre mots communs,
+   deux mots d'écart au plus, et surtout des nombres et des marqueurs de
+   gamme identiques des deux côtés — sans quoi une RTX 4060 rejoindrait une
+   4060 Ti, et un iPhone 15 un iPhone 15 Pro. */
+
+const MOTS_COMMUNS_MINIMUM = 4;
+const ECART_DE_MOTS_MAXIMUM = 2;
+
+/* Au-delà, le rapprochement souple coûterait trop cher à chaque page et on
+   s'en tient aux clés strictes. Le site publie aujourd'hui des centaines
+   d'offres, pas des centaines de milliers ; ce plafond est là pour que le
+   jour où ça change, la page ralentisse au lieu de s'écrouler. */
+const PLAFOND_RAPPROCHEMENT = 5000;
+
+/* Un écart de prix important entre deux titres seulement RESSEMBLANTS
+   s'explique bien plus souvent par une variante non dite — pack, coloris,
+   accessoire inclus — que par une vraie aubaine. On ne rapproche pas :
+   annoncer « moins cher chez X » sur deux produits différents serait le
+   genre d'affirmation fabriquée que ce site s'interdit. Les vraies
+   aubaines, elles, passent par la clé stricte, sans plafond. */
+const ECART_DE_PRIX_MAXIMUM = 0.15;
+
+/** Profil d'un titre, lu directement dans sa clé stricte (mots déjà normalisés et triés). */
+function profil(cle) {
+  const mots = String(cle || "").split(" ").filter(Boolean);
+  return {
+    mots: new Set(mots),
+    nombres: new Set(mots.filter((m) => /\d/.test(m))),
+    variantes: new Set(mots.filter((m) => VARIANT_MARKERS.has(m))),
+  };
+}
+
+function memeEnsemble(a, b) {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
+}
+
+/** Deux titres décrivent-ils le même article, à la formulation près ? */
+function memeArticle(a, b) {
+  if (!a.mots.size || !b.mots.size) return false;
+  // Une gamme ou une génération qui diffère, c'est un autre produit.
+  if (!memeEnsemble(a.nombres, b.nombres)) return false;
+  if (!memeEnsemble(a.variantes, b.variantes)) return false;
+
+  const [petit, grand] = a.mots.size <= b.mots.size ? [a, b] : [b, a];
+  if (petit.mots.size < MOTS_COMMUNS_MINIMUM) return false;
+  if (grand.mots.size - petit.mots.size > ECART_DE_MOTS_MAXIMUM) return false;
+  for (const m of petit.mots) if (!grand.mots.has(m)) return false;
+  return true;
 }
 
 /**
@@ -452,7 +520,50 @@ function concurrentsPour(lignes) {
     if (!parCle.has(l.product_key)) parCle.set(l.product_key, []);
     parCle.get(l.product_key).push(l);
   }
+
+  ajouterRessemblances(parCle, cles);
   return parCle;
+}
+
+/**
+ * Complète chaque groupe par les offres dont le titre ressemble assez.
+ *
+ * Sans cette passe, la comparaison ne fonctionnait qu'entre marchands
+ * employant exactement les mêmes mots — c'est-à-dire presque jamais.
+ */
+function ajouterRessemblances(parCle, cles) {
+  const nb = db
+    .prepare("SELECT COUNT(*) AS n FROM deals WHERE published_at IS NOT NULL AND removed_at IS NULL")
+    .get().n;
+  if (nb > PLAFOND_RAPPROCHEMENT) return;
+
+  const candidats = db
+    .prepare(
+      `SELECT id, product_key, merchant, price, url, payload FROM deals
+       WHERE published_at IS NOT NULL AND removed_at IS NULL AND price > 0
+         AND product_key IS NOT NULL`
+    )
+    .all();
+
+  for (const cle of cles) {
+    const groupe = parCle.get(cle);
+    if (!groupe || !groupe.length) continue;
+
+    const p = profil(cle);
+    const reference = groupe[0].price;
+    const dejaLa = new Set(groupe.map((g) => g.id));
+
+    for (const c of candidats) {
+      if (c.product_key === cle || dejaLa.has(c.id)) continue;
+      if (!memeArticle(p, profil(c.product_key))) continue;
+      // Trop d'écart pour deux titres seulement ressemblants : on s'abstient.
+      const ecart = Math.abs(c.price - reference) / Math.max(c.price, reference);
+      if (ecart > ECART_DE_PRIX_MAXIMUM) continue;
+      groupe.push(c);
+      dejaLa.add(c.id);
+    }
+    groupe.sort((a, b) => a.price - b.price);
+  }
 }
 
 /** Domaine de l'enseigne rangé dans le payload, sans lever si le JSON est cassé. */
