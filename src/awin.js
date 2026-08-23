@@ -208,7 +208,13 @@ async function pagePromotions(corps) {
     signal: AbortSignal.timeout(30000),
   });
   if (rep.status === 401 || rep.status === 403) throw new Error("jeton Awin refusé pour les promotions");
-  if (!rep.ok) throw new Error(`promotions Awin : HTTP ${rep.status}`);
+  if (!rep.ok) {
+    /* Le code seul ne suffit pas à corriger un corps de requête : Awin
+       explique dans la réponse ce qui lui déplaît, et sans ce détail on en
+       est réduit à essayer des valeurs au hasard. */
+    const detail = await rep.text().catch(() => "");
+    throw new Error(`promotions Awin : HTTP ${rep.status} ${detail.slice(0, 300)}`.trim());
+  }
   return rep.json();
 }
 
