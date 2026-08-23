@@ -281,11 +281,27 @@ async function diagnostic() {
   if (vides.length) return { actif: false, raison: `${vides.join(" et ")} vide(s) ou absente(s)` };
   try {
     const programmes = await programmesRejoints();
+
+    /* Les codes promo ne sortaient qu'au scan, toutes les trois heures :
+       une erreur d'intégration restait invisible jusque-là. On les compte
+       au démarrage, sur une seule page, pour que le journal dise tout de
+       suite si l'API répond — et combien elle rend selon qu'on interroge
+       les programmes rejoints ou l'ensemble du réseau. */
+    const compter = async (membership) => {
+      try {
+        return (await promotions({ membership, maxPages: 1 })).length;
+      } catch (e) {
+        return `erreur : ${e.message}`;
+      }
+    };
+
     return {
       actif: true,
       programmes: programmes.length,
       catalogues: Boolean(process.env.AWIN_FEED_KEY),
       exemples: programmes.slice(0, 5).map((p) => p.nom),
+      promosRejoints: await compter("joined"),
+      promosReseau: await compter("notjoined"),
     };
   } catch (e) {
     return { actif: false, raison: e.message };

@@ -1355,6 +1355,10 @@ if (require.main === module) {
               "Sans elle, aucun catalogue ne peut être téléchargé."
           );
         }
+        console.log(
+          `[awin] promotions : ${d.promosRejoints} sur les programmes rejoints, ` +
+            `${d.promosReseau} sur l'ensemble du réseau (première page).`
+        );
         if (d.programmes === 0) {
           console.log(
             "[awin] aucun programme rejoint — un catalogue n'est accessible " +
