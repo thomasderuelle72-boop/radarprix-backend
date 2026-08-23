@@ -172,6 +172,103 @@ function offresDuCatalogue(csv, sep = "|") {
   return offres;
 }
 
+/* ── Codes promo et promotions du réseau ─────────────────────────────
+   Le service qui manquait au site : le type « code » existe en base depuis
+   l'origine et n'avait jamais été alimenté.
+
+   Contrat de l'API, vérifié dans plusieurs intégrations publiques plutôt que
+   deviné — la documentation d'Awin est inaccessible depuis ici :
+
+     POST https://api.awin.com/publisher/{id}/promotions
+
+   Trois pièges, et c'est là que la plupart des intégrations se cassent :
+
+     · « publisher » au SINGULIER. L'ancien chemin `/publishers/{id}/promotions`
+       en GET n'existe plus ; plusieurs projets publics l'appellent encore et
+       reçoivent un 404 qu'ils prennent pour un compte vide.
+     · le jeton se passe BRUT dans Authorization, sans « Bearer ». On envoie
+       aussi accessToken en paramètre, qu'Awin accepte : deux chances plutôt
+       qu'un échec silencieux.
+     · vingt appels par minute. La pagination attend donc entre deux pages.
+
+   L'intérêt décisif : chaque promotion porte `urlTracking`, un lien qui mène
+   VRAIMENT chez le marchand. Sur les 126 offres publiées au 23 août 2026,
+   une seule ouvrait autre chose qu'une recherche. */
+
+const PAGE_PROMOS = 200;
+const ATTENTE_ENTRE_PAGES = 3500;
+
+async function pagePromotions(corps) {
+  const jeton = process.env.AWIN_API_TOKEN;
+  const url = `${API}/publisher/${process.env.AWIN_PUBLISHER_ID}/promotions?accessToken=${encodeURIComponent(jeton)}`;
+  const rep = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: jeton, "Content-Type": "application/json" },
+    body: JSON.stringify(corps),
+    signal: AbortSignal.timeout(30000),
+  });
+  if (rep.status === 401 || rep.status === 403) throw new Error("jeton Awin refusé pour les promotions");
+  if (!rep.ok) throw new Error(`promotions Awin : HTTP ${rep.status}`);
+  return rep.json();
+}
+
+/**
+ * Les promotions et codes promo publiés sur le réseau.
+ *
+ * `membership` vaut « joined » pour les seuls programmes rejoints, ou
+ * « notjoined » pour voir ce que proposent les autres. Awin sert les deux :
+ * un site peut donc afficher des codes avant d'être accepté nulle part —
+ * mais sans lien d'affiliation utilisable sur les programmes non rejoints.
+ */
+async function promotions({ membership = "joined", type = null, regionCodes = ["FR"], maxPages = 5 } = {}) {
+  if (!configure()) return [];
+
+  const filtres = { membership, regionCodes };
+  if (type) filtres.type = type;
+
+  const toutes = [];
+  let curseur = null;
+  for (let page = 0; page < maxPages; page++) {
+    const corps = { filters: filtres, pagination: { pageSize: PAGE_PROMOS } };
+    if (curseur) corps.pagination.cursor = curseur;
+
+    const rep = await pagePromotions(corps);
+    const lot = Array.isArray(rep && rep.data) ? rep.data : [];
+    toutes.push(...lot);
+
+    curseur = rep && rep.pagination ? rep.pagination.cursor : null;
+    if (!curseur || lot.length === 0) break;
+    await new Promise((r) => setTimeout(r, ATTENTE_ENTRE_PAGES));
+  }
+  return toutes.map(enOffrePromo).filter(Boolean);
+}
+
+/** Une promotion Awin ramenée à la forme que le reste du site manipule. */
+function enOffrePromo(p) {
+  const marchand = (p.advertiser && p.advertiser.name) || null;
+  const titre = (p.title || p.description || "").trim();
+  // Sans marchand ni lien, la carte ne serait pas actionnable.
+  if (!titre || !marchand || !p.urlTracking) return null;
+
+  const code = p.voucher && p.voucher.code ? String(p.voucher.code).trim() : null;
+  return {
+    externalId: String(p.promotionId),
+    name: titre.slice(0, 200),
+    description: (p.description || "").slice(0, 1200) || null,
+    seller: marchand,
+    url: p.urlTracking,
+    // Un code promo se distingue d'une promotion simple : l'un se copie,
+    // l'autre s'applique tout seul.
+    typePromo: code ? "code" : "promo",
+    voucherCode: code,
+    startsAt: p.startDate || null,
+    expiresAt: p.endDate || null,
+    // Une promotion n'a pas de prix : elle porte une réduction, pas un tarif.
+    price: null,
+    lienType: "produit",
+  };
+}
+
 /**
  * Diagnostic au démarrage : le compte répond-il ?
  *
@@ -195,4 +292,4 @@ async function diagnostic() {
   }
 }
 
-module.exports = { configure, programmesRejoints, offresDuCatalogue, urlCatalogue, diagnostic, COLONNES };
+module.exports = { configure, programmesRejoints, promotions, enOffrePromo, offresDuCatalogue, urlCatalogue, diagnostic, COLONNES };

@@ -36,7 +36,7 @@ const {
   marquerRelevee, marquerEchec, compterFiches, recuperer,
 } = require("./catalogue");
 const { sortieMarchand, marchandDepuisTexte, domaineDeMarchand } = require("./marchands");
-const { urlCatalogue, offresDuCatalogue } = require("./awin");
+const { urlCatalogue, offresDuCatalogue, promotions: promotionsAwin } = require("./awin");
 const zlib = require("node:zlib");
 
 /* Agent unique, au format conventionnel des robots — celui de Googlebot :
@@ -1175,6 +1175,47 @@ function retirerRemisesFabriquees() {
 }
 
 /**
+ * Publie les codes promo et promotions du réseau d'affiliation.
+ *
+ * Le type « code » existait en base depuis l'origine sans jamais être
+ * alimenté : le site promettait des codes promo qu'il n'a jamais eus.
+ *
+ * Ces offres échappent à la règle « démontrer un avantage » qui s'applique
+ * aux produits, et c'est volontaire : un code de réduction EST l'avantage.
+ * Il porte sa propre valeur dans son intitulé (« 10 % sur… »), sans prix de
+ * référence à comparer.
+ */
+async function collecterPromotionsAwin() {
+  if (!process.env.AWIN_API_TOKEN || !process.env.AWIN_PUBLISHER_ID) return [];
+
+  const offres = await promotionsAwin({ membership: "joined" });
+  const publiees = [];
+  for (const o of offres) {
+    const id = upsertDeal({
+      source: "awin-promos",
+      externalId: o.externalId,
+      detector: "D2",
+      type: o.typePromo,
+      title: o.name,
+      description: o.description,
+      url: o.url,
+      merchant: o.seller,
+      voucherCode: o.voucherCode,
+      startsAt: o.startsAt,
+      expiresAt: o.expiresAt,
+      payload: {
+        requete: "Codes promo Awin",
+        lienType: o.lienType,
+        marchandDomaine: domaineDeMarchand(o.seller),
+      },
+    });
+    publierDeal(id);
+    publiees.push(id);
+  }
+  return publiees;
+}
+
+/**
  * Retire les offres publiées qui ne démontrent aucun avantage.
  *
  * Mesuré le 23 août 2026 : sur 126 offres en ligne, 44 % n'avaient aucun
@@ -1599,6 +1640,21 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
       }
       bilan.details.push(ligne);
     }
+
+    /* Les codes promo du réseau d'affiliation, hors boucle : c'est un appel
+       unique au réseau et non un relevé par produit. Ces offres n'ont pas de
+       prix — une réduction n'est pas un tarif — et ne passent donc pas par
+       l'analyse de prix. Elles apportent en revanche ce qui manquait le plus
+       au site : un lien qui mène vraiment chez le marchand. */
+    try {
+      const promos = await collecterPromotionsAwin();
+      bilan.offres += promos.length;
+      bilan.publies += promos.length;
+      if (promos.length) console.log(`[awin] ${promos.length} code(s) promo publié(s).`);
+    } catch (e) {
+      bilan.erreurs++;
+      logSourceEvent("awin", false, `promotions : ${e.message}`);
+    }
   } finally {
     scanEnCours = false;
   }
@@ -1673,6 +1729,7 @@ module.exports = {
   collecterFirecrawl,
   collecterCible,
   collecterAwin,
+  collecterPromotionsAwin,
   lancerScan,
   etatCollecte,
 };

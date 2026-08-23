@@ -5,7 +5,7 @@
 // format est un CSV que personne ne contrôle chez nous, d'où ces tests :
 // une colonne déplacée ou une description contenant le séparateur suffit
 // à publier des prix faux.
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -131,5 +131,95 @@ describe("diagnostic", () => {
     expect(d.actif).toBe(true);
     expect(d.programmes).toBe(2);
     expect(d.exemples).toEqual(["Boulanger", "Fnac"]);
+  });
+});
+
+/* Codes promo et promotions du réseau — le service qui manquait au site.
+   Le contrat de l'API a été relevé dans des intégrations publiques, la
+   documentation d'Awin étant inaccessible : on vérifie donc ici les trois
+   points où les intégrations se cassent le plus souvent. */
+describe("promotions et codes promo", () => {
+  const promo = (over = {}) => ({
+    promotionId: 4242,
+    advertiser: { id: 7, name: "Boulanger" },
+    title: "10 % sur le petit électroménager",
+    description: "Hors produits déjà remisés.",
+    voucher: { code: "ELECTRO10" },
+    type: "voucher",
+    startDate: "2026-08-01T00:00:00",
+    endDate: "2026-09-30T23:59:59",
+    urlTracking: "https://www.awin1.com/cread.php?awinmid=7&p=boulanger.com",
+    ...over,
+  });
+
+  beforeEach(() => {
+    process.env.AWIN_PUBLISHER_ID = "1234";
+    process.env.AWIN_API_TOKEN = "jeton-de-test";
+  });
+  afterEach(() => {
+    delete process.env.AWIN_PUBLISHER_ID;
+    delete process.env.AWIN_API_TOKEN;
+    vi.unstubAllGlobals();
+  });
+
+  it("appelle « publisher » au singulier, en POST, sans Bearer", async () => {
+    let vue = null;
+    vi.stubGlobal("fetch", vi.fn(async (url, options) => {
+      vue = { url: String(url), options };
+      return { ok: true, status: 200, json: async () => ({ data: [promo()] }) };
+    }));
+
+    await awin.promotions();
+
+    // Le chemin au pluriel en GET n'existe plus : c'est le piège nº1.
+    expect(vue.url).toMatch(/\/publisher\/1234\/promotions/);
+    expect(vue.url).not.toMatch(/\/publishers\//);
+    expect(vue.options.method).toBe("POST");
+    // Le jeton se passe brut, pas en Bearer : piège nº2.
+    expect(vue.options.headers.Authorization).toBe("jeton-de-test");
+    expect(vue.options.headers.Authorization).not.toMatch(/Bearer/);
+    // Et aussi en paramètre, qu'Awin accepte également.
+    expect(vue.url).toMatch(/accessToken=jeton-de-test/);
+  });
+
+  it("filtre sur la France et les programmes rejoints", async () => {
+    let corps = null;
+    vi.stubGlobal("fetch", vi.fn(async (url, options) => {
+      corps = JSON.parse(options.body);
+      return { ok: true, status: 200, json: async () => ({ data: [] }) };
+    }));
+
+    await awin.promotions({ membership: "joined", type: "voucher" });
+    expect(corps.filters).toEqual({ membership: "joined", regionCodes: ["FR"], type: "voucher" });
+    expect(corps.pagination.pageSize).toBe(200);
+  });
+
+  it("distingue un code à copier d'une promotion automatique", () => {
+    expect(awin.enOffrePromo(promo()).typePromo).toBe("code");
+    expect(awin.enOffrePromo(promo()).voucherCode).toBe("ELECTRO10");
+
+    const sansCode = awin.enOffrePromo(promo({ voucher: null }));
+    expect(sansCode.typePromo).toBe("promo");
+    expect(sansCode.voucherCode).toBeNull();
+  });
+
+  it("porte un lien qui mène vraiment chez le marchand", () => {
+    // Sur les 126 offres publiées le 23 août 2026, une seule ouvrait autre
+    // chose qu'une page de recherche. C'est ce que ce canal répare.
+    const o = awin.enOffrePromo(promo());
+    expect(o.url).toMatch(/^https:\/\/www\.awin1\.com\/cread\.php/);
+    expect(o.lienType).toBe("produit");
+    expect(o.expiresAt).toBe("2026-09-30T23:59:59");
+  });
+
+  it("écarte une promotion qu'on ne pourrait pas présenter", () => {
+    expect(awin.enOffrePromo(promo({ urlTracking: null }))).toBeNull();
+    expect(awin.enOffrePromo(promo({ advertiser: null }))).toBeNull();
+    expect(awin.enOffrePromo(promo({ title: "", description: "" }))).toBeNull();
+  });
+
+  it("rend une liste vide plutôt que d'échouer sans identifiants", async () => {
+    delete process.env.AWIN_API_TOKEN;
+    expect(await awin.promotions()).toEqual([]);
   });
 });
