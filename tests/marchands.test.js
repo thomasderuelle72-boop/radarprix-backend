@@ -9,6 +9,7 @@ const require = createRequire(import.meta.url);
 const {
   MARCHANDS, marchandDepuisDomaine, marchandDepuisTexte,
   reconnaitreMarchand, lienMarchand, requeteDeTitre, pagePromo,
+  domainePourLogo,
 } = require("../src/marchands.js");
 
 describe("le registre", () => {
@@ -100,5 +101,33 @@ describe("requeteDeTitre", () => {
 
   it("garde le titre d origine plutôt que de rendre une recherche vide", () => {
     expect(requeteDeTitre("[Promo]")).toBe("[Promo]");
+  });
+});
+
+/* Dix-huit cartes sur quarante-neuf s'affichaient en initiales, dont six
+   Amazon : collectées avant que le champ domaine n'existe. */
+describe("domainePourLogo", () => {
+  it("préfère ce que la collecte a rangé dans l'offre", () => {
+    expect(domainePourLogo({ domaine: "www.boulanger.com", url: "https://x.fr/a", marchand: "Amazon" })).toBe("boulanger.com");
+  });
+
+  it("retombe sur l'hôte du lien, plus précis que le nom", () => {
+    // Une offre Amazon.es doit porter son propre logo, pas celui d'amazon.fr.
+    expect(domainePourLogo({ url: "https://www.amazon.es/dp/1", marchand: "Amazon.es" })).toBe("amazon.es");
+    // Et un marchand absent du registre en obtient un quand même.
+    expect(domainePourLogo({ url: "https://www.bike24.fr/p/2", marchand: "BIKE24" })).toBe("bike24.fr");
+  });
+
+  it("retombe sur le registre quand il n'y a pas de lien", () => {
+    expect(domainePourLogo({ marchand: "Decathlon" })).toBe("decathlon.fr");
+  });
+
+  it("n'affiche jamais le logo d'un agrégateur", () => {
+    expect(domainePourLogo({ url: "https://www.dealabs.com/bons-plans/1", marchand: "Inconnu" })).toBeNull();
+  });
+
+  it("rend null plutôt que d'inventer", () => {
+    expect(domainePourLogo({})).toBeNull();
+    expect(domainePourLogo({ url: "pas une url", marchand: "Inconnu" })).toBeNull();
   });
 });

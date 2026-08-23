@@ -350,7 +350,50 @@ function domaineDeMarchand(nom) {
   return m ? m.domaine : null;
 }
 
+/**
+ * Le domaine à afficher pour le logo d'une enseigne.
+ *
+ * Trois sources, de la plus sûre à la plus générale : ce que la collecte a
+ * rangé dans l'offre, l'hôte du lien de sortie, puis le registre par le nom.
+ *
+ * L'hôte du lien vient avant le registre parce qu'il est plus précis — une
+ * offre Amazon.es doit porter le logo d'amazon.es, pas celui d'amazon.fr —
+ * et il ne peut pas désigner un agrégateur : la règle de sortie reconstruit
+ * toujours le lien vers le marchand, et une offre sans lien constructible
+ * n'est pas publiée. On l'écarte tout de même explicitement, pour que ce
+ * jour où cette règle changerait, le logo de Dealabs n'apparaisse pas sur
+ * nos cartes.
+ *
+ * Sans ce repli, dix-huit cartes sur quarante-neuf s'affichaient en
+ * initiales, dont six Amazon : elles avaient été collectées avant que le
+ * champ n'existe.
+ */
+function domainePourLogo({ domaine, url, marchand } = {}) {
+  if (domaine) return String(domaine).replace(/^www\./, "");
+
+  const hote = hoteDeLien(url);
+  if (hote && !AGREGATEURS.has(hote.split(".").slice(-2).join("."))) return hote;
+
+  return domaineDeMarchand(marchand);
+}
+
+/** Les plates-formes de bons plans, dont le logo ne doit jamais figurer sur une carte. */
+const AGREGATEURS = new Set([
+  "dealabs.com", "mydealz.de", "hotukdeals.com", "pepper.pl", "preisjaeger.at",
+  "chollometro.com", "pepper.it", "promodescuentos.com", "pelando.com.br",
+]);
+
+function hoteDeLien(url) {
+  if (!url) return null;
+  try {
+    return new URL(String(url)).hostname.replace(/^www\./, "") || null;
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
+  domainePourLogo,
   MARCHANDS,
   marchandDepuisDomaine,
   marchandDepuisTexte,

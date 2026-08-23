@@ -17,6 +17,7 @@
 // la connexion SQLite est partagée, le schéma est local.
 const { db } = require("./db");
 const { productKey, VARIANT_MARKERS } = require("./productKey");
+const { domainePourLogo } = require("./marchands");
 
 // ── Vocabulaire contrôlé ────────────────────────────────────────────
 // Écrit une fois ici plutôt que dupliqué en chaînes libres dans chaque
@@ -438,7 +439,7 @@ function avecConcurrents(lignes) {
       // Le domaine sert au logo : sans lui la comparaison s'affiche en
       // initiales, ce qui rend une liste de marchands illisible d'un coup
       // d'œil — or c'est exactement l'usage qu'on en fait.
-      domaine: domaineDePayload(a.payload),
+      domaine: domainePourLogo({ domaine: domaineDePayload(a.payload), url: a.url, marchand: a.merchant }),
     }));
     // Le prix le plus bas connu pour cet article, tous marchands confondus.
     j.meilleurPrix = groupe.length ? groupe[0].price : l.price;
@@ -588,7 +589,7 @@ function ajouterRessemblances(parCle, cles) {
   }
 }
 
-/** Domaine de l'enseigne rangé dans le payload, sans lever si le JSON est cassé. */
+/** Le domaine rangé dans le payload, sans lever si le JSON est cassé. */
 function domaineDePayload(brut) {
   if (!brut) return null;
   try {

@@ -81,6 +81,7 @@ const {
 const {
   listDeals: listDealsUnifies,   TYPES_DEAL,
 } = require("./dealsStore");
+const { domainePourLogo } = require("./marchands");
 const { reinitialiser, apercu } = require("./reinitialisation");
 const { etatRadar } = require("./radarEtat");
 const { compterNonLues, listerNotifications, marquerLues } = require("./notifications");
@@ -324,7 +325,11 @@ function enFormeHeritee(d) {
     meilleurPrix: d.meilleurPrix ?? d.price,
     nbMarchands: d.nbMarchands ?? (d.merchant ? 1 : 0),
     // Domaine de l'enseigne, pour son logo.
-    marchandDomaine: (d.payload && d.payload.marchandDomaine) || null,
+    marchandDomaine: domainePourLogo({
+      domaine: d.payload && d.payload.marchandDomaine,
+      url: d.url,
+      marchand: d.merchant,
+    }),
   };
 }
 
