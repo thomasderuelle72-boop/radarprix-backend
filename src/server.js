@@ -1122,9 +1122,12 @@ app.get("/api/admin/targets", requireAuth, requireModerator, (req, res) => {
   res.json({ items: listTargets() });
 });
 
-// POST /api/admin/targets  { query, category?, merchant?, feedUrl?, domains? }
-// Au moins un flux ou un domaine est requis : une cible sans source ne
-// produirait que des échecs à chaque scan.
+// POST /api/admin/targets
+//   { query, category?, merchant?, feedUrl?, promoUrl?, catalogueUrl?,
+//     awinFeeds?, domains? }
+// Au moins une source est requise : une cible sans source ne produirait
+// que des échecs à chaque scan. awinFeeds attend des identifiants de flux
+// Awin séparés par des virgules — « 12345,67890 ».
 app.post("/api/admin/targets", requireAuth, requireAdmin, (req, res) => {
   const r = addTarget(req.body || {});
   if (!r.ok) return res.status(400).json({ error: r.error });
@@ -1132,6 +1135,8 @@ app.post("/api/admin/targets", requireAuth, requireAdmin, (req, res) => {
 });
 
 // PATCH /api/admin/targets/:id  { active?, category?, merchant?, feedUrl?, domains? }
+// Les canaux catalogue et Awin ne se modifient pas ici : ils se posent à la
+// création. Seule leur mise en pause passe par « active ».
 app.patch("/api/admin/targets/:id", requireAuth, requireAdmin, (req, res) => {
   const r = updateTarget(parseInt(req.params.id, 10), req.body || {});
   if (!r.ok) return res.status(400).json({ error: r.error });
@@ -1304,9 +1309,26 @@ if (require.main === module) {
       if (d.actif) {
         console.log(
           `[awin] compte actif — ${d.programmes} programme(s) rejoint(s)` +
-            (d.catalogues ? "" : ", mais AWIN_FEED_KEY manque pour les catalogues") +
             (d.exemples.length ? ` : ${d.exemples.join(", ")}` : "")
         );
+        /* Un compte qui répond ne veut pas dire un catalogue qui arrive. Il
+           reste deux conditions, et rien ne les disait : on les a crues
+           remplies parce que le compte était actif. Elles sont donc nommées
+           une par une, avec ce qu'il faut faire. */
+        if (!d.catalogues) {
+          console.log(
+            "[awin] AWIN_FEED_KEY absente — la clé des catalogues produits est " +
+              "distincte du jeton API (Awin → Toolbox → Create-a-Feed). " +
+              "Sans elle, aucun catalogue ne peut être téléchargé."
+          );
+        }
+        if (d.programmes === 0) {
+          console.log(
+            "[awin] aucun programme rejoint — un catalogue n'est accessible " +
+              "qu'aux affiliés acceptés par le marchand. Il faut candidater " +
+              "aux programmes depuis l'interface Awin et attendre leur accord."
+          );
+        }
       } else {
         console.log(`[awin] inactif — ${d.raison}`);
       }

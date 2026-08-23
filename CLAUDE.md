@@ -76,6 +76,7 @@ a été **retirée** puis **remplacée** par une acquisition propre :
 | `CORS_ORIGINS` | Origines autorisées (remplace la liste par défaut). |
 | `FIRECRAWL_API_KEY` | Clé du scraping SaaS (sans elle, seules les cibles à flux marchent). |
 | `SCAN_TOKEN` | Jeton cron pour `POST /api/admin/scan` (en-tête `x-scan-token`). |
+| `AWIN_PUBLISHER_ID`, `AWIN_API_TOKEN`, `AWIN_FEED_KEY` | Réseau d'affiliation. Les deux premières ouvrent l'API, la troisième les catalogues produits. |
 
 `src/env.js` charge `.env` puis `.env.local` (le sandbox Freebuff écrit ses
 secrets dans `.env.local`, jamais commité — voir `.gitignore`). dotenv ne
@@ -127,10 +128,22 @@ Mesuré, pas supposé, le 22 août 2026 :
   4/4). C'est `catalogue.js`, et c'est **le seul canal dont les anomalies
   sont les nôtres** : on relève des prix ordinaires, encore et encore, et
   `algorithm.js` dit lequel a décroché.
-- **Le réseau d'affiliation reste la voie la plus riche** (`awin.js`) :
-  catalogue complet avec description, EAN et prix conseillé, et un lien
-  qui mène chez le marchand. Il faut `AWIN_PUBLISHER_ID`, `AWIN_API_TOKEN`
-  et `AWIN_FEED_KEY`. Le diagnostic au démarrage dit ce qui manque.
+- **Le réseau d'affiliation reste la voie la plus riche** (`awin.js` +
+  `collecterAwin` dans `collect.js`) : catalogue complet avec description,
+  EAN et prix conseillé, et un lien qui mène **vraiment** sur la fiche du
+  marchand — ce qu'aucun autre canal ne donne quand l'offre vient d'un
+  agrégateur. Trois conditions, toutes nécessaires :
+  `AWIN_PUBLISHER_ID` + `AWIN_API_TOKEN` (le compte répond),
+  `AWIN_FEED_KEY` (distincte du jeton — Awin → Toolbox → Create-a-Feed),
+  et **au moins un programme marchand rejoint** : un catalogue n'est
+  accessible qu'aux affiliés que le marchand a acceptés. Le diagnostic au
+  démarrage nomme celle qui manque.
+
+  Une cible Awin porte ses identifiants de flux dans `awin_feeds`
+  (« 12345,67890 »). L'échantillon se prend **sur les lignes du CSV**, avant
+  de construire le moindre objet : un catalogue de plusieurs centaines de
+  milliers de références converti en entier ferait passer le processus qui
+  sert le site de quelques mégaoctets à plus d'un gigaoctet.
 
 ## Arithmétique de la rotation
 

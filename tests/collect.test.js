@@ -637,3 +637,77 @@ describe("garde-fou contre une extraction cassée", () => {
     expect(collect.retirerOffresMalNommees().retirees).toBe(0);
   });
 });
+
+/* Le canal d'affiliation : le module awin.js existait, testé, mais n'était
+   appelé nulle part ailleurs qu'au diagnostic de démarrage. Aucune offre
+   n'en sortait, quelles que soient les clés fournies. */
+describe("catalogue d'affiliation (Awin)", () => {
+  const enTete = "aw_deep_link|product_name|merchant_product_id|merchant_name|aw_image_url|description|search_price|rrp_price|currency|in_stock|brand_name|ean";
+  const ligne = (i, prix, stock = "1") =>
+    `https://awin1.com/p/${i}|Casque Sony WH-${i}|SKU${i}|Boulanger|https://img/${i}.jpg|Un casque|${prix}|399.00|EUR|${stock}|Sony|EAN${i}`;
+
+  const catalogue = (n, options = {}) =>
+    [enTete, ...Array.from({ length: n }, (_, i) => ligne(i, 100 + i, options.stock ?? "1"))].join("\n");
+
+  function servir(csv, { statut = 200, gzip = false } = {}) {
+    const corps = gzip ? require("node:zlib").gzipSync(Buffer.from(csv)) : Buffer.from(csv);
+    return vi.fn(async () => ({
+      ok: statut < 400,
+      status: statut,
+      arrayBuffer: async () => corps.buffer.slice(corps.byteOffset, corps.byteOffset + corps.byteLength),
+    }));
+  }
+
+  beforeEach(() => { process.env.AWIN_FEED_KEY = "cle-de-test"; });
+  afterEach(() => { delete process.env.AWIN_FEED_KEY; vi.unstubAllGlobals(); });
+
+  it("refuse de travailler sans la clé des catalogues", async () => {
+    delete process.env.AWIN_FEED_KEY;
+    await expect(collect.collecterAwin({ awinFeeds: "123" })).rejects.toThrow(/AWIN_FEED_KEY/);
+  });
+
+  it("refuse une cible sans identifiant de flux", async () => {
+    await expect(collect.collecterAwin({ awinFeeds: "" })).rejects.toThrow(/identifiant de flux/);
+  });
+
+  it("lit un catalogue gzippé, qu'Amazon sert sans l'annoncer", async () => {
+    vi.stubGlobal("fetch", servir(catalogue(10), { gzip: true }));
+    const offres = await collect.collecterAwin({ awinFeeds: "123", merchant: "Boulanger" });
+    expect(offres).toHaveLength(10);
+    expect(offres[0]).toMatchObject({ seller: "Boulanger", price: 100, refPriceAnnonce: 399, balisage: "awin" });
+    // Le lien d'affiliation mène chez le marchand : c'est tout l'intérêt.
+    expect(offres[0].url).toMatch(/^https:\/\/awin1\.com\/p\//);
+  });
+
+  it("lit aussi un catalogue non compressé", async () => {
+    vi.stubGlobal("fetch", servir(catalogue(4)));
+    expect(await collect.collecterAwin({ awinFeeds: "1,2" })).toHaveLength(4);
+  });
+
+  it("n'en relève qu'un échantillon, quelle que soit la taille du catalogue", async () => {
+    // 500 000 références converties en objets feraient passer le processus
+    // qui sert le site de quelques mégaoctets à plus d'un gigaoctet.
+    vi.stubGlobal("fetch", servir(catalogue(5000)));
+    const offres = await collect.collecterAwin({ awinFeeds: "123" });
+    expect(offres.length).toBeLessThanOrEqual(61);
+    // Le pas parcourt tout le catalogue au lieu d'en lire le début.
+    expect(offres.at(-1).name).not.toBe("Casque Sony WH-59");
+  });
+
+  it("écarte les références en rupture", async () => {
+    const mixte = [
+      enTete,
+      ligne(1, 100, "1"),
+      ligne(2, 200, "0"),
+      ligne(3, 300, "1"),
+    ].join("\n");
+    vi.stubGlobal("fetch", servir(mixte));
+    const offres = await collect.collecterAwin({ awinFeeds: "123" });
+    expect(offres.map((o) => o.price)).toEqual([100, 300]);
+  });
+
+  it("signale un refus du réseau plutôt que de rendre une liste vide", async () => {
+    vi.stubGlobal("fetch", servir("", { statut: 403 }));
+    await expect(collect.collecterAwin({ awinFeeds: "123" })).rejects.toThrow(/HTTP 403/);
+  });
+});

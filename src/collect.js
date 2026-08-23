@@ -33,6 +33,8 @@ const {
   marquerRelevee, marquerEchec, compterFiches, recuperer,
 } = require("./catalogue");
 const { sortieMarchand, marchandDepuisTexte, domaineDeMarchand } = require("./marchands");
+const { urlCatalogue, offresDuCatalogue } = require("./awin");
+const zlib = require("node:zlib");
 
 /* Agent unique, au format conventionnel des robots — celui de Googlebot :
    « Mozilla/5.0 (compatible; Nom/version; +adresse) ». Il nomme RadarPrix
@@ -81,6 +83,21 @@ try {
   if (!/duplicate column/i.test(e.message)) throw e;
 }
 
+/* Cinquième canal : le catalogue produits d'un marchand via le réseau
+   d'affiliation. On y stocke les identifiants de flux Awin (« feed id »),
+   séparés par des virgules : un seul téléchargement rapporte le catalogue
+   de plusieurs marchands à la fois.
+
+   Le module awin.js existait depuis un moment, testé, mais n'était appelé
+   nulle part ailleurs qu'au diagnostic de démarrage : aucune offre n'en
+   sortait, quelles que soient les clés fournies. C'est ce que cette colonne
+   et le collecteur ci-dessous réparent. */
+try {
+  db.exec("ALTER TABLE watch_targets ADD COLUMN awin_feeds TEXT");
+} catch (e) {
+  if (!/duplicate column/i.test(e.message)) throw e;
+}
+
 // ── Cibles suivies ──────────────────────────────────────────────
 
 function decouperDomaines(cible) {
@@ -100,6 +117,7 @@ function enJson(ligne) {
     feedUrl: ligne.feed_url,
     promoUrl: ligne.promo_url || null,
     catalogueUrl: ligne.catalogue_url || null,
+    awinFeeds: ligne.awin_feeds || null,
     searchDomains: decouperDomaines(ligne),
     active: Boolean(ligne.active),
     createdAt: ligne.created_at,
@@ -124,15 +142,27 @@ function getTarget(id) {
  * un flux, ou au moins un domaine marchand pour Firecrawl. Une cible sans
  * aucune source ne ferait que des erreurs à chaque scan.
  */
-function addTarget({ query, category, merchant, feedUrl, promoUrl, catalogueUrl, domains }) {
+function addTarget({ query, category, merchant, feedUrl, promoUrl, catalogueUrl, awinFeeds, domains }) {
   const propre = String(query || "").trim();
   if (propre.length < 3) return { ok: false, error: "Le produit suivi doit faire au moins 3 caractères." };
   const flux = feedUrl ? String(feedUrl).trim() : "";
   const promo = promoUrl ? String(promoUrl).trim() : "";
   const catalogue = catalogueUrl ? String(catalogueUrl).trim().replace(/\/+$/, "") : "";
   const domaines = Array.isArray(domains) ? domains.map((d) => String(d).trim()).filter(Boolean) : [];
-  if (!flux && !promo && !catalogue && domaines.length === 0) {
-    return { ok: false, error: "Il faut un flux (feedUrl), une page promotions (promoUrl), un catalogue (catalogueUrl) ou au moins un domaine marchand (domains)." };
+
+  /* Identifiants de flux Awin : des nombres séparés par des virgules. On
+     les normalise ici plutôt qu'à la collecte, pour qu'une saisie fautive
+     soit refusée à l'ajout et non découverte au milieu d'un scan. */
+  const awin = String(awinFeeds || "")
+    .split(",")
+    .map((f) => f.trim())
+    .filter(Boolean);
+  if (awin.some((f) => !/^\d+$/.test(f))) {
+    return { ok: false, error: "Les identifiants de flux Awin doivent être des nombres séparés par des virgules." };
+  }
+
+  if (!flux && !promo && !catalogue && !awin.length && domaines.length === 0) {
+    return { ok: false, error: "Il faut un flux (feedUrl), une page promotions (promoUrl), un catalogue (catalogueUrl), des flux Awin (awinFeeds) ou au moins un domaine marchand (domains)." };
   }
   for (const [valeur, quoi] of [[flux, "du flux"], [promo, "de la page promotions"], [catalogue, "du catalogue"]]) {
     if (valeur && !/^https?:\/\//.test(valeur)) {
@@ -141,8 +171,8 @@ function addTarget({ query, category, merchant, feedUrl, promoUrl, catalogueUrl,
   }
   const info = db
     .prepare(
-      `INSERT INTO watch_targets (query, category, merchant, feed_url, promo_url, catalogue_url, search_domains)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO watch_targets (query, category, merchant, feed_url, promo_url, catalogue_url, awin_feeds, search_domains)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       propre,
@@ -151,6 +181,7 @@ function addTarget({ query, category, merchant, feedUrl, promoUrl, catalogueUrl,
       flux || null,
       promo || null,
       catalogue || null,
+      awin.length ? awin.join(",") : null,
       JSON.stringify(domaines)
     );
   return { ok: true, target: getTarget(info.lastInsertRowid) };
@@ -170,7 +201,11 @@ function updateTarget(id, champs = {}) {
   const domaines = champs.domains !== undefined
     ? (Array.isArray(champs.domains) ? champs.domains.map((d) => String(d).trim()).filter(Boolean) : [])
     : cible.searchDomains;
-  if (!feedUrl && domaines.length === 0) {
+  /* Une cible Awin ou catalogue n'a ni flux ni domaine : exiger l'un des
+     deux ici la rendait immodifiable — on ne pouvait même plus la mettre en
+     pause. La vérification porte donc sur l'ensemble des canaux. */
+  const aUnCanal = feedUrl || domaines.length > 0 || cible.promoUrl || cible.catalogueUrl || cible.awinFeeds;
+  if (!aUnCanal) {
     return { ok: false, error: "Il faut un flux (feedUrl) ou au moins un domaine marchand (domains)." };
   }
   db.prepare(
@@ -943,11 +978,77 @@ function collecterCible(cible) {
   // pages en schema.org, mais y embarquent bien mieux que ça.
   // Le catalogue passe en premier : c'est le canal dont les anomalies sont
   // les nôtres, mesurées et non rapportées.
+  // Le catalogue d'affiliation passe devant : ses liens mènent à la fiche
+  // produit du marchand, ce qu'aucun autre canal ne garantit.
+  if (cible.awinFeeds) return collecterAwin(cible);
   if (cible.catalogueUrl) return collecterCatalogue(cible);
   if (cible.promoUrl && estPepper(cible.promoUrl)) return collecterPepper(cible);
   if (cible.promoUrl) return collecterPagePromo(cible);
   if (cible.searchDomains && cible.searchDomains.length > 0) return collecterFirecrawl(cible);
-  return Promise.reject(new Error("ni flux, ni page promotions, ni domaines de recherche"));
+  return Promise.reject(new Error("ni flux, ni catalogue, ni page promotions, ni domaines de recherche"));
+}
+
+/**
+ * Catalogue produits d'un ou plusieurs marchands, via le réseau d'affiliation.
+ *
+ * C'est le canal le plus riche : description, EAN, prix conseillé, image, et
+ * surtout un lien qui mène VRAIMENT sur la fiche produit du marchand — ce
+ * qu'aucun autre canal ne donne quand l'offre nous vient d'un agrégateur.
+ *
+ * Le fichier est un CSV gzippé qui pèse couramment plusieurs dizaines de
+ * mégaoctets par marchand ; l'échantillon se prend donc sur les lignes, avant
+ * de construire le moindre objet — voir plus bas.
+ */
+async function collecterAwin(cible) {
+  if (!process.env.AWIN_FEED_KEY) {
+    throw new Error("AWIN_FEED_KEY absente — catalogue d'affiliation indisponible");
+  }
+  const feeds = String(cible.awinFeeds || "").split(",").map((f) => f.trim()).filter(Boolean);
+  if (!feeds.length) throw new Error("aucun identifiant de flux Awin sur cette cible");
+
+  const rep = await fetch(urlCatalogue(feeds), { signal: AbortSignal.timeout(120000) });
+  if (!rep.ok) throw new Error(`catalogue Awin : HTTP ${rep.status}`);
+
+  /* Le flux arrive gzippé. fetch le décompresse seul quand le serveur
+     annonce Content-Encoding: gzip ; Awin sert un .gz par le chemin d'URL
+     sans l'annoncer, il faut donc le défaire à la main. */
+  const brut = Buffer.from(await rep.arrayBuffer());
+  const gzip = brut[0] === 0x1f && brut[1] === 0x8b;
+  const csv = (gzip ? zlib.gunzipSync(brut) : brut).toString("utf8");
+
+  const lignes = csv.split(/\r?\n/).filter((l) => l.trim());
+  if (lignes.length < 2) throw new Error("catalogue Awin vide ou illisible");
+  const corps = lignes.slice(1);
+
+  /* L'échantillon se prend sur les LIGNES, avant de construire le moindre
+     objet. Un catalogue de marchand compte couramment des centaines de
+     milliers de références : les convertir toutes pour n'en garder que
+     soixante ferait passer le processus — celui-là même qui sert le site —
+     de quelques mégaoctets à plus d'un gigaoctet.
+
+     Un pas régulier plutôt qu'une tranche de tête : on parcourt tout le
+     catalogue au lieu de ne voir que son début, et le pas étant déterministe,
+     on retombe d'un passage à l'autre sur à peu près les mêmes produits —
+     ce qu'il faut pour qu'un historique de prix se construise. */
+  const pas = Math.max(1, Math.floor(corps.length / FICHES_PAR_PASSAGE));
+  const echantillon = [lignes[0]];
+  for (let i = 0; i < corps.length && echantillon.length <= FICHES_PAR_PASSAGE; i += pas) {
+    echantillon.push(corps[i]);
+  }
+
+  const offres = offresDuCatalogue(echantillon.join("\n"));
+  if (!offres.length) throw new Error("catalogue Awin illisible — aucune offre extraite");
+
+  // Une référence en rupture n'est pas une affaire. On ne l'écarte qu'ici :
+  // la disponibilité n'est lisible qu'une fois la ligne convertie.
+  const enStock = offres.filter((o) => o.disponible !== false);
+  const retenues = enStock.length ? enStock : offres;
+
+  console.log(
+    `[awin] ${cible.merchant || feeds.join(",")} : ${corps.length} référence(s) au catalogue, ` +
+    `${retenues.length} relevée(s) ce passage.`
+  );
+  return retenues;
 }
 
 /**
@@ -1447,6 +1548,7 @@ module.exports = {
   collecterFlux,
   collecterFirecrawl,
   collecterCible,
+  collecterAwin,
   lancerScan,
   etatCollecte,
 };
