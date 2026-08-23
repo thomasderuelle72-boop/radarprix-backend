@@ -221,29 +221,39 @@ async function pagePromotions(corps) {
 /**
  * Les promotions et codes promo publiés sur le réseau.
  *
- * `membership` vaut « joined » pour les seuls programmes rejoints, ou
- * « notjoined » pour voir ce que proposent les autres. Awin sert les deux :
- * un site peut donc afficher des codes avant d'être accepté nulle part —
- * mais sans lien d'affiliation utilisable sur les programmes non rejoints.
+ * `status` est OBLIGATOIRE — c'est ce qui manquait : sans lui, Awin répond
+ * 400 ou 500 selon le reste du corps, sans jamais dire lequel des champs
+ * fait défaut. Valeurs : « active », « expiringSoon », « upcoming ».
+ *
+ * La pagination se fait par NUMÉRO de page, pas par curseur : une première
+ * version suivait un `pagination.cursor` que ce service ne renvoie pas.
+ *
+ * `membership` vaut « joined » pour les seuls programmes rejoints. Awin
+ * annonce servir aussi les offres d'annonceurs non rejoints ; la valeur
+ * exacte n'étant pas documentée publiquement, elle reste paramétrable et
+ * l'erreur renvoyée nomme le champ fautif le cas échéant.
  */
-async function promotions({ membership = "joined", type = null, regionCodes = ["FR"], maxPages = 5 } = {}) {
+async function promotions({
+  membership = "joined",
+  status = "active",
+  type = "voucher",
+  regionCodes = ["FR"],
+  maxPages = 5,
+} = {}) {
   if (!configure()) return [];
 
-  const filtres = { membership, regionCodes };
-  if (type) filtres.type = type;
+  const filtres = { membership, status, type };
+  if (regionCodes && regionCodes.length) filtres.regionCodes = regionCodes;
 
   const toutes = [];
-  let curseur = null;
-  for (let page = 0; page < maxPages; page++) {
-    const corps = { filters: filtres, pagination: { pageSize: PAGE_PROMOS } };
-    if (curseur) corps.pagination.cursor = curseur;
-
-    const rep = await pagePromotions(corps);
+  for (let page = 1; page <= maxPages; page++) {
+    const rep = await pagePromotions({
+      filters: filtres,
+      pagination: { page, pageSize: PAGE_PROMOS },
+    });
     const lot = Array.isArray(rep && rep.data) ? rep.data : [];
     toutes.push(...lot);
-
-    curseur = rep && rep.pagination ? rep.pagination.cursor : null;
-    if (!curseur || lot.length === 0) break;
+    if (lot.length < PAGE_PROMOS) break;
     await new Promise((r) => setTimeout(r, ATTENTE_ENTRE_PAGES));
   }
   return toutes.map(enOffrePromo).filter(Boolean);

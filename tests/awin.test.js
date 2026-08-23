@@ -190,8 +190,17 @@ describe("promotions et codes promo", () => {
     }));
 
     await awin.promotions({ membership: "joined", type: "voucher" });
-    expect(corps.filters).toEqual({ membership: "joined", regionCodes: ["FR"], type: "voucher" });
-    expect(corps.pagination.pageSize).toBe(200);
+    /* `status` est obligatoire : sans lui Awin répond 400 ou 500 sans jamais
+       nommer le champ manquant — c'est ce qui a fait échouer la première
+       intégration en production. */
+    expect(corps.filters).toEqual({
+      membership: "joined",
+      status: "active",
+      type: "voucher",
+      regionCodes: ["FR"],
+    });
+    // Pagination par numéro de page, pas par curseur : ce service n'en rend pas.
+    expect(corps.pagination).toEqual({ page: 1, pageSize: 200 });
   });
 
   it("distingue un code à copier d'une promotion automatique", () => {
