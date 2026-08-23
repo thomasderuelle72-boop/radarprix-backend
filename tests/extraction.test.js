@@ -203,3 +203,30 @@ describe("produitsDepuisHtml — une page de rayon", () => {
     expect(produitsDepuisHtml("<html><body>rien</body></html>")).toEqual([]);
   });
 });
+
+describe("un nom de navigation n'est pas un nom de produit", () => {
+  const { nomFiable, decoderEntites } = require("../src/extraction.js");
+
+  it("remplace « Accueil » par le titre de la page", () => {
+    // Le cas exact vu en production : le fil d'Ariane d'Electro Dépôt
+    // fournissait le nom, et vingt-cinq fiches se sont appelées « Accueil ».
+    const html = `<html><head><meta property="og:title" content="R&#xE9;frig&#xE9;rateur VALBERG" /></head></html>`;
+    expect(nomFiable("Accueil", html)).toBe("Réfrigérateur VALBERG");
+    expect(nomFiable("Home", html)).toBe("Réfrigérateur VALBERG");
+  });
+
+  it("garde un vrai nom de produit", () => {
+    const html = `<html><head><meta property="og:title" content="Autre chose" /></head></html>`;
+    expect(nomFiable("Casque Sony WH-1000XM5", html)).toBe("Casque Sony WH-1000XM5");
+  });
+
+  it("retombe sur <title> quand il n'y a pas d'OpenGraph", () => {
+    const html = `<html><head><title>PC Portable MICROSOFT Surface | Electro Dépôt</title></head></html>`;
+    expect(nomFiable("Accueil", html)).toBe("PC Portable MICROSOFT Surface");
+  });
+
+  it("décode les entités des balises meta", () => {
+    expect(decoderEntites("R&#xE9;frig&#xE9;rateur 13&#x2C;5&quot;")).toBe('Réfrigérateur 13,5"');
+    expect(decoderEntites("Caf&eacute; &amp; th&#233;")).toBe("Caf&eacute; & thé");
+  });
+});

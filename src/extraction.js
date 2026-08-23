@@ -166,6 +166,21 @@ function etat(offre, produit) {
 /* ── Repli OpenGraph ──────────────────────────────────────────────
    Bien plus pauvre que schema.org, mais présent sur des pages qui n'ont
    aucun balisage produit — et il porte au moins l'image et le prix. */
+/* Les balises meta transportent des entités : « R&#xE9;frig&#xE9;rateur »
+   s'affiche tel quel si on ne les décode pas. */
+function decoderEntites(v) {
+  return String(v || "")
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&(?:quot|#34);/gi, '"')
+    .replace(/&(?:apos|rsquo|#39);/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .trim();
+}
+
 function baliseMeta(html, propriete) {
   const motif = new RegExp(
     `<meta[^>]+(?:property|name)=["']${propriete.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}["'][^>]+content=["']([^"']*)["']`,
@@ -176,7 +191,7 @@ function baliseMeta(html, propriete) {
     "i"
   );
   const m = String(html || "").match(motif) || String(html || "").match(inverse);
-  return m ? m[1] : null;
+  return m ? decoderEntites(m[1]) || null : null;
 }
 
 function produitDepuisOpenGraph(html) {
@@ -203,6 +218,25 @@ function produitDepuisOpenGraph(html) {
 /* ── Repli microdata ──────────────────────────────────────────────
    Le même vocabulaire schema.org, mais porté par des attributs itemprop
    au lieu d'un bloc JSON. Encore répandu sur les sites plus anciens. */
+/**
+ * Réduit le HTML à la portée de l'élément Product.
+ *
+ * Sans ce cadrage, `itemprop="name"` attrapait le PREMIER de la page — et
+ * sur beaucoup de sites c'est le fil d'Ariane. Toutes les fiches d'Electro
+ * Dépôt sont ainsi ressorties sous le nom « Accueil » : l'algorithme les a
+ * prises pour un même produit, en a tiré un prix de référence commun, et le
+ * site a publié vingt-cinq fausses erreurs de prix à −80 %.
+ *
+ * On part du marqueur Product et on garde ce qui suit : imparfait faute
+ * d'analyseur HTML, mais il place le fil d'Ariane hors champ, ce qui est
+ * tout ce qu'on lui demande.
+ */
+function portéeProduit(html) {
+  const texte = String(html || "");
+  const m = texte.match(/itemtype=["'][^"']*schema\.org\/Product["']/i);
+  return m ? texte.slice(m.index) : null;
+}
+
 function itemprop(html, nom) {
   const texte = String(html || "");
   // La valeur d'un itemprop ne vit pas toujours dans `content` : une image
@@ -217,7 +251,12 @@ function itemprop(html, nom) {
   return m ? m[1].trim() : null;
 }
 
-function produitDepuisMicrodata(html) {
+function produitDepuisMicrodata(htmlComplet) {
+  // Pas de marqueur Product : la page n'a pas de microdata produit, et lire
+  // ses itemprop reviendrait à lire le fil d'Ariane ou le pied de page.
+  const html = portéeProduit(htmlComplet);
+  if (!html) return null;
+
   const prix = nombre(itemprop(html, "price"));
   if (!Number.isFinite(prix)) return null;
   return {
@@ -307,6 +346,36 @@ function produitsDepuisHtml(html) {
   return fiches;
 }
 
+/* Libellés de navigation qu'un balisage mal cadré fait passer pour un nom
+   de produit. Vu en production : toutes les fiches d'Electro Dépôt sont
+   ressorties sous le nom « Accueil », premier maillon de leur fil
+   d'Ariane. L'algorithme les a prises pour un même produit, en a tiré un
+   prix de référence commun, et le site a publié vingt-cinq fausses erreurs
+   de prix à −80 %. */
+const NOMS_DE_NAVIGATION = /^(accueil|home|boutique|shop|produits?|products?|catalogue|catalog|menu|panier|recherche|search|catégories?|categories?)$/i;
+
+/** Titre de la page, dernier recours quand le balisage ne nomme rien. */
+function titrePage(html) {
+  const m = String(html || "").match(/<title[^>]*>([^<]{3,200})<\/title>/i);
+  if (!m) return null;
+  // « Nom du produit - Enseigne » : on garde ce qui précède le séparateur.
+  return decoderEntites(m[1]).split(/\s+[|–—]\s+|\s+-\s+(?=[A-ZÉÀ][a-zé]+\s*$)/)[0].trim() || null;
+}
+
+/**
+ * Corrige un nom que le balisage a mal rendu.
+ *
+ * Un libellé de navigation ne nomme aucun produit. Plutôt que de publier
+ * vingt fiches appelées « Accueil » — qui se retrouveraient groupées comme
+ * un même article — on reprend le titre de la page, qui le nomme presque
+ * toujours correctement.
+ */
+function nomFiable(nom, html) {
+  const propre = String(nom || "").trim();
+  if (propre && !NOMS_DE_NAVIGATION.test(propre)) return propre;
+  return baliseMeta(html, "og:title") || titrePage(html) || null;
+}
+
 /**
  * Fiche produit normalisée à partir du HTML d'une page marchande.
  *
@@ -322,7 +391,7 @@ function produitDepuisHtml(html) {
   if (produit && Number.isFinite(prix)) {
     const dispo = String(premiere(offre.availability, true) || "");
     return {
-      nom: premiere(produit.name),
+      nom: nomFiable(premiere(produit.name), html),
       description: premiere(produit.description),
       image: premiere(produit.image, true),
       marque: premiere(produit.brand),
@@ -340,11 +409,15 @@ function produitDepuisHtml(html) {
     };
   }
 
-  return produitDepuisMicrodata(html) || produitDepuisOpenGraph(html);
+  const repli = produitDepuisMicrodata(html) || produitDepuisOpenGraph(html);
+  if (repli) repli.nom = nomFiable(repli.nom, html);
+  return repli;
 }
 
 module.exports = {
   extraireJsonLd,
+  decoderEntites,
+  nomFiable,
   produitsDepuisHtml,
   produitDepuisHtml,
   produitDepuisOpenGraph,

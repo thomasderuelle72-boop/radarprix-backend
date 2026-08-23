@@ -769,6 +769,27 @@ async function collecterCatalogue(cible) {
   }
 
   if (!offres.length) throw new Error(`aucune fiche lisible sur ${tranche.length} relevée(s)`);
+
+  // Filet de sécurité, appris cher. Quand un marchand balise mal ses pages,
+  // toutes ses fiches ressortent sous le même nom — « Accueil » pour Electro
+  // Dépôt. L'analyse les groupe alors comme un seul produit, en tire un prix
+  // de référence commun, et publie autant de fausses erreurs de prix qu'il y
+  // a d'articles bon marché. Le site a affiché vingt-cinq « -80 % » inventés
+  // avant que ce contrôle n'existe.
+  //
+  // Un nom qui revient sur plus d'un tiers d'une tranche ne décrit pas un
+  // catalogue : il décrit une extraction cassée. On refuse la tranche
+  // entière plutôt que d'en publier une part fausse — et l'échec est
+  // journalisé, donc visible dans le tableau de bord.
+  const parNom = new Map();
+  for (const o of offres) parNom.set(o.name, (parNom.get(o.name) || 0) + 1);
+  const [nomDominant, occurrences] = [...parNom.entries()].sort((a, b) => b[1] - a[1])[0];
+  if (offres.length >= 6 && occurrences > offres.length / 3) {
+    throw new Error(
+      `extraction douteuse : « ${String(nomDominant).slice(0, 40)} » revient ${occurrences} fois sur ${offres.length}`
+    );
+  }
+
   return offres;
 }
 
@@ -977,6 +998,34 @@ function desactiverCiblesMortes() {
  *
  * Idempotent : la seconde exécution ne trouve plus rien.
  */
+/**
+ * Dépublie les fausses erreurs de prix nées d'une extraction cassée.
+ *
+ * Vingt-cinq offres ont été publiées sous le nom « Accueil », avec un prix
+ * de référence commun et des remises jusqu'à −93 %. Elles ne disparaîtront
+ * pas d'elles-mêmes : le prochain scan publie de nouvelles lignes sans
+ * toucher aux anciennes. Sur un site qui promet de repérer les erreurs de
+ * prix, en laisser d'inventées coûte plus que tout le reste.
+ */
+function retirerOffresMalNommees() {
+  const suspects = db
+    .prepare(
+      `SELECT title, COUNT(*) AS n FROM deals
+       WHERE detector = 'D3' AND published_at IS NOT NULL AND removed_at IS NULL
+       GROUP BY title HAVING n >= 5`
+    )
+    .all();
+
+  let retirees = 0;
+  for (const s of suspects) {
+    const r = db
+      .prepare("UPDATE deals SET removed_at = datetime('now') WHERE detector = 'D3' AND title = ? AND removed_at IS NULL")
+      .run(s.title);
+    retirees += r.changes;
+  }
+  return { titres: suspects.length, retirees };
+}
+
 function reparerLiensAgregateur() {
   const lignes = db
     // `removed_at IS NULL` rend l'opération vraiment idempotente : sans
@@ -1376,6 +1425,7 @@ module.exports = {
   semerCibles,
   desactiverCiblesMortes,
   reparerLiensAgregateur,
+  retirerOffresMalNommees,
   updateTarget,
   deleteTarget,
   parseFluxRSS,

@@ -611,3 +611,29 @@ describe("mise en pause des cibles mortes", () => {
     expect(collect.desactiverCiblesMortes().arretees).toBe(0);
   });
 });
+
+describe("garde-fou contre une extraction cassée", () => {
+  it("retire les offres publiées sous un titre répété", () => {
+    const { upsertDeal, publierDeal } = require("../src/dealsStore.js");
+    const base = { detector: "D3", type: "erreur", category: "tout", url: "https://m.fr/x" };
+    // Le cas réel : vingt-cinq fiches publiées sous le nom « Accueil », avec
+    // un prix de référence commun et des remises jusqu'à −93 %.
+    for (let i = 0; i < 7; i++) {
+      publierDeal(upsertDeal({ ...base, source: "cat", externalId: `a${i}`, title: "Accueil", price: 2 + i }));
+    }
+    publierDeal(upsertDeal({ ...base, source: "cat", externalId: "vrai", title: "Casque Sony WH-1000XM5", price: 279 }));
+
+    const r = collect.retirerOffresMalNommees();
+    expect(r.titres).toBe(1);
+    expect(r.retirees).toBe(7);
+
+    const restantes = db
+      .prepare("SELECT title FROM deals WHERE source = 'cat' AND removed_at IS NULL")
+      .all()
+      .map((l) => l.title);
+    expect(restantes).toEqual(["Casque Sony WH-1000XM5"]);
+
+    // Idempotent : rien à retirer au second passage.
+    expect(collect.retirerOffresMalNommees().retirees).toBe(0);
+  });
+});

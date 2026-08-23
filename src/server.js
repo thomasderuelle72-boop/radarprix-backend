@@ -98,6 +98,7 @@ const {
   semerCibles,
   desactiverCiblesMortes,
   reparerLiensAgregateur,
+  retirerOffresMalNommees,
   lancerScan,
   etatCollecte,
 } = require("./collect");
@@ -1241,6 +1242,17 @@ if (require.main === module) {
   // Les offres publiées avant la règle « jamais vers l'agrégateur » gardent
   // leur ancien lien tant qu'un scan ne les retouche pas — et il ne les
   // retouchera jamais si l'annonce a disparu de la source.
+  // Une extraction cassée publie des dizaines d'offres sous un même nom, et
+  // autant de fausses erreurs de prix. Elles ne partent pas d'elles-mêmes.
+  try {
+    const m = retirerOffresMalNommees();
+    if (m.retirees > 0) {
+      console.log(`[offres] ${m.retirees} offre(s) retirée(s) sous ${m.titres} titre(s) répété(s) — extraction cassée.`);
+    }
+  } catch (e) {
+    console.error(`[offres] nettoyage impossible : ${e.message}`);
+  }
+
   try {
     const r = reparerLiensAgregateur();
     if (r.examinees > 0) {
