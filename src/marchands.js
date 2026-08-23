@@ -313,12 +313,41 @@ function requeteDeTitre(titre) {
  * auquel cas mieux vaut une carte sans lien qu'un lien vers un concurrent.
  */
 function lienMarchand({ marchand, domaine, titre } = {}) {
+  return sortieMarchand({ marchand, domaine, titre }).url;
+}
+
+/**
+ * Le lien de sortie ET sa nature.
+ *
+ * La nature compte autant que l'adresse : une carte qui annonce « Voir le
+ * produit » et ouvre une page de résultats de recherche trompe son lecteur.
+ * L'interface a besoin de savoir ce qu'elle promet.
+ *
+ *   "produit"   — la fiche exacte, relevée par nous
+ *   "recherche" — la recherche du marchand sur le nom de l'article
+ *   "marchand"  — sa page d'accueil, faute de mieux
+ */
+function sortieMarchand({ marchand, domaine, titre } = {}) {
   const connu = marchand || (domaine ? marchandDepuisDomaine(domaine) : null);
   if (connu && connu.recherche) {
-    return connu.recherche.replace("{q}", encodeURIComponent(requeteDeTitre(titre)));
+    return {
+      url: connu.recherche.replace("{q}", encodeURIComponent(requeteDeTitre(titre))),
+      type: "recherche",
+      marchand: connu,
+    };
   }
   const hote = (connu && connu.domaine) || (domaine ? String(domaine).replace(/^www\./, "") : null);
-  return hote ? `https://www.${hote}/` : null;
+  return {
+    url: hote ? `https://www.${hote}/` : null,
+    type: hote ? "marchand" : null,
+    marchand: connu || null,
+  };
+}
+
+/** Domaine d'une enseigne, pour aller chercher son logo. */
+function domaineDeMarchand(nom) {
+  const m = nom ? marchandDepuisTexte(nom) : null;
+  return m ? m.domaine : null;
 }
 
 module.exports = {
@@ -327,6 +356,8 @@ module.exports = {
   marchandDepuisTexte,
   reconnaitreMarchand,
   lienMarchand,
+  sortieMarchand,
+  domaineDeMarchand,
   requeteDeTitre,
   pagePromo,
   normaliser,

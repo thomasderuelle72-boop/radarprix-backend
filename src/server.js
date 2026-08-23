@@ -316,6 +316,11 @@ function enFormeHeritee(d) {
     caracteristiques: (d.payload && d.payload.caracteristiques) || null,
     startsAt: d.startsAt || null,
     expiresAt: d.expiresAt || null,
+    // Ce que le lien ouvre : "produit", "recherche" ou "marchand". La carte
+    // doit promettre ce qu'elle tient.
+    lienType: (d.payload && d.payload.lienType) || null,
+    // Domaine de l'enseigne, pour son logo.
+    marchandDomaine: (d.payload && d.payload.marchandDomaine) || null,
   };
 }
 

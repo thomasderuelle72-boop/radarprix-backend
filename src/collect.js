@@ -32,7 +32,7 @@ const {
   decouvrirFiches, enregistrerFiches, prochainesFiches,
   marquerRelevee, marquerEchec, compterFiches, recuperer,
 } = require("./catalogue");
-const { lienMarchand, marchandDepuisTexte } = require("./marchands");
+const { sortieMarchand, marchandDepuisTexte, domaineDeMarchand } = require("./marchands");
 
 /* Agent unique, au format conventionnel des robots — celui de Googlebot :
    « Mozilla/5.0 (compatible; Nom/version; +adresse) ». Il nomme RadarPrix
@@ -750,8 +750,9 @@ async function collecterCatalogue(cible) {
         price: p.prix,
         refPriceAnnonce: p.prixReference,
         // Le lien est la fiche elle-même : on envoie l'acheteur exactement
-        // là où le prix a été relevé.
+        // là où le prix a été relevé. C'est le seul canal qui le permette.
         url: fiche.url,
+        lienType: "produit",
         seller: cible.merchant || null,
         img: p.image,
         description: p.description ? String(p.description).slice(0, 1200) : null,
@@ -1054,10 +1055,10 @@ function reparerLiensAgregateur() {
   }
 
   for (const l of lignes) {
-    const lien = lienMarchand({
+    const lien = sortieMarchand({
       marchand: l.merchant ? marchandDepuisTexte(l.merchant) : null,
       titre: l.title,
-    });
+    }).url;
     if (lien) {
       db.prepare("UPDATE deals SET url = ? WHERE id = ?").run(lien, l.id);
       repares++;
@@ -1244,10 +1245,12 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         // faut suivre.
         for (const a of analyses) {
           if (estPepper(a.url)) {
-            a.url = lienMarchand({
+            const sortie = sortieMarchand({
               marchand: a.seller ? marchandDepuisTexte(a.seller) : null,
               titre: a.name,
             });
+            a.url = sortie.url;
+            a.lienType = sortie.type;
           }
         }
 
@@ -1326,6 +1329,12 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
               // texte. Permet de mesurer la qualité du balisage marchand
               // par marchand plutôt que de la supposer.
               balisage: a.balisage || null,
+              // Ce que le lien ouvre vraiment. Annoncer « Voir le produit »
+              // pour aboutir sur une page de résultats trompe le lecteur.
+              lienType: a.lienType || (a.url ? "produit" : null),
+              // Domaine de l'enseigne, pour afficher son logo plutôt que
+              // son initiale.
+              marchandDomaine: domaineDeMarchand(a.seller || cible.merchant),
             },
           });
           publierDeal(id);
