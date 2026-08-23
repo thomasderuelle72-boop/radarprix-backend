@@ -34,6 +34,7 @@ Point d'entrée : `npm start` → `src/server.js` (port `PORT` ou 3001).
 | `categories.js` | Rubriques des sources ramenées aux catégories RadarPrix |
 | `extraction.js` | Lecture d'une fiche produit telle que le marchand la publie : JSON-LD schema.org, microdata, OpenGraph |
 | `pepper.js` | Lecture des sites de bons plans bâtis sur Pepper (Dealabs, Mydealz…) |
+| `catalogue.js` | Suivi du catalogue d'un marchand par son propre sitemap : découverte, échantillon stable, rotation des relevés |
 | `awin.js` | Catalogues produits des marchands via le réseau d'affiliation — la voie vers l'indépendance |
 | `auth.js`, `moderation.js`, `messagerie.js`, `forum.js`, `notifications.js`, `badges.js`, `ranking.js`, `reputation.js`, `persistance.js`, `radarEtat.js`, `reinitialisation.js`, `env.js` | Comptes/sécurité, validation/anti-spam, salon + MP, forum, notifications, badges, score hot, fiabilité marchands, sauvegarde/restauration de la base, état public du radar, reset admin, chargement env |
 
@@ -98,7 +99,7 @@ remplace jamais une variable déjà présente dans l'environnement réel.
 
 ```bash
 npm install
-npm test        # vitest — 134 tests (tests/*.test.js, base SQLite temporaire isolée par fichier)
+npm test        # vitest — 146 tests (tests/*.test.js, base SQLite temporaire isolée par fichier)
 npm run lint    # eslint
 npm run scan    # un scan complet de toutes les cibles actives (cron)
 ```
@@ -119,11 +120,30 @@ Mesuré, pas supposé, le 22 août 2026 :
   Dealabs rend cinquante offres avec prix de référence, marchand, image et
   date de fin. C'est ce qui remplit le site aujourd'hui — un dépannage, pas
   une fondation.
-- **La voie indépendante est le réseau d'affiliation** (`awin.js`). Un
-  marchand qui refuse un robot anonyme publie volontiers son catalogue à
-  ses partenaires : nom, description, image, prix, prix conseillé, EAN, et
-  un lien qui mène chez lui. Il faut `AWIN_PUBLISHER_ID`, `AWIN_API_TOKEN`
+- **Cinq marchands se laissent parcourir par leur propre sitemap**, et
+  balisent leurs fiches en schema.org. Mesuré sur les 84 enseignes du
+  registre : LDLC (78 667 fiches, 6/6 lues), JouéClub (40 001, 4/4), Ikea
+  (4 526, 4/4), Electro Dépôt (2 915, 4/4), Nature & Découvertes (107,
+  4/4). C'est `catalogue.js`, et c'est **le seul canal dont les anomalies
+  sont les nôtres** : on relève des prix ordinaires, encore et encore, et
+  `algorithm.js` dit lequel a décroché.
+- **Le réseau d'affiliation reste la voie la plus riche** (`awin.js`) :
+  catalogue complet avec description, EAN et prix conseillé, et un lien
+  qui mène chez le marchand. Il faut `AWIN_PUBLISHER_ID`, `AWIN_API_TOKEN`
   et `AWIN_FEED_KEY`. Le diagnostic au démarrage dit ce qui manque.
+
+## Arithmétique de la rotation
+
+Un passage relève 60 fiches, le cron passe 8 fois par jour : 480 relevés
+quotidiens par marchand. D'où le plafond de **800 fiches suivies** par
+catalogue — on repasse sur chacune toutes les 40 heures, ce qu'il faut pour
+voir un prix décrocher. Suivre les 78 667 fiches de LDLC ferait revenir sur
+chacune tous les 164 jours, autant ne rien mesurer.
+
+Ce réglage repère une baisse qui dure, **pas une erreur de prix de vingt
+minutes**. Celle-là demanderait de surveiller quelques dizaines de produits
+en permanence — même mécanisme, autre réglage, à ajouter quand on saura
+quels produits surveiller.
 
 ## Règle de sortie
 

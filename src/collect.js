@@ -28,6 +28,10 @@ const { MARCHANDS, reconnaitreMarchand } = require("./marchands");
 const { produitDepuisHtml, produitsDepuisHtml } = require("./extraction");
 const { categorieDepuisLibelle } = require("./categories");
 const { estPepper, extraireFils, offreDePepper } = require("./pepper");
+const {
+  decouvrirFiches, enregistrerFiches, prochainesFiches,
+  marquerRelevee, marquerEchec, compterFiches, recuperer,
+} = require("./catalogue");
 const { lienMarchand, marchandDepuisTexte } = require("./marchands");
 
 /* Agent unique, au format conventionnel des robots — celui de Googlebot :
@@ -69,6 +73,14 @@ try {
   if (!/duplicate column/i.test(e.message)) throw e;
 }
 
+/* Quatrième canal : le catalogue d'un marchand, découvert par son propre
+   sitemap. C'est le seul qui produise des anomalies mesurées par nous. */
+try {
+  db.exec("ALTER TABLE watch_targets ADD COLUMN catalogue_url TEXT");
+} catch (e) {
+  if (!/duplicate column/i.test(e.message)) throw e;
+}
+
 // ── Cibles suivies ──────────────────────────────────────────────
 
 function decouperDomaines(cible) {
@@ -87,6 +99,7 @@ function enJson(ligne) {
     merchant: ligne.merchant,
     feedUrl: ligne.feed_url,
     promoUrl: ligne.promo_url || null,
+    catalogueUrl: ligne.catalogue_url || null,
     searchDomains: decouperDomaines(ligne),
     active: Boolean(ligne.active),
     createdAt: ligne.created_at,
@@ -111,24 +124,25 @@ function getTarget(id) {
  * un flux, ou au moins un domaine marchand pour Firecrawl. Une cible sans
  * aucune source ne ferait que des erreurs à chaque scan.
  */
-function addTarget({ query, category, merchant, feedUrl, promoUrl, domains }) {
+function addTarget({ query, category, merchant, feedUrl, promoUrl, catalogueUrl, domains }) {
   const propre = String(query || "").trim();
   if (propre.length < 3) return { ok: false, error: "Le produit suivi doit faire au moins 3 caractères." };
   const flux = feedUrl ? String(feedUrl).trim() : "";
   const promo = promoUrl ? String(promoUrl).trim() : "";
+  const catalogue = catalogueUrl ? String(catalogueUrl).trim().replace(/\/+$/, "") : "";
   const domaines = Array.isArray(domains) ? domains.map((d) => String(d).trim()).filter(Boolean) : [];
-  if (!flux && !promo && domaines.length === 0) {
-    return { ok: false, error: "Il faut un flux (feedUrl), une page promotions (promoUrl) ou au moins un domaine marchand (domains)." };
+  if (!flux && !promo && !catalogue && domaines.length === 0) {
+    return { ok: false, error: "Il faut un flux (feedUrl), une page promotions (promoUrl), un catalogue (catalogueUrl) ou au moins un domaine marchand (domains)." };
   }
-  for (const [valeur, quoi] of [[flux, "du flux"], [promo, "de la page promotions"]]) {
+  for (const [valeur, quoi] of [[flux, "du flux"], [promo, "de la page promotions"], [catalogue, "du catalogue"]]) {
     if (valeur && !/^https?:\/\//.test(valeur)) {
       return { ok: false, error: `L'URL ${quoi} doit commencer par http:// ou https://` };
     }
   }
   const info = db
     .prepare(
-      `INSERT INTO watch_targets (query, category, merchant, feed_url, promo_url, search_domains)
-       VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO watch_targets (query, category, merchant, feed_url, promo_url, catalogue_url, search_domains)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       propre,
@@ -136,6 +150,7 @@ function addTarget({ query, category, merchant, feedUrl, promoUrl, domains }) {
       merchant ? String(merchant).trim() : null,
       flux || null,
       promo || null,
+      catalogue || null,
       JSON.stringify(domaines)
     );
   return { ok: true, target: getTarget(info.lastInsertRowid) };
@@ -682,6 +697,81 @@ async function collecterFirecrawl(cible) {
   return offres;
 }
 
+/* Nombre de fiches relevées à chaque passage d'un catalogue. Cinquante mille
+   fiches d'un coup seraient aussi inutiles qu'agressives : on en prend une
+   tranche, et le tour complet se fait en plusieurs jours. Huit passages par
+   jour à soixante fiches font près de cinq cents relevés quotidiens par
+   marchand — assez pour voir bouger un prix, assez peu pour rester un
+   visiteur poli. */
+const FICHES_PAR_PASSAGE = 60;
+
+/* Une pause entre deux fiches. Un marchand qui nous laisse lire son
+   catalogue mérite qu'on ne le martèle pas ; et un robot trop pressé se
+   fait bloquer, ce qui coûte la source entière. */
+const PAUSE_ENTRE_FICHES = 400;
+const dormir = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Relève une tranche du catalogue d'un marchand.
+ *
+ * C'est le seul canal dont les anomalies sont les nôtres. Les autres
+ * rapportent ce qu'un tiers a déjà qualifié d'affaire ; celui-ci relève des
+ * prix ordinaires, encore et encore, et laisse algorithm.js dire lequel a
+ * décroché. Un prix tombé de 900 € à 90 € ne se voit que si l'on a relevé
+ * les 900 € la veille.
+ */
+async function collecterCatalogue(cible) {
+  const racine = cible.catalogueUrl;
+
+  // Le catalogue se redécouvre quand il est vide ou presque : un sitemap
+  // change lentement, le relire à chaque passage serait du gaspillage.
+  if (compterFiches(cible.id) < FICHES_PAR_PASSAGE) {
+    const urls = await decouvrirFiches(racine);
+    const ajoutees = enregistrerFiches(cible.id, urls);
+    console.log(`[catalogue] ${cible.merchant || racine} : ${urls.length} fiche(s) listée(s), ${ajoutees} nouvelle(s).`);
+  }
+
+  const tranche = prochainesFiches(cible.id, FICHES_PAR_PASSAGE);
+  if (!tranche.length) throw new Error("catalogue vide — aucune fiche à relever");
+
+  const offres = [];
+  for (const fiche of tranche) {
+    try {
+      const page = await recuperer(fiche.url, 20000);
+      const p = page.texte ? produitDepuisHtml(page.texte) : null;
+      if (!p || !Number.isFinite(p.prix)) {
+        marquerEchec(fiche.id);
+        continue;
+      }
+      marquerRelevee(fiche.id);
+      offres.push({
+        externalId: p.sku || fiche.url,
+        name: String(p.nom || "").slice(0, 200),
+        price: p.prix,
+        refPriceAnnonce: p.prixReference,
+        // Le lien est la fiche elle-même : on envoie l'acheteur exactement
+        // là où le prix a été relevé.
+        url: fiche.url,
+        seller: cible.merchant || null,
+        img: p.image,
+        description: p.description ? String(p.description).slice(0, 1200) : null,
+        caracteristiques: p.caracteristiques || [],
+        itemCondition: p.etat || "neuf",
+        finOffre: p.finOffre,
+        debutOffre: p.debutOffre,
+        category: cible.category,
+        balisage: p.source,
+      });
+    } catch {
+      marquerEchec(fiche.id);
+    }
+    await dormir(PAUSE_ENTRE_FICHES);
+  }
+
+  if (!offres.length) throw new Error(`aucune fiche lisible sur ${tranche.length} relevée(s)`);
+  return offres;
+}
+
 /**
  * Collecte un site de bons plans bâti sur Pepper (Dealabs et ses jumeaux).
  *
@@ -829,6 +919,9 @@ function collecterCible(cible) {
   // vingt articles vaut mieux que sept appels qui en rapportent six.
   // Les sites Pepper ont leur propre lecteur : ils ne balisent pas leurs
   // pages en schema.org, mais y embarquent bien mieux que ça.
+  // Le catalogue passe en premier : c'est le canal dont les anomalies sont
+  // les nôtres, mesurées et non rapportées.
+  if (cible.catalogueUrl) return collecterCatalogue(cible);
   if (cible.promoUrl && estPepper(cible.promoUrl)) return collecterPepper(cible);
   if (cible.promoUrl) return collecterPagePromo(cible);
   if (cible.searchDomains && cible.searchDomains.length > 0) return collecterFirecrawl(cible);
@@ -930,9 +1023,35 @@ function reparerLiensAgregateur() {
 /* Sites de bons plans bâtis sur Pepper. Leur page d'accueil porte une
    cinquantaine d'offres avec prix de référence, marchand, image et date de
    fin — mesuré : 53 offres dont 34 avec référence, contre 30 offres et zéro
-   référence dans le flux RSS du même site. */
+   référence dans le flux RSS du même site.
+
+   Ce canal rapporte ce qu'une communauté a déjà qualifié d'affaire. Utile,
+   mais ce ne sont pas nos données : c'est un dépannage, pas une fondation. */
 const SOURCES_COMMUNAUTAIRES = [
   { nom: "Bons plans Dealabs", url: "https://www.dealabs.com/" },
+];
+
+/* Marchands dont le catalogue est parcourable par leur propre sitemap, et
+   dont les fiches portent un balisage schema.org lisible.
+
+   La liste n'est pas choisie, elle est mesurée : les quatre-vingt-quatre
+   enseignes du registre ont été sondées le 23 août 2026 — robots.txt,
+   sitemaps, puis quatre fiches tirées au hasard dans le catalogue. La
+   plupart refusent tout robot (403 Cloudflare, DataDome) ou n'exposent
+   aucun sitemap. Celles-ci ont répondu :
+
+     LDLC          78 667 fiches listées   6/6 fiches lues
+     JouéClub      40 001                  4/4
+     Ikea           4 526                  4/4
+     Electro Dépôt  2 915                  4/4
+     N&D              107                  4/4
+
+   C'est le seul canal dont les anomalies seront les nôtres. */
+const CATALOGUES_MARCHANDS = [
+  { nom: "LDLC", racine: "https://www.ldlc.com", categorie: "hightech" },
+  { nom: "JouéClub", racine: "https://www.joueclub.fr", categorie: "tout" },
+  { nom: "Electro Dépôt", racine: "https://www.electrodepot.fr", categorie: "maison" },
+  { nom: "Nature & Découvertes", racine: "https://www.natureetdecouvertes.com", categorie: "tout" },
 ];
 
 /**
@@ -965,6 +1084,22 @@ function semerCibles({ limite = Infinity } = {}) {
     if (creees >= limite) break;
     if (existantes.has(source.url)) continue;
     const r = addTarget({ query: source.nom, category: "tout", promoUrl: source.url });
+    if (r.ok) creees++;
+  }
+
+  // Les catalogues marchands : le canal qui mesure au lieu de rapporter.
+  const dejaSuivis = new Set(
+    db.prepare("SELECT catalogue_url FROM watch_targets WHERE catalogue_url IS NOT NULL").all().map((r) => r.catalogue_url)
+  );
+  for (const m of CATALOGUES_MARCHANDS) {
+    if (creees >= limite) break;
+    if (dejaSuivis.has(m.racine)) continue;
+    const r = addTarget({
+      query: `Catalogue ${m.nom}`,
+      category: m.categorie,
+      merchant: m.nom,
+      catalogueUrl: m.racine,
+    });
     if (r.ok) creees++;
   }
 

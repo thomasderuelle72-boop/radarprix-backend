@@ -62,10 +62,21 @@ function trouverProduit(objets) {
   return objets.find((o) => estType(o, "Product")) || null;
 }
 
-/** Une valeur schema.org peut être un objet, un tableau, ou une chaîne. */
-function premiere(v) {
-  if (Array.isArray(v)) return premiere(v[0]);
-  if (v && typeof v === "object") return v.url || v.contentUrl || v["@id"] || v.name || v.value || null;
+/**
+ * Une valeur schema.org peut être un objet, un tableau, ou une chaîne.
+ *
+ * `name` passe avant `url` : une marque déclarée en objet Brand porte les
+ * deux, et prendre l'adresse rendait « https://www.ldlc.com/ricoh/… » là où
+ * la carte doit afficher « Ricoh ». Les images font l'inverse — leur valeur
+ * utile est l'adresse — d'où le paramètre.
+ */
+function premiere(v, prefererUrl = false) {
+  if (Array.isArray(v)) return premiere(v[0], prefererUrl);
+  if (v && typeof v === "object") {
+    return prefererUrl
+      ? v.url || v.contentUrl || v.name || v["@id"] || v.value || null
+      : v.name || v.value || v.url || v.contentUrl || v["@id"] || null;
+  }
   return v ?? null;
 }
 
@@ -146,7 +157,7 @@ function caracteristiques(produit) {
 
 /** État de l'article d'après itemCondition (vocabulaire schema.org). */
 function etat(offre, produit) {
-  const brut = String(premiere(offre?.itemCondition) || premiere(produit?.itemCondition) || "").toLowerCase();
+  const brut = String(premiere(offre?.itemCondition, true) || premiere(produit?.itemCondition, true) || "").toLowerCase();
   if (/refurbished/.test(brut)) return "reconditionne";
   if (/used|damaged/.test(brut)) return "occasion";
   return "neuf";
@@ -232,13 +243,13 @@ function ficheDepuisProduit(produit) {
   const prix = offre ? nombre(offre.price) : null;
   if (!Number.isFinite(prix)) return null;
 
-  const dispo = String(premiere(offre.availability) || "");
+  const dispo = String(premiere(offre.availability, true) || "");
   return {
     nom: premiere(produit.name),
     description: premiere(produit.description),
-    image: premiere(produit.image),
+    image: premiere(produit.image, true),
     marque: premiere(produit.brand),
-    url: premiere(offre.url) || premiere(produit.url) || null,
+    url: premiere(offre.url, true) || premiere(produit.url, true) || null,
     prix,
     prixReference: prixDeReference(offre, prix),
     devise: premiere(offre.priceCurrency) || "EUR",
@@ -309,11 +320,11 @@ function produitDepuisHtml(html) {
   const prix = offre ? nombre(offre.price) : null;
 
   if (produit && Number.isFinite(prix)) {
-    const dispo = String(premiere(offre.availability) || "");
+    const dispo = String(premiere(offre.availability, true) || "");
     return {
       nom: premiere(produit.name),
       description: premiere(produit.description),
-      image: premiere(produit.image),
+      image: premiere(produit.image, true),
       marque: premiere(produit.brand),
       prix,
       prixReference: prixDeReference(offre, prix),

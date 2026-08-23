@@ -542,10 +542,13 @@ describe("un flux d'agrégateur réel", () => {
 describe("semis des cibles", () => {
   it("crée les sources qui fonctionnent, et rien d'autre", () => {
     const premier = collect.semerCibles();
-    expect(premier.creees).toBe(1);
+    // Un agrégateur, plus les catalogues marchands vérifiés.
+    expect(premier.creees).toBeGreaterThan(1);
 
     const cibles = collect.listTargets();
     expect(cibles.map((c) => c.promoUrl)).toContain("https://www.dealabs.com/");
+    // Le canal indépendant : nos propres relevés de prix.
+    expect(cibles.map((c) => c.catalogueUrl)).toContain("https://www.ldlc.com");
     // Les pages « promotions » des enseignes ne sont plus semées : mesurées
     // une à une, aucune ne rend de produit.
     expect(cibles.filter((c) => c.promoUrl && c.promoUrl.includes("fnac"))).toHaveLength(0);
