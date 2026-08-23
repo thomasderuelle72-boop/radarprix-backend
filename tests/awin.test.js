@@ -273,3 +273,69 @@ describe("droit d'employer le lien de tracking", () => {
     expect(o.advertiserId).toBe("77");
   });
 });
+
+/* Le flux brut n'est pas publiable tel quel. Chaque cas ci-dessous vient
+   des 32 premières promotions reçues en production le 23 août 2026. */
+describe("nettoyage des promotions du réseau", () => {
+  const base = {
+    promotionId: 1,
+    advertiser: { id: 9, name: "Samsung FR" },
+    urlTracking: "https://www.awin1.com/cread.php?awinmid=9",
+  };
+
+  it("retrouve le code quand le titre EST le code", () => {
+    // Vu tel quel : titre « JEDEMENAGE », voucher.code vide.
+    const o = awin.enOffrePromo({
+      ...base,
+      title: "JEDEMENAGE",
+      description: "10% de remise immédiate sur une sélection de produits",
+      voucher: null,
+    });
+    expect(o.voucherCode).toBe("JEDEMENAGE");
+    expect(o.typePromo).toBe("code");
+    // Un code ne décrit rien : c'est la description qui porte l'offre.
+    expect(o.name).toBe("10% de remise immédiate sur une sélection de produits");
+  });
+
+  it("retrouve le code noyé dans le texte", () => {
+    const o = awin.enOffrePromo({
+      ...base,
+      title: "15 % de réduction pour la rentrée scolaire",
+      description: "Copiez le code et collez-le dans votre panier : RENTREE15",
+      voucher: null,
+    });
+    expect(o.voucherCode).toBe("RENTREE15");
+    expect(o.name).toBe("15 % de réduction pour la rentrée scolaire");
+  });
+
+  it("préfère le code déclaré quand il existe", () => {
+    const o = awin.enOffrePromo({ ...base, title: "Offre", voucher: { code: "OFFICIEL10" } });
+    expect(o.voucherCode).toBe("OFFICIEL10");
+  });
+
+  it("écarte les marchés étrangers, que l'API laisse passer", () => {
+    /* regionCodes: ["FR"] est ignoré en silence : Samsung BG, Samsung RO et
+       La Redoute UK sont arrivés malgré la demande. Un site français qui
+       affiche une promotion roumaine ne se rattrape pas en expliquant que
+       l'API a mal filtré. */
+    for (const nom of ["Samsung BG", "Samsung RO", "La Redoute UK", "Zalando DE"]) {
+      expect(awin.enOffrePromo({ ...base, advertiser: { id: 9, name: nom }, title: "Offre" })).toBeNull();
+    }
+    expect(awin.enOffrePromo({ ...base, title: "Offre" })).not.toBeNull();
+  });
+
+  it("rend un nom d'enseigne, pas un nom de programme", () => {
+    const o = awin.enOffrePromo({
+      ...base,
+      advertiser: { id: 3, name: "Momox shop FR (revente/outbound)" },
+      title: "12 % de réduction",
+    });
+    expect(o.seller).toBe("Momox shop");
+  });
+
+  it("distingue une promotion automatique d'un code à copier", () => {
+    const auto = awin.enOffrePromo({ ...base, title: "Livraison offerte dès 49 €", voucher: null });
+    expect(auto.typePromo).toBe("promo");
+    expect(auto.voucherCode).toBeNull();
+  });
+});

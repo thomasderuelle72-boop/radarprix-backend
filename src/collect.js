@@ -1213,6 +1213,17 @@ async function collecterPromotionsAwin() {
   }
 
   const offres = await promotionsAwin({ membership: "all" });
+  if (!offres.length) return [];
+
+  /* Le réseau est relu en entier à chaque passage : ce qui n'y est plus, ou
+     ce que le nettoyage écarte désormais, doit disparaître du site. Sans ce
+     retrait, les promotions expirées et celles publiées avant l'affinage des
+     règles resteraient en ligne indéfiniment — rien d'autre ne les repasse
+     en revue. Elles sont retirées d'abord, republiées ensuite. */
+  db.prepare(
+    "UPDATE deals SET removed_at = datetime('now') WHERE source = 'awin-promos' AND removed_at IS NULL"
+  ).run();
+
   const publiees = [];
   for (const o of offres) {
     if (!rejoints.has(String(o.advertiserId))) {
@@ -1239,6 +1250,9 @@ async function collecterPromotionsAwin() {
         marchandDomaine: domaineDeMarchand(o.seller),
       },
     });
+    // upsertDeal retrouve la ligne par (source, external_id) : republier
+    // remet removed_at à zéro sur celles qui sont toujours valables.
+    db.prepare("UPDATE deals SET removed_at = NULL WHERE id = ?").run(id);
     publierDeal(id);
     publiees.push(id);
   }

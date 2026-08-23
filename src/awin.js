@@ -261,14 +261,75 @@ async function promotions({
   return toutes.map(enOffrePromo).filter(Boolean);
 }
 
+/* ── Nettoyage des promotions ─────────────────────────────────────────
+   Le flux brut n'est pas publiable tel quel. Relevé sur les 32 premières
+   promotions reçues en production :
+
+     · `voucher.code` est vide alors que le code EXISTE — les annonceurs
+       l'écrivent dans le titre (« JEDEMENAGE ») ou noyé dans le texte
+       (« Copiez le code et collez-le dans votre panier : RENTREE15 ») ;
+     · les filtres `regionCodes` et `type` sont ignorés en silence par
+       l'API : des programmes bulgares, roumains et britanniques arrivent
+       malgré une demande explicite de la France ;
+     · les noms de programme ne sont pas des noms d'enseigne —
+       « Momox shop FR (revente/outbound) » ;
+     · les descriptions s'adressent aux affiliés, pas aux acheteurs
+       (« Faites la promotion de la promotion… »).
+
+   D'où ce nettoyage côté maison plutôt qu'une confiance dans les filtres
+   d'une API qui les ignore sans le dire. */
+
+/** Un code promo : lettres capitales et chiffres, sans espace. */
+const RESSEMBLE_A_UN_CODE = /^[A-Z0-9][A-Z0-9-]{3,19}$/;
+
+/* « Copiez le code … : RENTREE15 », « avec le code PROMO20 », « code : X ». */
+const CODE_DANS_LE_TEXTE = /\bcodes?\b[^:.]{0,40}[:\s]\s*([A-Z0-9][A-Z0-9-]{3,19})\b/;
+
+/** Le code de réduction, où qu'il se cache. */
+function codeDeReduction(p) {
+  const declare = p.voucher && p.voucher.code ? String(p.voucher.code).trim() : "";
+  if (declare) return declare;
+
+  const titre = String(p.title || "").trim();
+  if (RESSEMBLE_A_UN_CODE.test(titre)) return titre;
+
+  const trouve = CODE_DANS_LE_TEXTE.exec(`${titre} ${p.description || ""}`);
+  return trouve ? trouve[1] : null;
+}
+
+/* Suffixes de pays sur les noms de programme. Awin publie un programme par
+   marché : « Samsung FR », « Samsung BG », « La Redoute UK ». Seul le marché
+   français nous intéresse — un site français qui affiche une promotion
+   roumaine ne se rattrape pas en expliquant que l'API a mal filtré. */
+const PAYS_ETRANGER = /\b(BG|RO|UK|GB|DE|ES|IT|NL|PL|SE|DK|FI|NO|AT|CH|BE|IE|PT|CZ|HU|US|CA|AU|BR)\b\s*$/i;
+
+/** Le nom d'enseigne, débarrassé de ce qui n'intéresse que les affiliés. */
+function nomDEnseigne(brut) {
+  return String(brut || "")
+    // « (revente/outbound) », « (APP) » : de la cuisine interne au réseau.
+    .replace(/\s*\([^)]*\)/g, "")
+    .replace(/\s+(FR|France)\s*$/i, "")
+    .trim();
+}
+
 /** Une promotion Awin ramenée à la forme que le reste du site manipule. */
 function enOffrePromo(p) {
-  const marchand = (p.advertiser && p.advertiser.name) || null;
-  const titre = (p.title || p.description || "").trim();
+  const programme = (p.advertiser && p.advertiser.name) || "";
+  // Un marché étranger est écarté avant tout le reste : c'est le seul
+  // filtre dont on soit sûr, puisque celui de l'API ne s'applique pas.
+  if (!programme || PAYS_ETRANGER.test(programme)) return null;
+
+  const marchand = nomDEnseigne(programme);
+  const code = codeDeReduction(p);
+
+  /* Quand le titre EST le code, il ne décrit rien : c'est la description
+     qui porte l'offre (« 10% de remise immédiate sur une sélection »). */
+  const brut = String(p.title || "").trim();
+  const titre = (RESSEMBLE_A_UN_CODE.test(brut) ? p.description || brut : brut || p.description || "").trim();
+
   // Sans marchand ni lien, la carte ne serait pas actionnable.
   if (!titre || !marchand || !p.urlTracking) return null;
 
-  const code = p.voucher && p.voucher.code ? String(p.voucher.code).trim() : null;
   return {
     externalId: String(p.promotionId),
     // L'annonceur, pour savoir si l'on a le droit d'employer son lien de
