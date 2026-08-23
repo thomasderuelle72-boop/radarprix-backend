@@ -318,6 +318,9 @@ function enFormeHeritee(d) {
     baseReference: (d.payload && d.payload.baseReference) || null,
     marchandsComparés: (d.payload && d.payload.marchandsComparés) || 0,
     itemCondition: d.itemCondition || "neuf",
+    // Le code à copier. Le flux unifié l'affichait déjà ; la page « Deals »
+    // ne le recevait même pas, alors que c'est elle que l'onglet mobile ouvre.
+    voucherCode: d.voucherCode || null,
     // Ce que la fiche du marchand déclare en plus du prix : de quoi rendre
     // une carte informative plutôt qu'une ligne de tarif.
     description: d.description || null,
