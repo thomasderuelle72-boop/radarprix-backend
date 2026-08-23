@@ -587,3 +587,24 @@ describe("réparation des liens déjà publiés", () => {
     expect(collect.reparerLiensAgregateur().examinees).toBe(0);
   });
 });
+
+describe("mise en pause des cibles mortes", () => {
+  it("arrête les pages promotions d'enseignes, garde les sources qui marchent", () => {
+    collect.addTarget({ query: "Promotions Fnac", promoUrl: "https://www.fnac.com/bons-plans" });
+    collect.addTarget({ query: "Promotions Boulanger", promoUrl: "https://www.boulanger.com/c/bons-plans" });
+    collect.addTarget({ query: "Bons plans Dealabs", promoUrl: "https://www.dealabs.com/" });
+    collect.addTarget({ query: "Catalogue marchand", feedUrl: "https://magasin.fr/feed.xml" });
+
+    const r = collect.desactiverCiblesMortes();
+    expect(r.arretees).toBe(2);
+
+    const actives = collect.listTargets({ actives: true }).map((c) => c.query);
+    // L'agrégateur et le flux marchand continuent : eux rendent des offres.
+    expect(actives).toContain("Bons plans Dealabs");
+    expect(actives).toContain("Catalogue marchand");
+    expect(actives).not.toContain("Promotions Fnac");
+
+    // Idempotent : rien à remettre en pause au second passage.
+    expect(collect.desactiverCiblesMortes().arretees).toBe(0);
+  });
+});

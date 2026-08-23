@@ -24,7 +24,7 @@
 const { db, insertSnapshots, debuterScan, terminerScan, logSourceEvent } = require("./db");
 const { analyzeOffers } = require("./algorithm");
 const { upsertDeal, publierDeal, markMissingAsRemoved } = require("./dealsStore");
-const { reconnaitreMarchand } = require("./marchands");
+const { MARCHANDS, reconnaitreMarchand } = require("./marchands");
 const { produitDepuisHtml, produitsDepuisHtml } = require("./extraction");
 const { categorieDepuisLibelle } = require("./categories");
 const { estPepper, extraireFils, offreDePepper } = require("./pepper");
@@ -836,6 +836,40 @@ function collecterCible(cible) {
 }
 
 /**
+ * Désactive les cibles « page promotions » d'enseignes, qui échouent toutes.
+ *
+ * Vingt-huit avaient été créées à partir de chemins devinés. Sondées une à
+ * une : douze répondent 403, six n'existent pas, dix chargent leurs produits
+ * en JavaScript. Zéro produit extrait, et vingt-neuf erreurs à chaque scan —
+ * de quoi noyer les vraies pannes dans le bruit.
+ *
+ * Le semis ne les crée plus, mais celles déjà en base continuaient de
+ * tourner. On les met en pause plutôt que de les supprimer : leur historique
+ * de scans reste lisible, et une adresse un jour vérifiée pourra les
+ * réactiver.
+ *
+ * Reconnaissables à leur `promo_url`, qui pointe sur un domaine du registre.
+ */
+function desactiverCiblesMortes() {
+  const domaines = new Set(MARCHANDS.map((m) => m.domaine.toLowerCase()));
+  const actives = db
+    .prepare("SELECT id, promo_url FROM watch_targets WHERE active = 1 AND promo_url IS NOT NULL")
+    .all();
+
+  let arretees = 0;
+  for (const c of actives) {
+    const h = hote(c.promo_url);
+    if (!h) continue;
+    const parts = h.split(".");
+    const connu = parts.some((_, i) => domaines.has(parts.slice(i).join(".")));
+    if (!connu) continue;
+    db.prepare("UPDATE watch_targets SET active = 0 WHERE id = ?").run(c.id);
+    arretees++;
+  }
+  return { arretees };
+}
+
+/**
  * Répare les liens des offres déjà publiées qui pointent vers un agrégateur.
  *
  * La règle « jamais vers l'agrégateur » s'applique à la publication, donc
@@ -1205,6 +1239,7 @@ module.exports = {
   getTarget,
   addTarget,
   semerCibles,
+  desactiverCiblesMortes,
   reparerLiensAgregateur,
   updateTarget,
   deleteTarget,

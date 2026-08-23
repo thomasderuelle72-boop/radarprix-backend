@@ -96,6 +96,7 @@ const {
   updateTarget,
   deleteTarget,
   semerCibles,
+  desactiverCiblesMortes,
   reparerLiensAgregateur,
   lancerScan,
   etatCollecte,
@@ -1247,6 +1248,15 @@ if (require.main === module) {
     }
   } catch (e) {
     console.error(`[liens] réparation impossible : ${e.message}`);
+  }
+
+  // Les cibles « page promotions » d'enseignes échouent toutes : le semis ne
+  // les crée plus, mais celles déjà en base tournaient encore à chaque scan.
+  try {
+    const m = desactiverCiblesMortes();
+    if (m.arretees > 0) console.log(`[cibles] ${m.arretees} cible(s) marchande(s) mise(s) en pause — aucune ne rendait de produit.`);
+  } catch (e) {
+    console.error(`[cibles] mise en pause impossible : ${e.message}`);
   }
 
   try {
