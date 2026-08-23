@@ -96,8 +96,16 @@ describe("diagnostic", () => {
   it("dit ce qui manque plutôt que d'échouer en silence", async () => {
     expect(await awin.diagnostic()).toEqual({
       actif: false,
-      raison: "AWIN_API_TOKEN ou AWIN_PUBLISHER_ID absent",
+      raison: "AWIN_PUBLISHER_ID et AWIN_API_TOKEN vide(s) ou absente(s)",
     });
+
+    // Une variable déclarée mais vide ne doit pas passer pour renseignée :
+    // c'est exactement l'état trouvé en production.
+    process.env.AWIN_PUBLISHER_ID = "42";
+    process.env.AWIN_API_TOKEN = "   ";
+    const d = await awin.diagnostic();
+    expect(d.actif).toBe(false);
+    expect(d.raison).toBe("AWIN_API_TOKEN vide(s) ou absente(s)");
   });
 
   it("nomme le refus quand le jeton est invalide", async () => {

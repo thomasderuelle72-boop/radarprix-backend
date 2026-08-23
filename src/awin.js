@@ -29,7 +29,13 @@
 const API = "https://api.awin.com";
 const CATALOGUES = "https://productdata.awin.com/datafeed";
 
-const configure = () => Boolean(process.env.AWIN_API_TOKEN && process.env.AWIN_PUBLISHER_ID);
+/* Une variable déclarée mais vide n'est pas la même chose qu'une variable
+   absente : la première fait croire que tout est en place. Le diagnostic
+   nomme celles qui manquent, une par une. */
+const manquantes = () =>
+  ["AWIN_PUBLISHER_ID", "AWIN_API_TOKEN"].filter((v) => !String(process.env[v] || "").trim());
+
+const configure = () => manquantes().length === 0;
 
 /** Appel authentifié à l'API éditeur. Lève un message lisible sur refus. */
 async function appel(chemin) {
@@ -174,7 +180,8 @@ function offresDuCatalogue(csv, sep = "|") {
  * prochain scan.
  */
 async function diagnostic() {
-  if (!configure()) return { actif: false, raison: "AWIN_API_TOKEN ou AWIN_PUBLISHER_ID absent" };
+  const vides = manquantes();
+  if (vides.length) return { actif: false, raison: `${vides.join(" et ")} vide(s) ou absente(s)` };
   try {
     const programmes = await programmesRejoints();
     return {
