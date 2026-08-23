@@ -147,7 +147,10 @@ describe("dispersion et référence", () => {
       { price: 510, seller: "B", scraped_at: recent },
     ];
     // Médiane des médianes marchands : [100, 500, 510] → 500.
-    expect(algo.referenceHistorique(lignes, maintenant)).toBe(500);
+    expect(algo.referenceHistorique(lignes, maintenant).valeur).toBe(500);
+    // Le nombre de marchands remonte avec la valeur : c'est lui qui distingue
+    // un prix de marché du passé d'une seule enseigne.
+    expect(algo.referenceHistorique(lignes, maintenant).marchands).toBe(3);
   });
 
   it("un prix ancien pèse moins qu'un prix récent", () => {
@@ -159,7 +162,7 @@ describe("dispersion et référence", () => {
     ];
     // Sans pondération, la moyenne donnerait ~733 € et fabriquerait un faux
     // « deal » sur toute offre autour de 400 €.
-    expect(algo.referenceHistorique(lignes, maintenant)).toBe(400);
+    expect(algo.referenceHistorique(lignes, maintenant).valeur).toBe(400);
   });
 });
 
@@ -246,5 +249,68 @@ describe("analyzeOffers de bout en bout", () => {
     ];
     const bas = algo.analyzeOffers(offres).find((o) => o.price === 60);
     expect(bas.zScore).toBeGreaterThan(3.5);
+  });
+});
+
+/* ── Fausses remises fabriquées par l'historique ─────────────────────
+   Constaté en production le 23 août 2026 : le site publiait « Casque
+   gaming TRUST ZIROX 15,98 € au lieu de 48 € (−67 %) » sur un casque
+   vendu 15 à 18 € partout en France. La page marchande ne contenait
+   aucun 48 ; le prix payé, lui, était exact.
+
+   Deux causes cumulées, corrigées ensemble :
+     · le lot s'enregistrait AVANT d'être analysé, donc se comparait à
+       lui-même ;
+     · pour compenser, l'analyse écartait de l'historique toute ligne au
+       prix du jour — ne laissant que les lectures aberrantes. */
+describe("l'historique ne doit pas fabriquer de remise", () => {
+  const jour = (d) => new Date(Date.now() - d * 86400000).toISOString().replace("T", " ").slice(0, 19);
+
+  it("une lecture aberrante isolée ne devient pas la référence", () => {
+    const lignes = [];
+    // Prix stable, relevé huit fois par jour pendant dix jours.
+    for (let d = 1; d <= 10; d++) {
+      for (let k = 0; k < 8; k++) lignes.push({ price: 15.98, seller: "Electro Dépôt", scraped_at: jour(d) });
+    }
+    // Une seule lecture fautive, au milieu.
+    lignes.push({ price: 48, seller: "Electro Dépôt", scraped_at: jour(6) });
+
+    const ref = algo.referenceHistorique(lignes, new Date());
+    expect(ref.valeur).toBeCloseTo(15.98, 2);
+    expect(ref.marchands).toBe(1);
+  });
+
+  it("dit combien de marchands soutiennent la référence", () => {
+    const unSeul = [
+      { price: 100, seller: "Boulanger", scraped_at: jour(1) },
+      { price: 110, seller: "Boulanger", scraped_at: jour(2) },
+    ];
+    expect(algo.referenceHistorique(unSeul, new Date()).marchands).toBe(1);
+
+    const plusieurs = [
+      ...unSeul,
+      { price: 105, seller: "Darty", scraped_at: jour(1) },
+      { price: 108, seller: "Fnac", scraped_at: jour(2) },
+    ];
+    expect(algo.referenceHistorique(plusieurs, new Date()).marchands).toBe(3);
+  });
+
+  it("distingue un prix de marché du passé d'une seule enseigne", () => {
+    // Un seul marchand, un seul produit : aucune comparaison possible.
+    const seul = algo.analyzeOffers([{ name: "Casque gaming TRUST ZIROX", price: 15.98, seller: "Electro Dépôt" }]);
+    expect(seul[0].refPrice).toBeNull();
+    expect(seul[0].verdict).toBe("normal");
+
+    // Trois marchands pour le même produit : la référence devient un prix
+    // de marché, et l'écart se mesure enfin contre quelque chose de réel.
+    const compare = algo.analyzeOffers([
+      { name: "Casque Sony WH-1000XM5", price: 180, seller: "Boulanger" },
+      { name: "Casque Sony WH-1000XM5", price: 380, seller: "Darty" },
+      { name: "Casque Sony WH-1000XM5", price: 390, seller: "Fnac" },
+    ]);
+    const affaire = compare.find((o) => o.seller === "Boulanger");
+    expect(affaire.baseReference).toBe("marche");
+    expect(affaire.marchandsComparés).toBeGreaterThanOrEqual(2);
+    expect(affaire.pct).toBeGreaterThan(40);
   });
 });

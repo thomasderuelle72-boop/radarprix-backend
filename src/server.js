@@ -100,6 +100,7 @@ const {
   desactiverCiblesMortes,
   reparerLiensAgregateur,
   retirerOffresMalNommees,
+  retirerRemisesFabriquees,
   lancerScan,
   etatCollecte,
 } = require("./collect");
@@ -310,6 +311,10 @@ function enFormeHeritee(d) {
     // pouvoir les distinguer, sous peine de présenter l'argument
     // commercial d'un vendeur comme une mesure indépendante.
     refSource: (d.payload && d.payload.refSource) || null,
+    // « marche » : plusieurs marchands ont pratiqué ce prix.
+    // « marchand » : c'est le passé de cette seule enseigne.
+    baseReference: (d.payload && d.payload.baseReference) || null,
+    marchandsComparés: (d.payload && d.payload.marchandsComparés) || 0,
     itemCondition: d.itemCondition || "neuf",
     // Ce que la fiche du marchand déclare en plus du prix : de quoi rendre
     // une carte informative plutôt qu'une ligne de tarif.
@@ -401,7 +406,10 @@ app.post("/api/admin/reinitialiser", requireAuth, requireAdmin, (req, res) => {
 app.get("/api/latest", (req, res) => {
   const { query } = req.query;
   if (!query) return res.status(400).json({ error: "Paramètre 'query' requis." });
-  const rows = latestSnapshots(query.toLowerCase());
+  // Sans le .toLowerCase() d'origine : la colonne `query` garde la casse de
+  // la cible (« Catalogue Electro Dépôt »), la comparaison en minuscules ne
+  // remontait donc jamais rien pour un catalogue.
+  const rows = latestSnapshots(query);
   const analyzed = analyzeOffers(rows).filter((o) => o.verdict !== "normal");
   res.json({ query, count: analyzed.length, items: analyzed });
 });
@@ -1270,6 +1278,19 @@ if (require.main === module) {
     }
   } catch (e) {
     console.error(`[offres] nettoyage impossible : ${e.message}`);
+  }
+
+  /* Les remises fabriquées par l'ancien calcul de référence. Une seule
+     lecture fautive dans l'historique suffisait à devenir le « prix
+     habituel » — les relevés corrects étaient écartés parce qu'ils valaient
+     le prix du jour. Le calcul est réparé ; ces offres-là, non. */
+  try {
+    const m = retirerRemisesFabriquees();
+    if (m.retirees > 0) {
+      console.log(`[offres] ${m.retirees} remise(s) retirée(s) sur ${m.examinees} examinée(s) — référence fabriquée par l'ancien calcul.`);
+    }
+  } catch (e) {
+    console.error(`[offres] retrait des fausses remises impossible : ${e.message}`);
   }
 
   try {

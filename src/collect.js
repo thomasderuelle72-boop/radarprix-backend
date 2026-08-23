@@ -1128,6 +1128,49 @@ function retirerOffresMalNommees() {
   return { titres: suspects.length, retirees };
 }
 
+/**
+ * Retire les remises fabriquées par l'ancien calcul de référence.
+ *
+ * Jusqu'au 23 août 2026, une offre au prix stable dont l'historique portait
+ * une seule lecture fautive héritait de cette lecture comme prix de
+ * référence — les relevés corrects étaient écartés parce qu'ils valaient le
+ * prix du jour. Le site a ainsi publié « 15,98 € au lieu de 48 € » sur un
+ * casque vendu 15 à 18 € partout.
+ *
+ * Le calcul est corrigé, mais les offres déjà publiées gardent leur fausse
+ * référence : rien ne les repasse en revue, `markMissingAsRemoved` ne
+ * concernant que les flux. On les retire donc une fois. Celles qui sont de
+ * vraies affaires seront redétectées au prochain scan, avec une référence
+ * cette fois défendable.
+ *
+ * Ne vise que les références calculées par nous (« mesure ») : un prix barré
+ * annoncé par un marchand n'est pas concerné par ce défaut.
+ */
+function retirerRemisesFabriquees() {
+  const lignes = db
+    .prepare(
+      `SELECT id, payload FROM deals
+       WHERE detector = 'D3' AND published_at IS NOT NULL AND removed_at IS NULL
+         AND reference_price IS NOT NULL`
+    )
+    .all();
+
+  let retirees = 0;
+  const retirer = db.prepare("UPDATE deals SET removed_at = datetime('now') WHERE id = ?");
+  for (const l of lignes) {
+    let source = null;
+    try {
+      source = JSON.parse(l.payload || "{}").refSource;
+    } catch {
+      source = null;
+    }
+    if (source !== "mesure") continue;
+    retirer.run(l.id);
+    retirees += 1;
+  }
+  return { examinees: lignes.length, retirees };
+}
+
 function reparerLiensAgregateur() {
   const lignes = db
     // `removed_at IS NULL` rend l'opération vraiment idempotente : sans
@@ -1302,11 +1345,20 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         const offres = await collecterCible(cible);
         if (offres.length === 0) throw new Error("aucune offre exploitable");
 
-        insertSnapshots(cible.query, cible.category, offres);
+        /* On analyse AVANT d'enregistrer, et l'ordre compte.
 
-        // La détection elle-même : référence entre pairs du lot + historique
-        // en base (voir algorithm.js).
+           Enregistrés d'abord, les relevés du jour entraient dans leur propre
+           historique : le lot se comparait à lui-même et tirait la référence
+           vers le prix constaté à l'instant, ce qui écrase les baisses
+           réelles. algorithm.js compensait en écartant de l'historique toute
+           ligne au prix du jour — un remède pire que le mal, qui ne laissait
+           que les lectures aberrantes et fabriquait de fausses remises.
+
+           Analyser d'abord règle les deux : l'historique ne contient que le
+           passé, et rien n'a besoin d'être filtré. */
         const analyses = analyzeOffers(offres);
+
+        insertSnapshots(cible.query, cible.category, offres);
         const anomalies = analyses.filter((o) => o.verdict !== "normal");
 
         // Ce qu'on publie dépend de la nature de la cible.
@@ -1422,6 +1474,12 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
               // de présenter la promesse d'un marchand comme sa propre
               // mesure : c'est toute la différence qu'il vend.
               refSource: a.refPrice ? "mesure" : a.refPriceAnnonce ? "flux" : null,
+            // Sur quoi cette référence repose : « marche » (plusieurs
+            // marchands l'ont pratiquée) ou « marchand » (le passé d'une
+            // seule enseigne). L'interface annonçait « prix habituel chez
+            // les autres vendeurs » dans les deux cas.
+            baseReference: a.baseReference || null,
+            marchandsComparés: a.marchandsComparés || 0,
               // Caractéristiques déclarées (additionalProperty schema.org) :
               // « Autonomie : 30 heures », « Couleur : noir ». C'est ce qui
               // distingue une fiche produit d'une ligne de prix.
@@ -1539,6 +1597,7 @@ module.exports = {
   desactiverCiblesMortes,
   reparerLiensAgregateur,
   retirerOffresMalNommees,
+  retirerRemisesFabriquees,
   updateTarget,
   deleteTarget,
   parseFluxRSS,

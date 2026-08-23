@@ -591,7 +591,11 @@ function priceHistoryByDay(query, days = 30) {
        WHERE query = ? AND scraped_at >= datetime('now', ?)
        GROUP BY date(scraped_at) ORDER BY day ASC`
     )
-    .all(query.toLowerCase().trim(), `-${days} days`);
+    /* La requête était mise en minuscules ici alors que la colonne stocke la
+       casse d'origine de la cible (« Catalogue Electro Dépôt ») : la
+       comparaison ne remontait jamais rien, et le graphique d'historique
+       d'une fiche produit restait vide en permanence. */
+    .all(query.trim(), `-${days} days`);
 }
 
 /** Promeut un utilisateur admin s'il ne l'est pas déjà (idempotent). */

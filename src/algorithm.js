@@ -294,7 +294,14 @@ function referenceHistorique(rows, maintenant = new Date(), demiVieJours = 14) {
     const m = medianePonderee(points);
     if (m != null) medianesMarchands.push(m);
   }
-  return medianesMarchands.length > 0 ? median(medianesMarchands) : null;
+  if (medianesMarchands.length === 0) return null;
+
+  /* Le nombre de marchands distincts remonte avec la valeur : c'est lui qui
+     dit si l'on tient un « prix du marché » ou seulement le passé d'une
+     seule enseigne. Les deux étaient jusqu'ici confondus, et l'interface
+     annonçait « prix habituel constaté chez les autres vendeurs » sur des
+     produits qu'un seul marchand vend. */
+  return { valeur: median(medianesMarchands), marchands: parMarchand.size };
 }
 
 /** Médiane pondérée : la valeur où la moitié du poids total est atteinte. */
@@ -376,18 +383,40 @@ function analyzeOffers(offers) {
 
   return offers.map((o) => {
     const total = prixTotal(o);
-    const lignes = (historiques.get(cleProduit(o.name)) || []).filter((r) => r.price !== o.price);
+    /* Ce filtre écartait autrefois toute observation ÉGALE au prix du jour.
+       L'intention — ne pas se comparer à soi-même — produisait l'inverse de
+       ce qu'on cherche : sur un produit stable à 15,98 € relevé quatre-vingts
+       fois, une seule lecture erronée à 48 € suffisait à ce qu'il ne reste
+       QU'ELLE dans l'historique. La médiane valait alors 48 €, et le site
+       publiait « −67 % » sur un casque vendu 15 à 18 € partout en France.
+       Mesuré sur les données de production, pas supposé.
+
+       On garde donc tout l'historique. Un produit dont le prix n'a pas bougé
+       obtient une référence égale à son prix, donc 0 % : il n'est pas publié,
+       ce qui est le comportement juste. */
+    const lignes = historiques.get(cleProduit(o.name)) || [];
 
     // Référence historique robuste : médiane pondérée par la récence, par
     // marchand, puis médiane de ces médianes. Voir referenceHistorique.
     const marchandsVus = new Set(lignes.map((r) => (r.seller || "inconnu").toLowerCase()));
-    const histRef =
-      lignes.length >= R.minHistorique ? referenceHistorique(lignes, maintenant) : null;
+
+    /* Les relevés grossièrement aberrants sont écartés de l'historique comme
+       ils l'étaient déjà des pairs. Une lecture fautive isolée ne doit pas
+       peser sur la référence — c'est exactement ce qui a fabriqué les fausses
+       remises constatées en production. */
+    const prixHistoriques = stripGrossOutliers(lignes.map((r) => r.price));
+    const retenus = new Set(prixHistoriques);
+    const lignesSaines = lignes.filter((r) => retenus.has(r.price));
+
+    const hist = lignesSaines.length >= R.minHistorique
+      ? referenceHistorique(lignesSaines, maintenant)
+      : null;
+    const histRef = hist ? hist.valeur : null;
 
     // "Prix le plus bas jamais vu" : vrai seulement s'il y a un historique
     // pour comparer (sinon toute première observation serait trivialement "la plus basse").
     const allTimeLow =
-      lignes.length >= R.minHistorique && total < Math.min(...lignes.map((r) => r.price));
+      lignesSaines.length >= R.minHistorique && total < Math.min(...lignesSaines.map((r) => r.price));
 
     const peerStats = peerStatsByOffer.get(o) || null;
     const peerRef = peerRefByOffer.get(o) || null;
@@ -403,8 +432,21 @@ function analyzeOffers(offers) {
       { valeur: histRef, poids: Math.min(marchandsVus.size, 5) },
       { valeur: peerRef, poids: Math.min(peerStats?.size || 0, 5) }
     );
+
+    /* Sur quoi la référence repose-t-elle vraiment ? La distinction n'était
+       pas faite, et l'interface annonçait « prix habituel constaté chez les
+       autres vendeurs » y compris sur un catalogue à marchand unique, où
+       aucun autre vendeur n'a jamais été consulté.
+
+         « marche »   : au moins deux marchands distincts l'ont pratiqué.
+         « marchand » : le passé de cette seule enseigne. Une baisse réelle,
+                        mais pas un prix de marché — et à ne pas présenter
+                        comme tel. */
+    const marchandsComparés = Math.max(hist ? hist.marchands : 0, peerStats?.size || 0);
+    const baseReference = marchandsComparés >= 2 ? "marche" : "marchand";
+
     if (!refPrice) {
-      return { ...o, priceTotal: total, refPrice: null, pct: 0, verdict: "normal", score: 0, confidence: null, allTimeLow: false };
+      return { ...o, priceTotal: total, refPrice: null, baseReference: null, marchandsComparés: 0, pct: 0, verdict: "normal", score: 0, confidence: null, allTimeLow: false };
     }
     const pct = Math.round((1 - total / refPrice) * 100);
 
@@ -429,7 +471,10 @@ function analyzeOffers(offers) {
       if (peerStats.cv < 0.15) confidence += 10; // prix des pairs cohérents entre eux
       else if (peerStats.cv > 0.5) confidence -= 10; // pairs très dispersés = rapprochements douteux
     }
-    if (histRef) confidence += 20; // confirmé par l'historique du produit, pas seulement le scan du jour
+    // Confirmé par l'historique — mais le bonus complet ne se justifie que si
+    // cet historique couvre plusieurs marchands. Le passé d'une seule
+    // enseigne dit qu'un prix a bougé, pas qu'il est bas.
+    if (histRef) confidence += marchandsComparés >= 2 ? 20 : 5;
     if (pct >= 80) confidence -= 20; // écart énorme = plus probablement une erreur de rapprochement
     else if (pct >= 60) confidence -= 10;
     if (vendeurSur) confidence += 10;
@@ -447,6 +492,11 @@ function analyzeOffers(offers) {
       ...o,
       priceTotal: total,
       refPrice: Math.round(refPrice),
+      // Sur quoi la référence repose : « marche » (plusieurs marchands) ou
+      // « marchand » (le passé d'une seule enseigne). L'interface doit dire
+      // l'un ou l'autre, jamais l'un pour l'autre.
+      baseReference,
+      marchandsComparés,
       pct,
       verdict,
       score,
