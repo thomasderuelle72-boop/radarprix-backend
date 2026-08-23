@@ -82,6 +82,7 @@ const {
   listDeals: listDealsUnifies,   TYPES_DEAL,
 } = require("./dealsStore");
 const { domainePourLogo } = require("./marchands");
+const telegram = require("./telegram");
 const { reinitialiser, apercu } = require("./reinitialisation");
 const { etatRadar } = require("./radarEtat");
 const { compterNonLues, listerNotifications, marquerLues } = require("./notifications");
@@ -380,6 +381,30 @@ app.get("/api/feed/occasion", (req, res) => {
 // GET /api/feed/types — ce que le front peut proposer comme filtres, sans
 // avoir à dupliquer la liste des types côté client.
 app.get("/api/feed/types", (req, res) => res.json({ types: TYPES_DEAL }));
+
+// ── Canal Telegram ───────────────────────────────────────────────
+// Lecture réservée à la modération, action réservée à l'administration :
+// publier sur un canal public n'est pas un geste de modération.
+
+app.get("/api/admin/telegram", requireAuth, requireModerator, (req, res) => {
+  res.json({
+    etat: telegram.etat(),
+    derniers: telegram.derniersPosts(20),
+    enAttente: telegram.candidats(20),
+  });
+});
+
+app.post("/api/admin/telegram/publier/:id", requireAuth, requireAdmin, async (req, res) => {
+  const r = await telegram.publierMaintenant(parseInt(req.params.id, 10));
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
+
+app.post("/api/admin/telegram/ignorer/:id", requireAuth, requireAdmin, (req, res) => {
+  const r = telegram.ignorer(parseInt(req.params.id, 10));
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  res.json(r);
+});
 
 app.get("/api/admin/reinitialiser", requireAuth, requireAdmin, (req, res) => {
   res.json({ apercu: apercu() });

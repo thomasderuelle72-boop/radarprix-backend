@@ -9,7 +9,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "scan:distant": "node src/declencherScan.js"
+    "scan:distant": "node src/declencherScan.js",
+    "telegram:dry": "node scripts/telegram-dry.js"
   },
   "keywords": [],
   "author": "",

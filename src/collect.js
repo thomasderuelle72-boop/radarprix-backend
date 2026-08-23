@@ -22,6 +22,7 @@
 // et publication des anomalies dans la table unifiée `deals` sous le
 // détecteur D3. Le vocabulaire et les routes publiques restent inchangés.
 const { db, insertSnapshots, debuterScan, terminerScan, logSourceEvent, reglages } = require("./db");
+const { publierNouveautes } = require("./telegram");
 const { analyzeOffers } = require("./algorithm");
 
 /** Réglages de publication, relus à chaque scan (modifiables depuis l'admin). */
@@ -1701,6 +1702,16 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
     }
   } finally {
     scanEnCours = false;
+  }
+
+  /* Publication sur Telegram, en fin de cycle et hors du try/finally qui
+     protège le scan. publierNouveautes() ne lève jamais — le double filet
+     est volontaire : une collecte réussie ne doit pas être marquée en échec
+     parce qu'un canal de diffusion est tombé. */
+  try {
+    await publierNouveautes();
+  } catch (e) {
+    console.error(`[telegram] non publié : ${e.message}`);
   }
 
   terminerScan(runId, {

@@ -85,3 +85,43 @@ côté de la base.
 
 Vercel ne convient pas pour ce service : ses fonctions sont sans état et ne
 gardent pas de fichier SQLite entre deux appels.
+
+## Canal Telegram
+
+Publication automatique des deals sur `@radarprix`, en fin de cycle de scan.
+Le module (`src/telegram.js`) lit la table `deals` ; il ne détecte rien et ne
+touche ni à l'algorithme ni aux endpoints existants.
+
+Variables à ajouter sur Railway :
+
+| Variable | Défaut | Rôle |
+|---|---|---|
+| `TELEGRAM_BOT_TOKEN` | — | Jeton BotFather de `@RADARPRIX_BOT`. Sans lui, le module ne fait rien. |
+| `TELEGRAM_CHANNEL_ID` | `-1003927419198` | Identifiant numérique ou `@nom` |
+| `TELEGRAM_ENABLED` | `false` | Interrupteur général |
+| `TELEGRAM_DRY_RUN` | `true` | Journalise le message au lieu de l'envoyer |
+| `TELEGRAM_DELAY_MINUTES` | `30` | Avance laissée aux inscrits sur le canal public |
+| `TELEGRAM_DAILY_CAP` | `15` | Messages par jour au maximum |
+| `TELEGRAM_MIN_DISCOUNT_PCT` | `25` | Remise minimum |
+| `TELEGRAM_MIN_SELLERS` | `0` | Marchands comparés minimum — voir ci-dessous |
+| `TELEGRAM_MIN_PRICE_EUR` | `15` | Prix plancher |
+| `TELEGRAM_SPACING_MS` | `4000` | Espacement entre deux envois |
+
+**Pour allumer :** poser `TELEGRAM_BOT_TOKEN`, puis `TELEGRAM_ENABLED=true`.
+Laisser `TELEGRAM_DRY_RUN=true` un cycle pour lire les messages dans les
+journaux avant de le passer à `false`.
+
+**Pourquoi `TELEGRAM_MIN_SELLERS` vaut 0 et non 3.** Mesuré sur les 71 offres
+publiées le 23 août 2026 : aucune n'a plus d'un marchand comparé. Un catalogue
+marchand n'a qu'un vendeur par produit, et un prix barré d'agrégateur n'est pas
+une médiane. À trois, le module ne publierait jamais rien. Le réglage existe
+pour le jour où le réseau d'affiliation apportera plusieurs marchands sur un
+même article.
+
+Pour la même raison, le message n'annonce « Prix habituel constaté chez N
+marchands » que si N marchands l'ont réellement pratiqué ; sinon il nomme la
+vraie provenance du prix barré.
+
+```bash
+npm run telegram:dry   # montre les messages qui partiraient, sans rien envoyer
+```
