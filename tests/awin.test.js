@@ -258,3 +258,18 @@ describe("valeurs acceptées par le filtre membership", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("droit d'employer le lien de tracking", () => {
+  it("remonte l'annonceur, pour savoir si on y a droit", () => {
+    const o = awin.enOffrePromo({
+      promotionId: 1,
+      advertiser: { id: 77, name: "Boulanger" },
+      title: "10 %",
+      urlTracking: "https://www.awin1.com/cread.php?awinmid=77",
+    });
+    /* Les conditions d'Awin réservent les liens de tracking aux programmes
+       rejoints. Sans l'identifiant de l'annonceur, impossible de savoir
+       lesquels on a le droit d'employer. */
+    expect(o.advertiserId).toBe("77");
+  });
+});

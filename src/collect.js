@@ -36,7 +36,11 @@ const {
   marquerRelevee, marquerEchec, compterFiches, recuperer,
 } = require("./catalogue");
 const { sortieMarchand, marchandDepuisTexte, domaineDeMarchand } = require("./marchands");
-const { urlCatalogue, offresDuCatalogue, promotions: promotionsAwin } = require("./awin");
+const {
+  urlCatalogue, offresDuCatalogue,
+  promotions: promotionsAwin,
+  programmesRejoints: programmesRejointsAwin,
+} = require("./awin");
 const zlib = require("node:zlib");
 
 /* Agent unique, au format conventionnel des robots — celui de Googlebot :
@@ -1188,9 +1192,35 @@ function retirerRemisesFabriquees() {
 async function collecterPromotionsAwin() {
   if (!process.env.AWIN_API_TOKEN || !process.env.AWIN_PUBLISHER_ID) return [];
 
-  const offres = await promotionsAwin({ membership: "joined" });
+  /* On interroge TOUT le réseau, pas seulement les programmes rejoints — il
+     n'y en a aucun, et attendre les validations laisserait la promesse
+     « codes promo » vide pendant des semaines. Mesuré : 0 promotion sur les
+     programmes rejoints, plus de 200 sur l'ensemble du réseau.
+
+     Mais les conditions d'Awin réservent les liens de tracking aux
+     programmes rejoints. On ne les emploie donc QUE là où on y a droit ;
+     ailleurs, le lien est reconstruit vers l'accueil du marchand comme il
+     l'est déjà pour les offres venues d'un agrégateur.
+
+     Un code promo reste entier sans lien profond : il s'emploie au moment
+     de payer, sur le site du marchand. Ce qui compte est le code, l'enseigne
+     et la date de fin — et tout cela, on l'a. */
+  const rejoints = new Set();
+  try {
+    for (const p of await programmesRejointsAwin()) rejoints.add(String(p.id));
+  } catch {
+    // Sans la liste, on considère qu'aucun n'est rejoint : le repli est sûr.
+  }
+
+  const offres = await promotionsAwin({ membership: "all" });
   const publiees = [];
   for (const o of offres) {
+    if (!rejoints.has(String(o.advertiserId))) {
+      const domaine = domaineDeMarchand(o.seller);
+      if (!domaine) continue; // enseigne inconnue : aucun lien honnête à offrir
+      o.url = `https://www.${domaine}/`;
+      o.lienType = "marchand";
+    }
     const id = upsertDeal({
       source: "awin-promos",
       externalId: o.externalId,

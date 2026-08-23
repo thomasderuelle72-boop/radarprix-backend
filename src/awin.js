@@ -271,6 +271,9 @@ function enOffrePromo(p) {
   const code = p.voucher && p.voucher.code ? String(p.voucher.code).trim() : null;
   return {
     externalId: String(p.promotionId),
+    // L'annonceur, pour savoir si l'on a le droit d'employer son lien de
+    // tracking : les conditions d'Awin le réservent aux programmes rejoints.
+    advertiserId: p.advertiser && p.advertiser.id != null ? String(p.advertiser.id) : null,
     name: titre.slice(0, 200),
     description: (p.description || "").slice(0, 1200) || null,
     seller: marchand,
