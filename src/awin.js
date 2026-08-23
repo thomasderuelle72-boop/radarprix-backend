@@ -228,10 +228,12 @@ async function pagePromotions(corps) {
  * La pagination se fait par NUMÉRO de page, pas par curseur : une première
  * version suivait un `pagination.cursor` que ce service ne renvoie pas.
  *
- * `membership` vaut « joined » pour les seuls programmes rejoints. Awin
- * annonce servir aussi les offres d'annonceurs non rejoints ; la valeur
- * exacte n'étant pas documentée publiquement, elle reste paramétrable et
- * l'erreur renvoyée nomme le champ fautif le cas échéant.
+ * `membership` accepte « joined », « notJoined » ou « all » — en camelCase.
+ * Écrit « notjoined », Awin répond 400 « JSON parse error », un message qui
+ * accuse le corps entier plutôt que la valeur fautive.
+ *
+ * La publication s'en tient à « joined » : le lien d'une promotion vient
+ * d'un programme auquel on est affilié, ou il n'a rien à faire sur le site.
  */
 async function promotions({
   membership = "joined",
@@ -317,7 +319,7 @@ async function diagnostic() {
       catalogues: Boolean(process.env.AWIN_FEED_KEY),
       exemples: programmes.slice(0, 5).map((p) => p.nom),
       promosRejoints: await compter("joined"),
-      promosReseau: await compter("notjoined"),
+      promosReseau: await compter("all"),
     };
   } catch (e) {
     return { actif: false, raison: e.message };

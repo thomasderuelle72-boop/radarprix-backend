@@ -232,3 +232,29 @@ describe("promotions et codes promo", () => {
     expect(await awin.promotions()).toEqual([]);
   });
 });
+
+/* Awin répond 400 « JSON parse error » sur une valeur de membership mal
+   casée — un message qui accuse le corps entier plutôt que le champ fautif,
+   et fait chercher au mauvais endroit. Les trois valeurs valides sont
+   « joined », « notJoined » et « all ». */
+describe("valeurs acceptées par le filtre membership", () => {
+  it("transmet la casse exacte, sans la normaliser", async () => {
+    process.env.AWIN_PUBLISHER_ID = "1234";
+    process.env.AWIN_API_TOKEN = "jeton";
+    let corps = null;
+    vi.stubGlobal("fetch", vi.fn(async (url, options) => {
+      corps = JSON.parse(options.body);
+      return { ok: true, status: 200, json: async () => ({ data: [] }) };
+    }));
+
+    await awin.promotions({ membership: "notJoined" });
+    expect(corps.filters.membership).toBe("notJoined");
+
+    await awin.promotions({ membership: "all" });
+    expect(corps.filters.membership).toBe("all");
+
+    delete process.env.AWIN_PUBLISHER_ID;
+    delete process.env.AWIN_API_TOKEN;
+    vi.unstubAllGlobals();
+  });
+});
