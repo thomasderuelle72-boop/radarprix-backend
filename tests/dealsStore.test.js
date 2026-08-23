@@ -185,9 +185,11 @@ describe("regroupement par produit", () => {
     store.publierDeal(b);
 
     const items = store.listDeals({ pageSize: 50 }).items;
-    const cote = items.find((d) => d.id === a);
-    expect(cote.autresMarchands.map((m) => m.marchand)).toEqual(["Boulanger"]);
-    // Le prix le plus bas connu est celui de l'autre marchand, pas le sien.
+    // Un produit, une carte : c'est la moins chère qui reste.
+    expect(items.find((d) => d.id === a)).toBeUndefined();
+
+    const cote = items.find((d) => d.id === b);
+    expect(cote.autresMarchands.map((m) => m.marchand)).toEqual(["Amazon"]);
     expect(cote.meilleurPrix).toBe(289);
     expect(cote.nbMarchands).toBe(2);
   });
@@ -204,7 +206,11 @@ describe("regroupement par produit", () => {
     store.publierDeal(a);
     store.publierDeal(b);
 
-    const cote = store.listDeals({ pageSize: 50 }).items.find((d) => d.id === a);
+    const items = store.listDeals({ pageSize: 50 }).items;
+    // Prix égal : c'est la plus ancienne qui reste, pour que l'ordre ne
+    // danse pas d'un rafraîchissement à l'autre.
+    expect(items.find((d) => d.id === b)).toBeUndefined();
+    const cote = items.find((d) => d.id === a);
     expect(cote.autresMarchands.map((m) => m.marchand)).toEqual(["Boulanger"]);
     expect(cote.nbMarchands).toBe(2);
   });
@@ -255,8 +261,13 @@ describe("regroupement par produit", () => {
     const d2 = store.upsertDeal(dealDe({ source: "uniq", externalId: "u-2", title: "Enceinte portable Marshall Emberton - Noir", merchant: "Darty", price: 135 }));
     [ref, d1, d2].forEach(store.publierDeal);
 
-    const cote = store.listDeals({ pageSize: 50 }).items.find((d) => d.id === ref);
-    expect(cote.autresMarchands).toEqual([expect.objectContaining({ marchand: "Darty", prix: 125 })]);
+    const items = store.listDeals({ pageSize: 50 }).items;
+    // Darty à 125 € est la moins chère des trois : c'est elle qui reste.
+    expect(items.map((d) => d.id)).not.toContain(ref);
+    expect(items.map((d) => d.id)).not.toContain(d2);
+
+    const cote = items.find((d) => d.id === d1);
+    expect(cote.autresMarchands).toEqual([expect.objectContaining({ marchand: "Fnac", prix: 129 })]);
     expect(cote.nbMarchands).toBe(2);
   });
 
@@ -266,8 +277,11 @@ describe("regroupement par produit", () => {
     store.publierDeal(a);
     store.publierDeal(b);
 
-    const cote = store.listDeals({ pageSize: 50 }).items.find((d) => d.id === a);
+    const items = store.listDeals({ pageSize: 50 }).items;
+    const cote = items.find((d) => d.id === a);
     expect(cote.autresMarchands).toEqual([]);
     expect(cote.nbMarchands).toBe(1);
+    // Deux annonces du même vendeur pour le même casque : une seule carte.
+    expect(items.map((d) => d.id)).not.toContain(b);
   });
 });

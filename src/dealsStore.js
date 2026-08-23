@@ -399,7 +399,29 @@ function listDeals({
  */
 function avecConcurrents(lignes) {
   const parCle = concurrentsPour(lignes);
-  return lignes.map((l) => {
+
+  /* Un produit, une carte. Deux marchands vendant la même serrure Nuki au
+     même prix occupaient deux lignes identiques de l'accueil ; les
+     rapprocher ne suffisait pas, il faut n'en garder qu'une. On garde la
+     moins chère — à prix égal, la plus ancienne, pour que l'ordre ne danse
+     pas d'un rafraîchissement à l'autre — et les autres deviennent la
+     ligne « aussi chez ». Le tri se fait au sein de la page seule : un
+     même produit à cheval sur deux pages reste affiché deux fois, ce qui
+     est rare et sans conséquence, là où fausser le total et la pagination
+     en aurait. */
+  const retenues = lignes.filter((l) => {
+    const groupe = parCle.get(l.product_key) || [];
+    if (groupe.length < 2) return true;
+    const membres = new Set(groupe.map((g) => g.id));
+    return !lignes.some(
+      (autre) =>
+        autre.id !== l.id &&
+        membres.has(autre.id) &&
+        (autre.price < l.price || (autre.price === l.price && autre.id < l.id))
+    );
+  });
+
+  return retenues.map((l) => {
     const groupe = parCle.get(l.product_key) || [];
     const autres = groupe.filter((g) => g.id !== l.id && g.merchant && g.merchant !== l.merchant);
     const j = enJson(l);
