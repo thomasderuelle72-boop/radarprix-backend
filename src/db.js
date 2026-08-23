@@ -1314,6 +1314,7 @@ const REGLAGES_DEFAUT = {
   seuilDeal: { valeur: 40, min: 10, max: 90, libelle: "Écart minimum pour un verdict « bon deal » (%)" },
   minHistorique: { valeur: 3, min: 2, max: 20, libelle: "Nombre de prix passés requis pour se fier à l'historique" },
   minPairs: { valeur: 2, min: 2, max: 10, libelle: "Nombre d'offres comparables requis dans un scan" },
+  remiseMinPromo: { valeur: 15, min: 0, max: 90, libelle: "Remise minimum pour publier une promotion annoncée par un marchand (%)" },
   confianceMin: { valeur: 0, min: 0, max: 100, libelle: "Confiance minimale pour publier une anomalie (0 = tout publier)" },
 };
 

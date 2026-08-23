@@ -101,6 +101,7 @@ const {
   reparerLiensAgregateur,
   retirerOffresMalNommees,
   retirerRemisesFabriquees,
+  retirerOffresSansAvantage,
   lancerScan,
   etatCollecte,
 } = require("./collect");
@@ -1291,6 +1292,17 @@ if (require.main === module) {
     }
   } catch (e) {
     console.error(`[offres] retrait des fausses remises impossible : ${e.message}`);
+  }
+
+  /* Les articles ordinaires publiés comme s'ils étaient des affaires. La
+     règle de publication ne les laisse plus passer ; ceux déjà en ligne, si. */
+  try {
+    const m = retirerOffresSansAvantage();
+    if (m.retirees > 0) {
+      console.log(`[offres] ${m.retirees} offre(s) retirée(s) — aucune remise d'au moins ${m.seuil} % démontrable.`);
+    }
+  } catch (e) {
+    console.error(`[offres] retrait des offres sans avantage impossible : ${e.message}`);
   }
 
   try {

@@ -21,8 +21,11 @@
 // snapshots, analyse par algorithm.js (référence entre pairs + historique),
 // et publication des anomalies dans la table unifiée `deals` sous le
 // détecteur D3. Le vocabulaire et les routes publiques restent inchangés.
-const { db, insertSnapshots, debuterScan, terminerScan, logSourceEvent } = require("./db");
+const { db, insertSnapshots, debuterScan, terminerScan, logSourceEvent, reglages } = require("./db");
 const { analyzeOffers } = require("./algorithm");
+
+/** Réglages de publication, relus à chaque scan (modifiables depuis l'admin). */
+const R_PUBLICATION = () => reglages();
 const { upsertDeal, publierDeal, markMissingAsRemoved } = require("./dealsStore");
 const { MARCHANDS, reconnaitreMarchand } = require("./marchands");
 const { produitDepuisHtml, produitsDepuisHtml } = require("./extraction");
@@ -1171,6 +1174,36 @@ function retirerRemisesFabriquees() {
   return { examinees: lignes.length, retirees };
 }
 
+/**
+ * Retire les offres publiées qui ne démontrent aucun avantage.
+ *
+ * Mesuré le 23 août 2026 : sur 126 offres en ligne, 44 % n'avaient aucun
+ * prix de référence — donc aucune remise démontrable — et la totalité était
+ * enregistrée en type « produit », c'est-à-dire ni erreur de prix ni
+ * promotion mesurée. Un site de bons plans dont les bons plans n'en sont pas
+ * ne se rattrape pas sur le volume.
+ *
+ * La règle de publication est corrigée, mais rien ne repasse en revue ce qui
+ * est déjà en ligne. On le fait une fois ; ce qui mérite d'y être sera
+ * republié au prochain scan.
+ */
+function retirerOffresSansAvantage(remiseMin) {
+  const seuil = Number.isFinite(remiseMin) ? remiseMin : reglages().remiseMinPromo;
+  const info = db
+    .prepare(
+      `UPDATE deals SET removed_at = datetime('now')
+       WHERE detector = 'D3' AND published_at IS NOT NULL AND removed_at IS NULL
+         AND type NOT IN ('erreur', 'promo')
+         AND (
+           reference_price IS NULL
+           OR reference_price <= price
+           OR (1.0 - price / reference_price) * 100 < ?
+         )`
+    )
+    .run(seuil);
+  return { retirees: info.changes, seuil };
+}
+
 function reparerLiensAgregateur() {
   const lignes = db
     // `removed_at IS NULL` rend l'opération vraiment idempotente : sans
@@ -1407,24 +1440,55 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
           }
         }
 
-        // Une anomalie mesurée échappe au tri : c'est la raison d'être du
-        // site, et elle porte sa référence par construction.
-        const presentable = (a) =>
-          a.verdict !== "normal" ||
-          // Un lien marchand est indispensable : une carte qu'on ne peut
-          // pas ouvrir n'est pas une offre, c'est une frustration. Et il ne
-          // doit jamais mener à l'agrégateur, d'où le contrôle après
-          // réécriture plutôt qu'avant.
-          (Boolean(a.seller) && Boolean(a.url) && Boolean(a.img || a.description));
+        /* Ce qu'on accepte d'appeler « deal ».
+        
+           Mesuré le 23 août 2026 sur les 126 offres alors publiées : 44 %
+           n'avaient AUCUN prix de référence, donc aucune remise démontrable,
+           et 100 % étaient enregistrées en type « produit » — pas une seule
+           erreur de prix ni promotion mesurée. Le site présentait donc des
+           articles ordinaires comme des affaires, et sa page « Erreurs de
+           prix » restait vide tout en annonçant cent trente-quatre deals.
 
-        // Un flux et une page « promotions » sont tous deux des listes déjà
-        // choisies par le marchand : ce qu'elles annoncent vaut d'être
-        // montré. Seule la recherche Firecrawl reste sur les anomalies —
-        // elle visite des fiches ordinaires pour établir une référence, et
-        // les publier toutes noierait la mesure.
-        const listeChoisie = Boolean(cible.feedUrl || cible.promoUrl);
-        const retenues = listeChoisie ? analyses.filter(presentable) : anomalies;
-        const ignorees = listeChoisie ? analyses.length - retenues.length : 0;
+           La règle précédente ne demandait qu'une carte lisible : un
+           marchand, un lien, une image. C'était le bon critère pour REMPLIR
+           la page, pas pour mériter d'y figurer. Un site de bons plans dont
+           les bons plans n'en sont pas ne se rattrape pas sur le volume.
+
+           Une offre est donc retenue si elle démontre un avantage :
+             · une anomalie que nous avons mesurée (erreur ou deal), ou
+             · une remise annoncée par le marchand d'au moins `remiseMinPromo`.
+           Une image et un vendeur restent nécessaires, mais ne suffisent
+           plus. */
+        const remiseAnnoncee = (a) => {
+          const ref = a.refPrice ?? a.refPriceAnnonce;
+          if (!ref || !Number.isFinite(a.price) || a.price <= 0 || ref <= a.price) return 0;
+          return Math.round((1 - a.price / ref) * 100);
+        };
+
+        /* Actionnable : on sait qui vend et où cliquer. En dessous, ce n'est
+           pas une offre mais une frustration — quel que soit l'intérêt du
+           prix. */
+        const actionnable = (a) => Boolean(a.seller) && Boolean(a.url);
+
+        /* Une anomalie que NOUS avons mesurée est la raison d'être du site :
+           elle passe sans avoir à être jolie. Une promotion simplement
+           annoncée par un marchand doit, elle, valoir le détour et pouvoir
+           être présentée. */
+        const meriteLaUne = (a) => {
+          if (!actionnable(a)) return false;
+          if (a.verdict !== "normal") return true;
+          return (
+            remiseAnnoncee(a) >= R_PUBLICATION().remiseMinPromo &&
+            Boolean(a.img || a.description)
+          );
+        };
+
+        /* Les cibles Firecrawl restent sur les seules anomalies : elles
+           visitent des fiches ordinaires pour établir une référence, et
+           publier chaque page visitée noierait la mesure. */
+        const listeChoisie = Boolean(cible.feedUrl || cible.promoUrl || cible.awinFeeds);
+        const retenues = listeChoisie ? analyses.filter(meriteLaUne) : anomalies.filter(actionnable);
+        const ignorees = analyses.length - retenues.length;
         const aPublier = retenues;
 
         let publies = 0;
@@ -1598,6 +1662,7 @@ module.exports = {
   reparerLiensAgregateur,
   retirerOffresMalNommees,
   retirerRemisesFabriquees,
+  retirerOffresSansAvantage,
   updateTarget,
   deleteTarget,
   parseFluxRSS,

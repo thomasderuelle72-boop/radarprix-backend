@@ -289,7 +289,7 @@ describe("scan complet", () => {
     expect(bilan.cibles).toBe(0);
   });
 
-  it("publie tout ce qu'un flux rapporte, l'anomalie signalée à part (D3)", async () => {
+  it("ne publie d'un flux que ce qui démontre un avantage (D3)", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => reponse({ texte: FLUX_RSS }))
@@ -304,10 +304,11 @@ describe("scan complet", () => {
     const bilan = await collect.lancerScan({});
     expect(bilan.cibles).toBe(1);
     expect(bilan.offres).toBe(2);
-    // Les deux articles du flux sont publiés, pas seulement l'anomalie :
-    // un flux marchand est une liste déjà choisie par sa source, et n'en
-    // publier que les anomalies laissait le site vide.
-    expect(bilan.publies).toBe(2);
+    /* Seule l'anomalie est publiée. L'autre article n'a ni remise annoncée
+       ni écart mesuré : c'est un produit, pas une affaire. Le publier
+       quand même remplissait la page au prix de la crédibilité — 44 % des
+       offres en production n'avaient aucune remise démontrable. */
+    expect(bilan.publies).toBe(1);
     // « analyses » ne compte que les anomalies : c'est ce que le tableau
     // de bord présente comme détections.
     expect(bilan.analyses).toBe(1);
@@ -319,26 +320,23 @@ describe("scan complet", () => {
       .get("iPhone 15 128 Go");
     expect(snapshots.n).toBe(2);
 
-    // Les deux articles sont dans le flux unifié, détecteur D3, publiés.
+    // Seule l'affaire mesurée entre dans le flux unifié.
     const deals = db
       .prepare("SELECT id, detector, type, price, reference_price, published_at FROM deals WHERE detector = 'D3' ORDER BY price")
       .all();
-    expect(deals).toHaveLength(2);
+    expect(deals).toHaveLength(1);
     expect(deals.every((d) => d.published_at !== null)).toBe(true);
 
-    // Le type sépare les deux : l'article soldé est une affaire mesurée,
-    // l'autre un simple produit rapporté. C'est cette distinction qui
-    // empêche un article ordinaire de passer pour une erreur de prix.
-    const anomalie = deals.find((d) => d.type === "promo");
-    const ordinaire = deals.find((d) => d.type === "produit");
-    expect(anomalie).not.toBeUndefined();
-    expect(ordinaire).not.toBeUndefined();
-    expect(anomalie.price).toBeLessThan(ordinaire.price);
+    // Et elle est typée pour ce qu'elle est. Aucun article de type
+    // « produit » ne subsiste : c'était la catégorie fourre-tout qui
+    // remplissait la page d'articles ordinaires présentés comme des deals.
+    const anomalie = deals[0];
+    expect(anomalie.type).toBe("promo");
+    expect(deals.find((d) => d.type === "produit")).toBeUndefined();
     expect(getDeal(anomalie.id).discountPct).toBeGreaterThanOrEqual(40);
-    // Ici les deux offres portent sur le même produit, donc une référence
-    // existe pour les deux ; ce qui les sépare est l'écart mesuré, pas sa
-    // présence. L'article au prix courant reste très loin du seuil.
-    expect(getDeal(ordinaire.id).discountPct).toBeLessThan(40);
+    // L'article au prix courant, lui, n'apparaît nulle part : une référence
+    // existait pour lui aussi, mais son écart restait sous le seuil.
+    expect(bilan.ignorees).toBe(1);
 
     // Le scan est refermé et la source « flux » consignée.
     const run = listScanRuns(1)[0];
@@ -511,31 +509,28 @@ describe("un flux d'agrégateur réel", () => {
     expect(offres[0].description).toMatch(/^Caractéristiques/);
   });
 
-  it("publie ces articles, alors qu'aucun ne porte de prix barré", async () => {
+  it("n'en publie aucun, faute du moindre prix de référence", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => reponse({ texte: FLUX_REEL })));
     collect.addTarget({ query: "Bons plans", feedUrl: "https://www.dealabs.com/rss" });
 
     const bilan = await collect.lancerScan({});
-    // Le point exact qui affichait « 29 offres, 0 publiée » en production :
-    // plus aucun article n'est écarté faute de prix barré.
     expect(bilan.offres).toBe(5);
 
-    // Trois sur cinq passent, et les deux manquants disent une limite du
-    // flux : il nomme le marchand (« Outlet Moto », « Loaded ») sans jamais
-    // donner son domaine. Hors registre, aucun lien n'est constructible, et
-    // une carte qu'on ne peut pas ouvrir n'est pas une offre. C'est
-    // précisément pourquoi la page du site est lue plutôt que son flux :
-    // elle, porte le domaine du marchand pour chaque bon plan.
-    expect(bilan.publies).toBe(3);
-    expect(bilan.ignorees).toBe(2);
+    /* Le flux RSS de Dealabs ne porte AUCUN prix barré — mesuré sur trente
+       articles réels. Sans référence, impossible de démontrer une remise :
+       ces cinq articles sont des produits, pas des affaires, et les publier
+       revenait à appeler « deal » n'importe quel article d'un flux.
+
+       C'est la limite du flux RSS, pas une régression : la PAGE du même
+       site, elle, porte le prix de référence de chaque bon plan. C'est
+       pourquoi elle est lue à sa place. */
+    expect(bilan.publies).toBe(0);
+    expect(bilan.ignorees).toBe(5);
 
     const lignes = db
       .prepare("SELECT merchant, price, url, image_url, description FROM deals WHERE source = ?")
       .all(`d3-${collect.listTargets().at(-1).id}`);
-    expect(lignes).toHaveLength(3);
-    expect(lignes.every((l) => l.merchant && l.price > 0 && l.image_url && l.description)).toBe(true);
-    // Et aucun ne renvoie chez l'agrégateur.
-    expect(lignes.every((l) => l.url && !/dealabs/i.test(l.url))).toBe(true);
+    expect(lignes).toHaveLength(0);
   });
 });
 
