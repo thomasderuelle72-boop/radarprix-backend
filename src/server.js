@@ -1432,7 +1432,11 @@ if (require.main === module) {
                  d'autres à l'aveugle, on affiche ce que l'API envoie
                  réellement — une fois, sur la première correspondance. */
               if (t.flux === null && t.brut) {
-                console.log(`[awin]   champs disponibles : ${JSON.stringify(t.brut).slice(0, 400)}`);
+                /* Les NOMS des champs, pas leur contenu : la première version
+                   affichait le JSON entier, et une description de trois cents
+                   caractères occupait toute la ligne avant d'arriver à ce
+                   qu'on cherchait. */
+                console.log(`[awin]   champs disponibles : ${Object.keys(t.brut).sort().join(", ")}`);
               }
             }
           }
