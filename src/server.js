@@ -1385,7 +1385,8 @@ if (require.main === module) {
   // diagnostic dit tout de suite si le compte répond, plutôt que de laisser
   // découvrir au prochain scan qu'il manque une variable.
   diagnosticAwin()
-    .then((d) => {
+    // async : la recherche des catalogues sur le réseau attend l'API.
+    .then(async (d) => {
       if (d.actif) {
         console.log(
           `[awin] compte actif — ${d.programmes} programme(s) rejoint(s)` +
