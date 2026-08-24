@@ -235,6 +235,15 @@ const upsertStmt = db.prepare(`
     @published_at, @payload
   )
   ON CONFLICT(source, external_id) DO UPDATE SET
+    -- La NATURE de l'offre doit pouvoir se corriger. Sans cette ligne, une
+    -- promotion publiée avant qu'on sache extraire son code restait un
+    -- « promo » à vie, alors que la source dit désormais « code » : la page
+    -- des codes promo restait vide pendant que les codes s'affichaient
+    -- ailleurs.
+    type            = excluded.type,
+    -- Et la clé produit suit le titre, sinon un titre corrigé garde
+    -- l'identité de l'ancien.
+    product_key     = excluded.product_key,
     title           = excluded.title,
     description     = excluded.description,
     url             = excluded.url,

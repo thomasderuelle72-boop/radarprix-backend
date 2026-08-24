@@ -318,10 +318,19 @@ describe("nettoyage des promotions du réseau", () => {
        La Redoute UK sont arrivés malgré la demande. Un site français qui
        affiche une promotion roumaine ne se rattrape pas en expliquant que
        l'API a mal filtré. */
-    for (const nom of ["Samsung BG", "Samsung RO", "La Redoute UK", "Zalando DE"]) {
+    /* La première version énumérait les pays à écarter, et l'Estonie y
+       manquait : « Samsung EE » est passé en production avec son titre en
+       estonien. Énumérer les pays du monde pour n'en garder qu'un est un
+       travail sans fin — la règle est inversée, seul FR passe. */
+    for (const nom of ["Samsung BG", "Samsung RO", "La Redoute UK", "Zalando DE",
+                       "Samsung EE", "Nike LT", "Boohoo AU"]) {
       expect(awin.enOffrePromo({ ...base, advertiser: { id: 9, name: nom }, title: "Offre" })).toBeNull();
     }
     expect(awin.enOffrePromo({ ...base, title: "Offre" })).not.toBeNull();
+    // Un nom sans suffixe de pays est français : Nocibé, Cdiscount, Fnac…
+    for (const nom of ["Nocibé", "Cdiscount", "La Redoute"]) {
+      expect(awin.enOffrePromo({ ...base, advertiser: { id: 9, name: nom }, title: "Offre" })).not.toBeNull();
+    }
   });
 
   it("rend un nom d'enseigne, pas un nom de programme", () => {

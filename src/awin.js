@@ -297,11 +297,23 @@ function codeDeReduction(p) {
   return trouve ? trouve[1] : null;
 }
 
-/* Suffixes de pays sur les noms de programme. Awin publie un programme par
-   marché : « Samsung FR », « Samsung BG », « La Redoute UK ». Seul le marché
-   français nous intéresse — un site français qui affiche une promotion
-   roumaine ne se rattrape pas en expliquant que l'API a mal filtré. */
-const PAYS_ETRANGER = /\b(BG|RO|UK|GB|DE|ES|IT|NL|PL|SE|DK|FI|NO|AT|CH|BE|IE|PT|CZ|HU|US|CA|AU|BR)\b\s*$/i;
+/* Awin publie un programme par marché : « Samsung FR », « Samsung BG »,
+   « La Redoute UK », « Samsung EE ». Seul le marché français nous intéresse.
+
+   La première version énumérait les pays à écarter. Mauvaise approche :
+   l'Estonie manquait à la liste et « Samsung EE » est passé, avec son titre
+   en estonien. Énumérer les pays du monde pour n'en garder qu'un est un
+   travail sans fin ; on retourne donc la règle. Un suffixe de deux lettres
+   capitales est un code pays, et le seul admis est FR. Un nom sans suffixe
+   (« Nocibé ») passe : ces programmes-là sont français. */
+const SUFFIXE_PAYS = /\s([A-Z]{2})$/;
+
+/** Ce programme s'adresse-t-il au marché français ? */
+function marcheFrancais(nom) {
+  const sansParenthese = String(nom || "").replace(/\s*\([^)]*\)/g, "").trim();
+  const suffixe = SUFFIXE_PAYS.exec(sansParenthese);
+  return !suffixe || suffixe[1] === "FR";
+}
 
 /** Le nom d'enseigne, débarrassé de ce qui n'intéresse que les affiliés. */
 function nomDEnseigne(brut) {
@@ -317,7 +329,7 @@ function enOffrePromo(p) {
   const programme = (p.advertiser && p.advertiser.name) || "";
   // Un marché étranger est écarté avant tout le reste : c'est le seul
   // filtre dont on soit sûr, puisque celui de l'API ne s'applique pas.
-  if (!programme || PAYS_ETRANGER.test(programme)) return null;
+  if (!programme || !marcheFrancais(programme)) return null;
 
   const marchand = nomDEnseigne(programme);
   const code = codeDeReduction(p);

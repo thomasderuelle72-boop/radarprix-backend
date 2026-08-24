@@ -285,3 +285,20 @@ describe("regroupement par produit", () => {
     expect(items.map((d) => d.id)).not.toContain(b);
   });
 });
+
+/* La nature d'une offre doit pouvoir se corriger. Une promotion publiée
+   avant qu'on sache extraire son code restait « promo » à vie, alors que la
+   source disait ensuite « code » : la page des codes promo restait vide
+   pendant que les codes s'affichaient ailleurs. */
+describe("une offre revue corrige sa nature", () => {
+  it("met à jour le type et la clé produit", () => {
+    const d = dealDe({ source: "maj", externalId: "u-1", type: "promo", title: "Offre du moment" });
+    const id = store.upsertDeal(d);
+    store.publierDeal(id);
+
+    store.upsertDeal({ ...d, type: "code", title: "Casque Bose QuietComfort Ultra" });
+    const ligne = store.listDeals({ pageSize: 50, includeUnpublished: true }).items.find((x) => x.id === id);
+    expect(ligne.type).toBe("code");
+    expect(ligne.title).toBe("Casque Bose QuietComfort Ultra");
+  });
+});
