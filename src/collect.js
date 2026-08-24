@@ -1286,11 +1286,16 @@ function retirerOffresSansAvantage(remiseMin) {
     .prepare(
       `UPDATE deals SET removed_at = datetime('now')
        WHERE detector = 'D3' AND published_at IS NOT NULL AND removed_at IS NULL
-         AND type NOT IN ('erreur', 'promo')
          AND (
+           -- Sans référence utilisable, il n'y a rien à montrer au visiteur,
+           -- et cela vaut aussi pour une anomalie : « erreur de prix » sans
+           -- prix barré ne prouve rien à celui qui lit la carte.
            reference_price IS NULL
            OR reference_price <= price
-           OR (1.0 - price / reference_price) * 100 < ?
+           OR (
+             type NOT IN ('erreur', 'promo')
+             AND (1.0 - price / reference_price) * 100 < ?
+           )
          )`
     )
     .run(seuil);
@@ -1634,7 +1639,14 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
            être présentée. */
         const meriteLaUne = (a) => {
           if (!actionnable(a)) return false;
-          if (a.verdict !== "normal") return true;
+          /* Une anomalie sans référence affichable n'en est pas une pour le
+             lecteur : la carte annonce une affaire et ne montre aucun prix
+             barré. Le premier passage sur le catalogue Bouclème a publié
+             ainsi un « Cardboard tube LID (white) » à dix centimes — un
+             emballage, décrété anormal parce qu'il l'est en effet, mais sans
+             rien à opposer au visiteur. C'est le défaut des 44 % d'offres
+             sans référence qui revenait par une autre porte. */
+          if (a.verdict !== "normal") return Boolean(a.refPrice ?? a.refPriceAnnonce);
           return (
             remiseAnnoncee(a) >= R_PUBLICATION().remiseMinPromo &&
             Boolean(a.img || a.description)
