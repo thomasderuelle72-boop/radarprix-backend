@@ -121,13 +121,33 @@ Mesuré, pas supposé, le 22 août 2026 :
   Dealabs rend cinquante offres avec prix de référence, marchand, image et
   date de fin. C'est ce qui remplit le site aujourd'hui — un dépannage, pas
   une fondation.
-- **Cinq marchands se laissent parcourir par leur propre sitemap**, et
-  balisent leurs fiches en schema.org. Mesuré sur les 84 enseignes du
-  registre : LDLC (78 667 fiches, 6/6 lues), JouéClub (40 001, 4/4), Ikea
-  (4 526, 4/4), Electro Dépôt (2 915, 4/4), Nature & Découvertes (107,
-  4/4). C'est `catalogue.js`, et c'est **le seul canal dont les anomalies
-  sont les nôtres** : on relève des prix ordinaires, encore et encore, et
+- **Treize marchands se laissent parcourir par leur propre sitemap.**
+  Mesuré le 24 août 2026 par `POST /api/admin/catalogues/sonde`, **depuis
+  l'IP qui collecte** — précision qui n'est pas un détail : le relevé
+  précédent n'en trouvait que cinq, et il avait été fait ailleurs. Trois
+  fiches sondées par marchand :
+
+  | 3/3 | partiels | anciens |
+  |---|---|---|
+  | Boulanger, E.Leclerc, Rue du Commerce, Brico Dépôt, Truffaut | Bouygues Telecom (2/3), Roady (2/3), Recommerce (1/3), SFR (1/3) | LDLC, JouéClub, Electro Dépôt, Nature & Découvertes |
+
+  Boulanger et E.Leclerc ne sont pas des marchands de niche. C'est
+  `catalogue.js`, et c'est **le seul canal dont les anomalies sont les
+  nôtres** : on relève des prix ordinaires, encore et encore, et
   `algorithm.js` dit lequel a décroché.
+
+- **Onze marchands se laissent atteindre mais pas lire** : Aldi, Free,
+  Ikea, Leroy Merlin, Kiabi, Vinted, Marionnaud, Nocibé, Momox, Feu Vert,
+  Midas listent leurs fiches et servent leurs pages, mais `extraction.js`
+  n'y trouve aucun prix — ni schema.org, ni microdata, ni OpenGraph
+  exploitable. Ceux-là ne demandent aucun proxy : ils demandent une
+  meilleure lecture. C'est la cible naturelle d'une extraction assistée par
+  modèle, en repli du balisage.
+
+- **Une trentaine refusent robots.txt en 403** — Decathlon, Cultura,
+  Sarenza, Norauto, Oscaro, Conforama, Maisons du Monde, La Redoute,
+  Rakuten… Là, ce n'est pas notre code qui est en cause mais notre IP, et
+  aucune ligne n'y changera rien.
 - **Le réseau d'affiliation reste la voie la plus riche** (`awin.js` +
   `collecterAwin` dans `collect.js`) : catalogue complet avec description,
   EAN et prix conseillé, et un lien qui mène **vraiment** sur la fiche du

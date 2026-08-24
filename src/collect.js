@@ -1377,6 +1377,16 @@ const CATALOGUES_MARCHANDS = [
   { nom: "JouéClub", racine: "https://www.joueclub.fr", categorie: "tout" },
   { nom: "Electro Dépôt", racine: "https://www.electrodepot.fr", categorie: "maison" },
   { nom: "Nature & Découvertes", racine: "https://www.natureetdecouvertes.com", categorie: "tout" },
+  /* Ajoutés le 24 août 2026 sur relevé de la sonde, depuis l'IP qui
+     collecte : chacun rend 3 fiches sur 3 avec un prix. Ils étaient
+     lisibles avant, et personne ne le savait — le relevé du 22 août, qui
+     n'en voyait que cinq sur quatre-vingt-quatre, avait été fait ailleurs.
+     Boulanger et E.Leclerc ne sont pas des marchands de niche. */
+  { nom: "Boulanger", racine: "https://www.boulanger.com", categorie: "hightech" },
+  { nom: "E.Leclerc", racine: "https://www.e.leclerc", categorie: "alimentaire" },
+  { nom: "Rue du Commerce", racine: "https://www.rueducommerce.fr", categorie: "hightech" },
+  { nom: "Brico Dépôt", racine: "https://www.bricodepot.fr", categorie: "maison" },
+  { nom: "Truffaut", racine: "https://www.truffaut.com", categorie: "maison" },
 ];
 
 /**
