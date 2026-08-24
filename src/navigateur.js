@@ -86,6 +86,40 @@ const cookiesPour = (hote) => {
   return [...pot].map(([n, v]) => `${n}=${v}`).join("; ");
 };
 
+/* Vingt mégaoctets. Un `await reponse.text()` sur un corps dont on ne sait
+   rien est un pari, et il a été perdu : la sonde s'est fait tuer par
+   l'hébergeur — « Killed » — trois fois de suite, toujours au même
+   marchand, sur un sitemap dont la taille n'était annoncée nulle part. On
+   lit par morceaux et on renonce plutôt que d'emporter le processus qui
+   sert le site. */
+const MAX_OCTETS = 20 * 1024 * 1024;
+
+/** Lit le corps sans dépasser la borne. Rend null si le contenu la franchit. */
+async function lireBorne(reponse, maxOctets) {
+  const annonce = parseInt(reponse.headers.get("content-length") || "", 10);
+  if (Number.isFinite(annonce) && annonce > maxOctets) {
+    await reponse.body?.cancel().catch(() => {});
+    return null;
+  }
+  // Beaucoup de serveurs répondent en chunked, sans annoncer de taille :
+  // c'est justement là que le pari se perd, il faut donc compter soi-même.
+  if (!reponse.body) return reponse.text();
+  const lecteur = reponse.body.getReader();
+  const morceaux = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await lecteur.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxOctets) {
+      await lecteur.cancel().catch(() => {});
+      return null;
+    }
+    morceaux.push(value);
+  }
+  return Buffer.concat(morceaux).toString("utf8");
+}
+
 /**
  * Récupère une page.
  *
@@ -95,9 +129,13 @@ const cookiesPour = (hote) => {
  * @param {string} [opts.referer] page d'où l'on vient — un navigateur en a
  *   presque toujours un, et son absence sur une fiche produit est notable.
  * @param {number} [opts.reprises] nombre de nouvelles tentatives sur 429/503.
- * @returns {Promise<{code:number, texte:string, url:string}>}
+ * @param {number} [opts.maxOctets] taille maximale du corps lu.
+ * @returns {Promise<{code:number, texte:string, url:string, tropGros:boolean}>}
  */
-async function recuperer(url, { ms = 30000, referer = null, reprises = 2 } = {}) {
+async function recuperer(
+  url,
+  { ms = 30000, referer = null, reprises = 2, maxOctets = MAX_OCTETS } = {}
+) {
   const hote = hoteDe(url);
 
   // On ne rafale pas un domaine : ni pour passer inaperçu, ni pour le confort
@@ -134,10 +172,12 @@ async function recuperer(url, { ms = 30000, referer = null, reprises = 2 } = {})
     return recuperer(url, { ms, referer, reprises: reprises - 1 });
   }
 
+  const corps = reponse.ok ? await lireBorne(reponse, maxOctets) : "";
   return {
     code: reponse.status,
-    texte: reponse.ok ? await reponse.text() : "",
+    texte: corps === null ? "" : corps,
     url: reponse.url || url,
+    tropGros: corps === null,
   };
 }
 
@@ -147,4 +187,4 @@ function oublier() {
   dernierPassage.clear();
 }
 
-module.exports = { recuperer, oublier, EN_TETES, PAUSE_PAR_HOTE };
+module.exports = { recuperer, oublier, EN_TETES, PAUSE_PAR_HOTE, MAX_OCTETS };

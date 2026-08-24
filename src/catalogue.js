@@ -150,8 +150,16 @@ async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
     .filter((u) => NOM_FICHES.test(u) && !NOM_INUTILE.test(u));
 
   const fiches = new Set();
+  let ecartes = 0;
   for (const sm of (candidats.length ? candidats : feuilles).slice(0, 8)) {
     const s = await recuperer(sm, 60000);
+    // Un sitemap qu'on a renoncé à lire n'est pas un sitemap vide : le dire,
+    // sinon le marchand ressort « aucune fiche trouvée » et on cherche au
+    // mauvais endroit.
+    if (s.tropGros) {
+      ecartes++;
+      continue;
+    }
     // Quatre fois le plafond : de quoi absorber les .xml et les chemins
     // interdits qu'on écarte ensuite, sans lire le fichier entier.
     for (const u of adresses(s.texte, plafond * 4)) {
@@ -166,7 +174,13 @@ async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
        plus. Et de toute façon on n'en suit que huit cents. */
     if (fiches.size >= plafond) break;
   }
-  if (!fiches.size) throw new Error("aucune fiche trouvée dans les sitemaps");
+  if (!fiches.size) {
+    throw new Error(
+      ecartes
+        ? `${ecartes} sitemap(s) trop volumineux pour être lus`
+        : "aucune fiche trouvée dans les sitemaps"
+    );
+  }
   return [...fiches];
 }
 
