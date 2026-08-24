@@ -132,12 +132,20 @@ Mesuré, pas supposé, le 22 août 2026 :
   `collecterAwin` dans `collect.js`) : catalogue complet avec description,
   EAN et prix conseillé, et un lien qui mène **vraiment** sur la fiche du
   marchand — ce qu'aucun autre canal ne donne quand l'offre vient d'un
-  agrégateur. Trois conditions, toutes nécessaires :
-  `AWIN_PUBLISHER_ID` + `AWIN_API_TOKEN` (le compte répond),
-  `AWIN_FEED_KEY` (distincte du jeton — Awin → Toolbox → Create-a-Feed),
-  et **au moins un programme marchand rejoint** : un catalogue n'est
-  accessible qu'aux affiliés que le marchand a acceptés. Le diagnostic au
-  démarrage nomme celle qui manque.
+  agrégateur. Deux conditions :
+  `AWIN_PUBLISHER_ID` + `AWIN_API_TOKEN` (le compte répond) et
+  `AWIN_FEED_KEY` (distincte du jeton — Awin → Toolbox → Create-a-Feed).
+  Le diagnostic au démarrage nomme celle qui manque.
+
+  **Rejoindre un programme n'est PAS nécessaire pour lire son catalogue.**
+  On l'avait cru et écrit ici ; la liste des flux dit le contraire, mesuré
+  le 24 août 2026 : 583 catalogues répondent à notre clé, tous en
+  « Not Joined ». Ce que l'adhésion apporte est la rémunération, pas
+  l'accès aux données. Sur ces 583, **dix-huit** portent une région ou une
+  langue française (`GB 195, US 141, DE 60, PL 39, NL 34, ES 20, FR 18…`),
+  et aucun n'est une enseigne du registre : parfumerie, luminaire,
+  claviers, soin capillaire. `fluxFrancais()` les trie par nombre de
+  références ; `CATALOGUES_AWIN` (collect.js) en sème dix.
 
   Une cible Awin porte ses identifiants de flux dans `awin_feeds`
   (« 12345,67890 »). L'échantillon se prend **sur les lignes du CSV**, avant
