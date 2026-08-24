@@ -81,6 +81,47 @@ const adresses = (xml, max = Infinity) => {
 const NOM_FICHES = /produit|product|fiche|catalog/i;
 const NOM_INUTILE = /inactive|review|avis|brand|marque|categor|store|edito|conseil/i;
 
+/* Ce qu'une adresse ne doit PAS être pour qu'on la relève.
+ *
+ * Mesuré le 24 août 2026 en inspectant les fiches réellement suivies : on
+ * ne relevait pas des fiches produits du tout. Ikea nous donnait des pages
+ * de catégorie bahreïniennes en arabe, Vinted des catégories, Marionnaud
+ * ses propres endpoints de sitemap, Midas sa page d'accueil. extraction.js
+ * ne trouvait aucun prix pour une raison simple : il n'y avait aucun
+ * produit à lire.
+ *
+ * Le filtre existant ne portait que sur le NOM du fichier sitemap, jamais
+ * sur les adresses qu'il contient. */
+const CHEMIN_INUTILE =
+  /\/(?:api|sitemaps?|cat|catalog|catalogue|categorie|categories|rayon|rayons|contenu|content|blog|aide|help|service|services|magasin|magasins|store-locator|recherche|search|panier|compte|account|cgv|mentions)(?:\/|$)/i;
+
+/* Ce qui ressemble à une fiche. Volontairement large : chaque marchand a sa
+   convention, et se tromper par excès coûte une fiche illisible, tandis que
+   se tromper par défaut coûte le marchand entier. */
+const CHEMIN_FICHE = /\/(?:p|v|produit|produits|product|products|fiche|dp|item)\/|-\d{6,}\.html?$|\/pd\//i;
+
+/**
+ * Cette adresse peut-elle être une fiche produit française ?
+ *
+ * Deux refus, et le second n'est pas théorique : le sitemap mondial d'Ikea
+ * nous a fait relever des woks bahreïniens libellés en arabe. Un préfixe de
+ * pays qui n'est pas le nôtre ne mène jamais à un prix en euros.
+ */
+function ficheProbable(url) {
+  let chemin;
+  try {
+    chemin = new URL(url).pathname;
+  } catch {
+    return false;
+  }
+  if (CHEMIN_INUTILE.test(chemin)) return false;
+  // « /bh/ar/… » : un code pays de deux lettres en tête, et ce n'est pas la
+  // France. Les segments de langue seuls (« /fr/ ») restent acceptés.
+  const pays = chemin.match(/^\/([a-z]{2})\/([a-z]{2})\//i);
+  if (pays && pays[1].toLowerCase() !== "fr") return false;
+  return true;
+}
+
 /**
  * Les chemins que robots.txt interdit à tout le monde.
  *
@@ -164,6 +205,7 @@ async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
     // interdits qu'on écarte ensuite, sans lire le fichier entier.
     for (const u of adresses(s.texte, plafond * 4)) {
       if (u.endsWith(".xml") || u.endsWith(".gz")) continue;
+      if (!ficheProbable(u)) continue;
       if (autorise(u, interdits)) fiches.add(u);
       if (fiches.size >= plafond) break;
     }
@@ -174,6 +216,13 @@ async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
        plus. Et de toute façon on n'en suit que huit cents. */
     if (fiches.size >= plafond) break;
   }
+  /* Quand une partie des adresses porte une marque de fiche, on ne garde
+     QUE celles-là. Règle qui se règle toute seule : un marchand qui mélange
+     « /p/xxx » et « /conseils/xxx » se voit ramené à ses produits sans
+     qu'on ait rien à écrire pour lui en particulier. */
+  const marquees = [...fiches].filter((u) => CHEMIN_FICHE.test(u));
+  if (marquees.length >= 10) return marquees;
+
   if (!fiches.size) {
     throw new Error(
       ecartes
@@ -263,6 +312,27 @@ function etatCatalogue(cibleId) {
     )
     .get(cibleId);
   return { total: l.total, jamais: l.jamais || 0, abandonnees: l.abandonnees || 0, plusAncien: l.plus_ancien };
+}
+
+/**
+ * Retire les adresses déjà listées qui ne sont pas des fiches produits.
+ *
+ * Le filtre corrige la découverte à venir, mais des milliers de catégories,
+ * d'endpoints d'API et de pages d'accueil sont déjà en base et la rotation
+ * continuerait de les interroger — soixante requêtes par passage, huit fois
+ * par jour, pour des pages qui ne portent aucun prix.
+ *
+ * Une fois vidée, la cible repasse sous le seuil de redécouverte et se
+ * reconstitue toute seule au prochain scan.
+ */
+function purgerFichesNonProduits() {
+  const lignes = db.prepare("SELECT id, url FROM catalogue_fiches").all();
+  const aRetirer = lignes.filter((l) => !ficheProbable(l.url)).map((l) => l.id);
+  if (!aRetirer.length) return { retirees: 0, restantes: lignes.length };
+
+  const suppression = db.prepare("DELETE FROM catalogue_fiches WHERE id = ?");
+  db.transaction((ids) => ids.forEach((id) => suppression.run(id)))(aRetirer);
+  return { retirees: aRetirer.length, restantes: lignes.length - aRetirer.length };
 }
 
 /**
@@ -426,6 +496,8 @@ async function inspecterMarchand(nom) {
 }
 
 module.exports = {
+  ficheProbable,
+  purgerFichesNonProduits,
   inspecterMarchand,
   inspecterPage,
   sonderMarchands,

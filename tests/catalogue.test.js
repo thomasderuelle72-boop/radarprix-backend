@@ -128,3 +128,38 @@ Allow: /produit
     expect(cat.autorise("https://m.fr/produit/1", [])).toBe(true);
   });
 });
+
+describe("ficheProbable — on ne relevait pas des fiches produits", () => {
+  // Mesuré le 24 août 2026 en inspectant les adresses réellement suivies.
+  // extraction.js ne trouvait aucun prix pour une raison simple : il n'y
+  // avait aucun produit à lire.
+  it("écarte les pages de catégorie", () => {
+    expect(cat.ficheProbable("https://www.vinted.fr/catalog/4-clothing")).toBe(false);
+    expect(cat.ficheProbable("https://www.ikea.com/fr/fr/cat/woks-20631/")).toBe(false);
+  });
+
+  it("écarte les endpoints d'API et les sitemaps pris pour des fiches", () => {
+    // Marionnaud nous servait ses propres index de sitemap.
+    expect(cat.ficheProbable("https://www.marionnaud.fr/api/v2/mfr/sitemaps/Brand-fr_FR-EUR")).toBe(false);
+  });
+
+  it("écarte les pages éditoriales et de service", () => {
+    expect(cat.ficheProbable("https://www.midas.fr/contenu/offre-20-revision")).toBe(false);
+    expect(cat.ficheProbable("https://www.m.fr/magasin/lyon")).toBe(false);
+  });
+
+  it("écarte un autre pays — le sitemap mondial d'Ikea rendait des woks bahreïniens en arabe", () => {
+    expect(cat.ficheProbable("https://www.ikea.com/bh/ar/p/wok-12345/")).toBe(false);
+    expect(cat.ficheProbable("https://www.ikea.com/fr/fr/p/wok-12345/")).toBe(true);
+  });
+
+  it("garde ce qui ressemble à une fiche", () => {
+    expect(cat.ficheProbable("https://www.kiabi.com/v/abattant-wc-argente")).toBe(true);
+    expect(cat.ficheProbable("https://www.leroymerlin.fr/produits/tableau-40-x-60-cm-83461033.html")).toBe(true);
+    expect(cat.ficheProbable("https://www.m.fr/p/aspirateur-x")).toBe(true);
+  });
+
+  it("refuse une adresse illisible plutôt que de la relever", () => {
+    expect(cat.ficheProbable("pas une adresse")).toBe(false);
+  });
+});

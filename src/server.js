@@ -82,7 +82,9 @@ const {
   listDeals: listDealsUnifies,   TYPES_DEAL,
 } = require("./dealsStore");
 const { domainePourLogo } = require("./marchands");
-const { sonderMarchands, inspecterPage, inspecterMarchand } = require("./catalogue");
+const {
+  sonderMarchands, inspecterPage, inspecterMarchand, purgerFichesNonProduits,
+} = require("./catalogue");
 const telegram = require("./telegram");
 
 /* Les enseignes dont RadarPrix parcourt déjà le catalogue par sitemap. Si
@@ -1422,6 +1424,20 @@ if (require.main === module) {
   }
 
   try {
+    /* Les adresses qui ne sont pas des fiches produits partent avant le
+       semis : la rotation interrogeait des catégories, des endpoints d'API
+       et des pages d'accueil, soixante fois par passage, pour des pages qui
+       ne portent aucun prix. Vidée, la cible se reconstitue toute seule. */
+    {
+      const purge = purgerFichesNonProduits();
+      if (purge.retirees) {
+        console.log(
+          `[catalogue] ${purge.retirees} adresse(s) retirée(s) — pas des fiches produits ` +
+            `(${purge.restantes} conservée(s)).`
+        );
+      }
+    }
+
     const semis = semerCibles();
     if (semis.creees > 0) {
       console.log(`[cibles] ${semis.creees} cible(s) créée(s) depuis le registre — ${semis.total} au total.`);
