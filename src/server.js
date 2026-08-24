@@ -1424,24 +1424,32 @@ if (require.main === module) {
             for (const t of r.trouves.slice(0, 3)) {
               console.log(
                 `[awin]   ${r.cherche} → « ${t.nom} » (id ${t.id})` +
-                  `${t.rejoint ? ", rejoint" : ", non rejoint"}` +
-                  `${t.flux === null ? "" : t.flux ? ", AVEC flux produits" : ", sans flux produits"}`
+                  `${t.rejoint ? ", rejoint" : ", non rejoint"}`
               );
-              /* Le nom du champ « flux produits » n'est pas documenté et mes
-                 deux suppositions rendent null. Plutôt que d'en essayer
-                 d'autres à l'aveugle, on affiche ce que l'API envoie
-                 réellement — une fois, sur la première correspondance. */
-              if (t.flux === null && t.brut) {
-                /* Les NOMS des champs, pas leur contenu : la première version
-                   affichait le JSON entier, et une description de trois cents
-                   caractères occupait toute la ligne avant d'arriver à ce
-                   qu'on cherchait. */
-                console.log(`[awin]   champs disponibles : ${Object.keys(t.brut).sort().join(", ")}`);
-              }
             }
           }
         } catch (e) {
           console.error(`[awin] recherche des catalogues impossible : ${e.message}`);
+        }
+
+        /* Quels programmes publient un catalogue ? L'endpoint des programmes
+           ne le dit pas — vérifié, aucun champ ne l'expose. Seule la liste
+           des flux le sait, et elle demande AWIN_FEED_KEY. C'est là toute la
+           valeur de cette clé : elle ne sert pas qu'à télécharger, elle sert
+           à SAVOIR à quels programmes il vaut la peine de candidater. */
+        try {
+          const { fluxDisponibles } = require("./awin");
+          const f = await fluxDisponibles();
+          if (!f.actif) {
+            console.log(`[awin] liste des flux indisponible — ${f.raison}.`);
+          } else {
+            console.log(`[awin] ${f.flux.length} catalogue(s) accessible(s) — colonnes : ${f.colonnes.join(", ")}`);
+            for (const c of f.flux.slice(0, 15)) {
+              console.log(`[awin]   flux ${c.feedId} — ${c.nom} (annonceur ${c.annonceurId}, ${c.adhesion})`);
+            }
+          }
+        } catch (e) {
+          console.error(`[awin] liste des flux impossible : ${e.message}`);
         }
         if (d.programmes === 0) {
           console.log(
