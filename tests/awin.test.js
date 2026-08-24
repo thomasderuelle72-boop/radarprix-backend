@@ -348,3 +348,43 @@ describe("nettoyage des promotions du réseau", () => {
     expect(auto.voucherCode).toBeNull();
   });
 });
+
+/* Le rapprochement des noms de programme. Une première version comparait les
+   chaînes collées : « Ikea » y retrouvait « Tezeus Bikeaffiliate » et
+   « Likeair », « Nature & Découvertes » y retrouvait « ur » et « N/A ».
+   Vu en production sur les 21 311 programmes du réseau. */
+describe("retrouver une enseigne parmi les programmes du réseau", () => {
+  const reseau = [
+    { id: 20473, name: "Nature & Decouvertes FR" },
+    { id: 31173, name: "Electro Depot BE" },
+    { id: 43089, name: "ur" },
+    { id: 88839, name: "N/A" },
+    { id: 121004, name: "Like Air" },
+    { id: 124150, name: "Tezeus Bike Affiliate" },
+  ];
+
+  it("retrouve une enseigne malgré l'accent et le suffixe de marché", () => {
+    const r = awin.chercherProgrammes(reseau, ["Nature & Découvertes"])[0];
+    expect(r.trouves.map((t) => t.id)).toEqual([20473]);
+  });
+
+  it("ne confond plus un nom court avec une sous-chaîne", () => {
+    // « ikea » se cache dans « bikeaffiliate » et dans « likeair ».
+    expect(awin.chercherProgrammes(reseau, ["Ikea"])[0].trouves).toEqual([]);
+  });
+
+  it("ne retient pas les noms de deux lettres, qui matchaient tout", () => {
+    const r = awin.chercherProgrammes(reseau, ["Nature & Découvertes"])[0];
+    expect(r.trouves.map((t) => t.nom)).not.toContain("ur");
+    expect(r.trouves.map((t) => t.nom)).not.toContain("N/A");
+  });
+
+  it("distingue les marchés d'une même enseigne", () => {
+    const r = awin.chercherProgrammes(reseau, ["Electro Dépôt"])[0];
+    expect(r.trouves.map((t) => t.nom)).toEqual(["Electro Depot BE"]);
+  });
+
+  it("rend une liste vide plutôt que tout, pour une enseigne absente", () => {
+    expect(awin.chercherProgrammes(reseau, ["LDLC"])[0].trouves).toEqual([]);
+  });
+});

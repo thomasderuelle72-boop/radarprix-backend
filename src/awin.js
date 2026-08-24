@@ -194,21 +194,37 @@ async function tousLesProgrammes() {
   return lots.flat();
 }
 
+/** Un nom d'enseigne réduit à ses mots, sans accents ni ponctuation. */
+function motsDuNom(t) {
+  return String(t || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .split(/[^a-z0-9]+/)
+    .filter((m) => m.length >= 3);
+}
+
 /**
  * Parmi les programmes du réseau, ceux qui portent l'un de ces noms.
  *
- * La comparaison se fait sur le nom réduit à ses lettres et chiffres :
- * « Nature & Découvertes » côté registre, « Nature et Decouvertes FR » côté
- * Awin, c'est le même marchand et un test d'égalité stricte le raterait.
+ * Le rapprochement porte sur les MOTS, pas sur la chaîne entière. Une
+ * première version comparait les noms collés, sans ponctuation : « Ikea » y
+ * retrouvait « Tezeus B-ikea-ffiliate » et « L-ikea-ir », « Nature &
+ * Découvertes » y retrouvait « ur » et « N/A ». Une sous-chaîne de quatre
+ * lettres se cache partout ; un mot entier, non.
+ *
+ * Reste tolérant sur le suffixe de marché : « Nature & Decouvertes FR »
+ * contient bien les deux mots cherchés, et le « FR » en plus ne gêne pas.
  */
 function chercherProgrammes(programmes, noms) {
-  const nu = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[^a-z0-9]/g, "");
   return noms.map((nom) => {
-    const cle = nu(nom);
-    const trouve = programmes.filter((p) => {
-      const c = nu(p.name);
-      return c.includes(cle) || cle.includes(c);
-    });
+    const cherches = motsDuNom(nom);
+    const trouve = cherches.length
+      ? programmes.filter((p) => {
+          const mots = new Set(motsDuNom(p.name));
+          return cherches.every((m) => mots.has(m));
+        })
+      : [];
     return {
       cherche: nom,
       trouves: trouve.map((p) => ({
@@ -217,6 +233,9 @@ function chercherProgrammes(programmes, noms) {
         rejoint: Boolean(p.rejoint),
         // Le nom du champ varie selon les comptes ; on accepte les deux.
         flux: p.productFeeds ?? p.hasProductFeed ?? null,
+        // Le programme tel que l'API le rend, pour découvrir le vrai nom du
+        // champ « flux produits » au lieu de le deviner.
+        brut: p,
       })),
     };
   });

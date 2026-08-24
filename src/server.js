@@ -1427,6 +1427,13 @@ if (require.main === module) {
                   `${t.rejoint ? ", rejoint" : ", non rejoint"}` +
                   `${t.flux === null ? "" : t.flux ? ", AVEC flux produits" : ", sans flux produits"}`
               );
+              /* Le nom du champ « flux produits » n'est pas documenté et mes
+                 deux suppositions rendent null. Plutôt que d'en essayer
+                 d'autres à l'aveugle, on affiche ce que l'API envoie
+                 réellement — une fois, sur la première correspondance. */
+              if (t.flux === null && t.brut) {
+                console.log(`[awin]   champs disponibles : ${JSON.stringify(t.brut).slice(0, 400)}`);
+              }
             }
           }
         } catch (e) {
