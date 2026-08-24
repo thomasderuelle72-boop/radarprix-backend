@@ -56,6 +56,7 @@ const zlib = require("node:zlib");
    cookies, pause par hôte. AGENT ne sert plus qu'aux flux XML, qui n'ont
    jamais été protégés et qu'un en-tête honnête suffit à obtenir. */
 const { recuperer: naviguer } = require("./navigateur");
+const lecture = require("./lecture");
 
 const AGENT = "Mozilla/5.0 (compatible; RadarPrix/1.0; +https://radarprix.fr)";
 const Parser = require("rss-parser");
@@ -783,10 +784,34 @@ async function collecterCatalogue(cible) {
   if (!tranche.length) throw new Error("catalogue vide — aucune fiche à relever");
 
   const offres = [];
+  let lues = 0;
   for (const fiche of tranche) {
     try {
       const page = await recuperer(fiche.url, 20000);
-      const p = page.texte ? produitDepuisHtml(page.texte) : null;
+      let p = page.texte ? produitDepuisHtml(page.texte) : null;
+
+      /* Repli, et repli seulement. Le balisage passe d'abord et garde la
+         main : il est gratuit, instantané, et c'est le marchand lui-même qui
+         l'écrit. Le modèle n'intervient que sur les pages où il n'y a
+         littéralement rien à lire — onze marchands du registre sont dans ce
+         cas, mesurés le 24 août. Un repli qui se déclencherait à tort
+         coûterait de l'argent sur chaque fiche, huit fois par jour. */
+      if ((!p || !Number.isFinite(p.prix)) && page.texte && lecture.configure()) {
+        const lu = await lecture.lireSousBudget(page.texte);
+        if (lu) {
+          p = {
+            nom: lu.nom,
+            prix: lu.prix,
+            prixReference: lu.prixReference,
+            image: p ? p.image : null,
+            description: p ? p.description : null,
+            caracteristiques: [],
+            source: "modele",
+          };
+          lues++;
+        }
+      }
+
       if (!p || !Number.isFinite(p.prix)) {
         marquerEchec(fiche.id);
         continue;
@@ -815,6 +840,15 @@ async function collecterCatalogue(cible) {
       marquerEchec(fiche.id);
     }
     await dormir(PAUSE_ENTRE_FICHES);
+  }
+
+  if (lues) {
+    // Sans ce chiffre, un marchand qui casse son balisage passerait pour
+    // toujours lisible, et la facture monterait sans que rien ne le dise.
+    console.log(
+      `[lecture] ${cible.merchant || racine} : ${lues} fiche(s) lue(s) par le modèle ` +
+        `(${lecture.budgetRestant()} restant(s) sur ce scan).`
+    );
   }
 
   if (!offres.length) throw new Error(`aucune fiche lisible sur ${tranche.length} relevée(s)`);
@@ -1387,6 +1421,25 @@ const CATALOGUES_MARCHANDS = [
   { nom: "Rue du Commerce", racine: "https://www.rueducommerce.fr", categorie: "hightech" },
   { nom: "Brico Dépôt", racine: "https://www.bricodepot.fr", categorie: "maison" },
   { nom: "Truffaut", racine: "https://www.truffaut.com", categorie: "maison" },
+
+  /* Les onze qu'on atteint sans savoir les lire. Leurs sitemaps répondent,
+     leurs pages arrivent entières, et extraction.js n'y trouve ni
+     schema.org, ni microdata, ni OpenGraph exploitable. Ils ne sont
+     suivis que parce que lecture.js existe : sans clé Anthropic, ils
+     échoueront proprement et le journal le dira, sans rien casser
+     d'autre. Ce sont eux qui paieront le repli — et personne d'autre,
+     puisque le modèle ne se déclenche que là où le balisage se tait. */
+  { nom: "Aldi", racine: "https://www.aldi.fr", categorie: "alimentaire" },
+  { nom: "Free", racine: "https://www.free.fr", categorie: "hightech" },
+  { nom: "Ikea", racine: "https://www.ikea.com", categorie: "maison" },
+  { nom: "Leroy Merlin", racine: "https://www.leroymerlin.fr", categorie: "maison" },
+  { nom: "Kiabi", racine: "https://www.kiabi.com", categorie: "mode" },
+  { nom: "Vinted", racine: "https://www.vinted.fr", categorie: "mode" },
+  { nom: "Marionnaud", racine: "https://www.marionnaud.fr", categorie: "beaute" },
+  { nom: "Nocibé", racine: "https://www.nocibe.fr", categorie: "beaute" },
+  { nom: "Momox", racine: "https://www.momox-shop.fr", categorie: "tout" },
+  { nom: "Feu Vert", racine: "https://www.feuvert.fr", categorie: "auto" },
+  { nom: "Midas", racine: "https://www.midas.fr", categorie: "auto" },
 ];
 
 /**
@@ -1540,6 +1593,9 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
     throw new Error("Un scan est déjà en cours.");
   }
   scanEnCours = true;
+  // Le plafond de lectures se réarme à chaque scan : un budget qui ne se
+  // rouvre jamais finirait par tout bloquer sans rien dire.
+  lecture.ouvrirBudget();
 
   const runId = debuterScan(source, cibles.length, userId);
   const bilan = { runId, cibles: cibles.length, offres: 0, analyses: 0, publies: 0, ignorees: 0, erreurs: 0, details: [] };

@@ -33,6 +33,8 @@ Point d'entrée : `npm start` → `src/server.js` (port `PORT` ou 3001).
 | `marchands.js` | Registre de 122 enseignes et marques françaises : reconnaissance d'un vendeur par domaine ou par son nom dans un texte, et construction du lien de sortie vers le marchand |
 | `categories.js` | Rubriques des sources ramenées aux catégories RadarPrix |
 | `extraction.js` | Lecture d'une fiche produit telle que le marchand la publie : JSON-LD schema.org, microdata, OpenGraph |
+| `navigateur.js` | Client HTTP qui ressemble à un navigateur : jeu d'en-têtes complet, pot à cookies, pause par hôte, patience sur 429/503, **lecture bornée à 20 Mo** |
+| `lecture.js` | Repli du balisage : lit le prix d'une fiche avec un modèle, sous schéma strict et sous budget. N'écrit jamais un prix absent de la page |
 | `pepper.js` | Lecture des sites de bons plans bâtis sur Pepper (Dealabs, Mydealz…) |
 | `catalogue.js` | Suivi du catalogue d'un marchand par son propre sitemap : découverte, échantillon stable, rotation des relevés |
 | `awin.js` | Catalogues produits des marchands via le réseau d'affiliation — la voie vers l'indépendance |
@@ -75,6 +77,9 @@ a été **retirée** puis **remplacée** par une acquisition propre :
 | `ADMIN_EMAIL` | Email promu admin à l'inscription. |
 | `CORS_ORIGINS` | Origines autorisées (remplace la liste par défaut). |
 | `FIRECRAWL_API_KEY` | Clé du scraping SaaS (sans elle, seules les cibles à flux marchent). |
+| `ANTHROPIC_API_KEY` | Lecture assistée par modèle (`lecture.js`). Sans elle, le repli se tait. |
+| `LECTURE_MODELE` | Modèle de lecture. Défaut `claude-opus-5` ; descendre en gamme est un arbitrage de coût, donc une décision d'exploitant. |
+| `LECTURE_PLAFOND` | Fiches lues par le modèle au plus, par scan (défaut 40). |
 | `SCAN_TOKEN` | Jeton cron pour `POST /api/admin/scan` (en-tête `x-scan-token`). |
 | `AWIN_PUBLISHER_ID`, `AWIN_API_TOKEN`, `AWIN_FEED_KEY` | Réseau d'affiliation. Les deux premières ouvrent l'API, la troisième les catalogues produits. |
 
@@ -198,6 +203,13 @@ publiée si aucun lien n'est constructible.
 - Extraction du prix depuis le markdown Firecrawl = heuristique (regex) : peut
   attraper un mauvais nombre sur une page complexe. Fiabiliser en passant par
   `data.product` structuré de Firecrawl, ou par un LLM.
+- `lecture.js` ne se déclenche **qu'en repli** de `extraction.js`, et refuse
+  tout prix qui ne se retrouve pas tel quel dans le texte de la page. C'est
+  le garde-fou central : un prix inventé mais plausible est pire qu'une
+  absence de prix — il devient une référence, puis une remise, puis une
+  carte qui ment. Le cache de préfixe n'est pas branché, et volontairement :
+  il demande mille tokens stables en tête de requête, la consigne est bien
+  plus courte, l'activer ne ferait rien en silence.
 - `better-sqlite3` bloque le thread principal : plafond de charge du site.
 - Rate limiting en mémoire : ok mono-processus (Railway), à revoir si scale-out.
 - Pas de réinitialisation de mot de passe ni de vérification d'email.
