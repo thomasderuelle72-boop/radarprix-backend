@@ -1700,7 +1700,10 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
               lienType: a.lienType || null,
               // Domaine de l'enseigne, pour afficher son logo plutôt que
               // son initiale.
-              marchandDomaine: domaineDeMarchand(a.seller || cible.merchant),
+              // Le catalogue d'affiliation connaît le domaine du vendeur ;
+              // le registre ne connaît que les enseignes qu'on y a mises.
+              // On préfère donc ce que la source affirme à ce qu'on devine.
+              marchandDomaine: a.marchandDomaine || domaineDeMarchand(a.seller || cible.merchant),
             },
           });
           publierDeal(id);

@@ -36,6 +36,20 @@ https://www.awin1.com/pclick.php?p=123|Casque Sony WH-1000XM5|SKU1|Boulanger|htt
     expect(o.url).toContain("awin1.com");
   });
 
+  it("retient le domaine du marchand, pas celui du réseau d'affiliation", () => {
+    // Le lien de sortie passe par awin1.com ; s'en servir pour le logo
+    // afficherait la marque du réseau sur une carte RadarPrix.
+    const csv = `product_name|search_price|merchant_name|merchant_deep_link
+Parfum|39.90|Perfumeria Comas|https://www.perfumeriascomas.fr/p/123`;
+    expect(awin.offresDuCatalogue(csv)[0].marchandDomaine).toBe("perfumeriascomas.fr");
+  });
+
+  it("ne prétend pas connaître le domaine quand le catalogue ne le donne pas", () => {
+    const csv = `product_name|search_price|merchant_name
+Parfum|39.90|Perfumeria Comas`;
+    expect(awin.offresDuCatalogue(csv)[0].marchandDomaine).toBeNull();
+  });
+
   it("survit à une description qui contient le séparateur et des guillemets", () => {
     // Le cas qui décale toutes les colonnes suivantes quand on découpe
     // naïvement : le prix se retrouverait dans la marque.

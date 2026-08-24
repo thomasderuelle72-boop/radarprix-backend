@@ -67,6 +67,9 @@ const COLONNES = [
   "aw_deep_link", "product_name", "merchant_product_id", "merchant_name", "merchant_id",
   "aw_image_url", "description", "search_price", "rrp_price", "store_price",
   "currency", "in_stock", "brand_name", "ean", "category_name", "delivery_cost",
+  // Le lien direct du marchand : il ne sert pas à cliquer (on passe par
+  // l'affiliation) mais à savoir de quel domaine afficher le logo.
+  "merchant_deep_link",
 ];
 
 /**
@@ -115,6 +118,16 @@ const nombre = (v) => {
   return Number.isFinite(n) && n > 0 ? n : null;
 };
 
+/** L'hôte d'une adresse, sans « www. » — null si l'adresse est illisible. */
+function hoteDe(url) {
+  if (!url) return null;
+  try {
+    return new URL(String(url)).hostname.replace(/^www\./, "") || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Convertit un catalogue CSV en offres.
  *
@@ -157,6 +170,11 @@ function offresDuCatalogue(csv, sep = "|") {
       refPriceAnnonce: conseille && conseille > prix ? conseille : null,
       // Le lien d'affiliation mène chez le marchand : c'est tout l'intérêt.
       url: lire(cases, "aw_deep_link"),
+      /* Mais son hôte est celui du réseau (awin1.com), pas celui du
+         vendeur. Sans ce champ, la carte afficherait le logo d'Awin à la
+         place de celui du marchand — le réseau d'affiliation n'a rien à
+         faire sur une carte RadarPrix. Le lien direct du catalogue le dit. */
+      marchandDomaine: hoteDe(lire(cases, "merchant_deep_link")),
       seller: lire(cases, "merchant_name"),
       img: lire(cases, "aw_image_url"),
       description: (lire(cases, "description") || "").slice(0, 1200) || null,
