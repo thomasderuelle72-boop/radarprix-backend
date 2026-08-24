@@ -132,10 +132,7 @@ async function lireBorne(reponse, maxOctets) {
  * @param {number} [opts.maxOctets] taille maximale du corps lu.
  * @returns {Promise<{code:number, texte:string, url:string, tropGros:boolean}>}
  */
-async function recuperer(
-  url,
-  { ms = 30000, referer = null, reprises = 2, maxOctets = MAX_OCTETS } = {}
-) {
+async function demander(url, { ms, referer }) {
   const hote = hoteDe(url);
 
   // On ne rafale pas un domaine : ni pour passer inaperçu, ni pour le confort
@@ -161,6 +158,48 @@ async function recuperer(
     signal: AbortSignal.timeout(ms),
   });
   if (hote) lireCookies(reponse, hote);
+  return reponse;
+}
+
+/**
+ * Parcourt un document sans jamais le tenir entier en mémoire.
+ *
+ * Écrit pour les sitemaps d'Ikea : sept d'entre eux dépassent la borne de
+ * vingt mégaoctets, et les refuser revenait à écarter un marchand entier
+ * pour une limite qui est la nôtre, pas la sienne. On peut lire un fichier
+ * de deux cents mégaoctets sans en garder plus d'un morceau à la fois — à
+ * condition de traiter au vol au lieu d'accumuler.
+ *
+ * `surMorceau` reçoit chaque tranche décodée et rend `false` pour arrêter :
+ * une fois les deux cents adresses trouvées, le reste du fichier ne nous
+ * apprend plus rien et continuer serait du gaspillage des deux côtés.
+ */
+async function parcourir(url, { ms = 60000, referer = null, surMorceau } = {}) {
+  const reponse = await demander(url, { ms, referer });
+  if (!reponse.ok || !reponse.body) {
+    await reponse.body?.cancel().catch(() => {});
+    return { code: reponse.status, complet: false };
+  }
+  const lecteur = reponse.body.getReader();
+  const decodeur = new TextDecoder("utf-8");
+  for (;;) {
+    const { done, value } = await lecteur.read();
+    if (done) break;
+    // `stream: true` : un caractère accentué peut être coupé entre deux
+    // morceaux, et le décoder isolément produirait un losange noir.
+    if (surMorceau(decodeur.decode(value, { stream: true })) === false) {
+      await lecteur.cancel().catch(() => {});
+      return { code: reponse.status, complet: false };
+    }
+  }
+  return { code: reponse.status, complet: true };
+}
+
+async function recuperer(
+  url,
+  { ms = 30000, referer = null, reprises = 2, maxOctets = MAX_OCTETS } = {}
+) {
+  const reponse = await demander(url, { ms, referer });
 
   /* 429 et 503 ne sont pas des refus : ce sont des « pas si vite ». Les
      traiter comme un échec définitif nous faisait abandonner des marchands
@@ -187,4 +226,4 @@ function oublier() {
   dernierPassage.clear();
 }
 
-module.exports = { recuperer, oublier, EN_TETES, PAUSE_PAR_HOTE, MAX_OCTETS };
+module.exports = { recuperer, parcourir, oublier, EN_TETES, PAUSE_PAR_HOTE, MAX_OCTETS };

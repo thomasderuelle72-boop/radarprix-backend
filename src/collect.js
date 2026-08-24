@@ -1432,19 +1432,21 @@ const CATALOGUES_MARCHANDS = [
   { nom: "Brico Dépôt", racine: "https://www.bricodepot.fr", categorie: "maison" },
   { nom: "Truffaut", racine: "https://www.truffaut.com", categorie: "maison" },
 
-  /* Les onze qu'on atteint sans savoir les lire. Leurs sitemaps répondent,
+  /* Ceux qu'on atteint sans que le balisage réponde. Deux ont été retirés
+     après mesure : Vinted, dont le sitemap ne contient que des catégories et
+     aucune fiche, et Aldi, dont les pages n'affichent aucun prix — c'est un
+     discounter physique, il n'a rien à vendre en ligne. Les garder revenait
+     à faire échouer deux cibles à chaque scan pour rien. Leurs sitemaps répondent,
      leurs pages arrivent entières, et extraction.js n'y trouve ni
      schema.org, ni microdata, ni OpenGraph exploitable. Ils ne sont
      suivis que parce que lecture.js existe : sans clé Anthropic, ils
      échoueront proprement et le journal le dira, sans rien casser
      d'autre. Ce sont eux qui paieront le repli — et personne d'autre,
      puisque le modèle ne se déclenche que là où le balisage se tait. */
-  { nom: "Aldi", racine: "https://www.aldi.fr", categorie: "alimentaire" },
   { nom: "Free", racine: "https://www.free.fr", categorie: "hightech" },
   { nom: "Ikea", racine: "https://www.ikea.com", categorie: "maison" },
   { nom: "Leroy Merlin", racine: "https://www.leroymerlin.fr", categorie: "maison" },
   { nom: "Kiabi", racine: "https://www.kiabi.com", categorie: "mode" },
-  { nom: "Vinted", racine: "https://www.vinted.fr", categorie: "mode" },
   { nom: "Marionnaud", racine: "https://www.marionnaud.fr", categorie: "beaute" },
   { nom: "Nocibé", racine: "https://www.nocibe.fr", categorie: "beaute" },
   { nom: "Momox", racine: "https://www.momox-shop.fr", categorie: "tout" },

@@ -37,7 +37,7 @@
 
 const { db } = require("./db");
 
-const { recuperer: naviguer } = require("./navigateur");
+const { recuperer: naviguer, parcourir: naviguerEnFlux } = require("./navigateur");
 
 const AGENT = "Mozilla/5.0 (compatible; RadarPrix/1.0; +https://radarprix.fr)";
 
@@ -192,28 +192,24 @@ async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
 
   const fiches = new Set();
   let ecartes = 0;
+  const retenir = (u) =>
+    !u.endsWith(".xml") && !u.endsWith(".gz") && ficheProbable(u) && autorise(u, interdits);
+
   for (const sm of (candidats.length ? candidats : feuilles).slice(0, 8)) {
-    const s = await recuperer(sm, 60000);
-    // Un sitemap qu'on a renoncé à lire n'est pas un sitemap vide : le dire,
-    // sinon le marchand ressort « aucune fiche trouvée » et on cherche au
-    // mauvais endroit.
-    if (s.tropGros) {
+    try {
+      /* Lu au fil de l'eau. Sept sitemaps d'Ikea dépassaient la borne de
+         vingt mégaoctets, et les refuser revenait à écarter un marchand
+         entier pour une limite qui est la nôtre, pas la sienne.
+
+         Le plafond, lui, reste une condition de survie du processus :
+         Boulanger liste quatre-vingt mille adresses, E.Leclerc et Rue du
+         Commerce cent mille, et la sonde qui les enchaînait s'est fait tuer
+         par l'hébergeur — « Killed », sans un mot de plus. On s'arrête donc
+         dès qu'il y a de quoi remplir la rotation. */
+      for (const u of await adressesEnFlux(sm, plafond, retenir)) fiches.add(u);
+    } catch {
       ecartes++;
-      continue;
     }
-    // Quatre fois le plafond : de quoi absorber les .xml et les chemins
-    // interdits qu'on écarte ensuite, sans lire le fichier entier.
-    for (const u of adresses(s.texte, plafond * 4)) {
-      if (u.endsWith(".xml") || u.endsWith(".gz")) continue;
-      if (!ficheProbable(u)) continue;
-      if (autorise(u, interdits)) fiches.add(u);
-      if (fiches.size >= plafond) break;
-    }
-    /* Le plafond n'est pas un confort, c'est une condition de survie du
-       processus. Boulanger en liste quatre-vingt mille, E.Leclerc et Rue du
-       Commerce cent mille : la sonde qui les enchaînait s'est fait tuer par
-       l'hébergeur au vingt-sixième marchand — « Killed », sans un mot de
-       plus. Et de toute façon on n'en suit que huit cents. */
     if (fiches.size >= plafond) break;
   }
   /* Quand une partie des adresses porte une marque de fiche, on ne garde
@@ -226,7 +222,7 @@ async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
   if (!fiches.size) {
     throw new Error(
       ecartes
-        ? `${ecartes} sitemap(s) trop volumineux pour être lus`
+        ? `${ecartes} sitemap(s) illisibles`
         : "aucune fiche trouvée dans les sitemaps"
     );
   }
@@ -312,6 +308,38 @@ function etatCatalogue(cibleId) {
     )
     .get(cibleId);
   return { total: l.total, jamais: l.jamais || 0, abandonnees: l.abandonnees || 0, plusAncien: l.plus_ancien };
+}
+
+/**
+ * Les adresses d'un sitemap, lues au fil de l'eau.
+ *
+ * En traitant chaque morceau au vol, la taille du fichier cesse d'être un
+ * problème : on n'en garde jamais plus d'une tranche, et on s'arrête dès
+ * qu'on a de quoi remplir la rotation — le reste du fichier ne nous
+ * apprendrait rien et le télécharger serait du gaspillage des deux côtés.
+ *
+ * Le report entre morceaux n'est pas un détail : une balise <loc> coupée en
+ * deux par le découpage réseau serait perdue sans lui, et rien ne le
+ * signalerait — on croirait simplement le sitemap plus pauvre qu'il n'est.
+ */
+async function adressesEnFlux(url, plafond, garder) {
+  const trouvees = [];
+  let report = "";
+  await naviguerEnFlux(url, {
+    ms: 90000,
+    surMorceau: (morceau) => {
+      const texte = report + morceau;
+      let dernier = 0;
+      for (const m of texte.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/g)) {
+        dernier = m.index + m[0].length;
+        if (garder(m[1])) trouvees.push(m[1]);
+        if (trouvees.length >= plafond) return false;
+      }
+      report = texte.slice(Math.max(dernier, texte.length - 2000));
+      return true;
+    },
+  });
+  return trouvees;
 }
 
 /**
