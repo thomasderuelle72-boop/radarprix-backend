@@ -232,13 +232,63 @@ function chercherProgrammes(programmes, noms) {
         nom: p.name,
         rejoint: Boolean(p.rejoint),
         // Le nom du champ varie selon les comptes ; on accepte les deux.
-        flux: p.productFeeds ?? p.hasProductFeed ?? null,
-        // Le programme tel que l'API le rend, pour découvrir le vrai nom du
-        // champ « flux produits » au lieu de le deviner.
-        brut: p,
-      })),
+        })),
     };
   });
+}
+
+/**
+ * Les catalogues produits auxquels ce compte a accès.
+ *
+ * Vérifié : l'endpoint des programmes n'expose AUCUN champ disant si un
+ * marchand publie un flux — ni productFeeds, ni hasProductFeed, rien. Cette
+ * information ne vit que dans l'interface Awin.
+ *
+ * Elle vit aussi ici, dans la liste des flux, et c'est ce qui donne à
+ * AWIN_FEED_KEY sa vraie valeur : sans elle on ne peut ni télécharger un
+ * catalogue, ni même SAVOIR lesquels des 21 311 programmes du réseau en
+ * publient un. Or c'est le seul critère qui compte pour choisir à quels
+ * programmes candidater — LiTime l'a montré : accepté, bons indicateurs,
+ * aucun flux, rien à en tirer.
+ *
+ * Les colonnes sont retrouvées par leur nom, comme pour les catalogues :
+ * Awin en ajoute et en réordonne.
+ */
+async function fluxDisponibles() {
+  const cle = process.env.AWIN_FEED_KEY;
+  if (!cle) return { actif: false, raison: "AWIN_FEED_KEY absente" };
+
+  const rep = await fetch(`${CATALOGUES}/list/apikey/${cle}/`, { signal: AbortSignal.timeout(60000) });
+  if (!rep.ok) throw new Error(`liste des flux : HTTP ${rep.status}`);
+
+  const lignes = (await rep.text()).split(/\r?\n/).filter((l) => l.trim());
+  if (lignes.length < 2) return { actif: true, colonnes: [], flux: [] };
+
+  const entete = decouper(lignes[0], ",").map((c) => c.trim().replace(/^"|"$/g, ""));
+  const col = (...noms) => {
+    for (const n of noms) {
+      const i = entete.findIndex((e) => e.toLowerCase() === n.toLowerCase());
+      if (i !== -1) return i;
+    }
+    return -1;
+  };
+  const iFeed = col("Feed ID", "feedId", "FeedID");
+  const iNom = col("Advertiser Name", "advertiserName", "Merchant Name");
+  const iAnnonceur = col("Advertiser ID", "advertiserId", "Merchant ID");
+  const iAdhesion = col("Membership Status", "membershipStatus");
+
+  const flux = lignes.slice(1).map((l) => {
+    const c = decouper(l, ",").map((v) => v.trim().replace(/^"|"$/g, ""));
+    return {
+      feedId: iFeed === -1 ? null : c[iFeed],
+      annonceurId: iAnnonceur === -1 ? null : c[iAnnonceur],
+      nom: iNom === -1 ? null : c[iNom],
+      adhesion: iAdhesion === -1 ? null : c[iAdhesion],
+    };
+  });
+  // Les noms de colonnes remontent aussi : si Awin les change, le journal le
+  // dira au lieu de rendre une liste de nulls sans explication.
+  return { actif: true, colonnes: entete, flux };
 }
 
 /* ── Codes promo et promotions du réseau ─────────────────────────────
@@ -471,4 +521,4 @@ async function diagnostic() {
   }
 }
 
-module.exports = { configure, programmesRejoints, tousLesProgrammes, chercherProgrammes, promotions, enOffrePromo, offresDuCatalogue, urlCatalogue, diagnostic, COLONNES };
+module.exports = { configure, programmesRejoints, tousLesProgrammes, fluxDisponibles, chercherProgrammes, promotions, enOffrePromo, offresDuCatalogue, urlCatalogue, diagnostic, COLONNES };
