@@ -1480,6 +1480,17 @@ function semerCibles({ limite = Infinity } = {}) {
 
 // ── Scan complet ────────────────────────────────────────────────
 
+/* Par quel canal cette cible est-elle collectée. Le journal disait
+   « firecrawl » pour tout ce qui n'était pas un flux — les catalogues et les
+   cibles Awin s'y retrouvaient rangés sous un nom qui n'était pas le leur, et
+   la santé par canal mesurait donc un mélange. */
+function canalDe(cible) {
+  if (cible.awinFeeds) return "awin";
+  if (cible.catalogueUrl) return "catalogue";
+  if (cible.feedUrl) return "flux";
+  return "firecrawl";
+}
+
 /** Une seule exécution à la fois : deux scans simultanés se marcheraient sur les pieds. */
 let scanEnCours = false;
 
@@ -1729,7 +1740,7 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         // un flux qui ne publie rien doit dire pourquoi, sinon on retombe
         // sur un site vide dont la collecte a l'air de marcher.
         logSourceEvent(
-          cible.feedUrl ? "flux" : "firecrawl",
+          canalDe(cible),
           true,
           `${cible.query} : ${offres.length} offre(s), ${publies} publiée(s)` +
             // « ou » et non « ni » : il suffit qu'une des deux manque.
@@ -1738,7 +1749,11 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
       } catch (e) {
         bilan.erreurs++;
         ligne.erreur = e.message;
-        logSourceEvent(cible.feedUrl ? "flux" : "firecrawl", false, `${cible.query} : ${e.message}`);
+        logSourceEvent(canalDe(cible), false, `${cible.query} : ${e.message}`);
+        /* Et sur la sortie standard, pas seulement dans source_events : un
+           bilan qui annonce « 10 erreur(s) » sans dire lesquelles oblige à
+           ouvrir la base pour savoir ce qui s'est cassé. */
+        console.error(`[scan] ${cible.query} (${canalDe(cible)}) : ${e.message}`);
       }
       bilan.details.push(ligne);
     }
