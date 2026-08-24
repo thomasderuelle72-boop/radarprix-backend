@@ -63,7 +63,17 @@ db.exec(`
    signature reste la même — collect.js l'importe d'ici. */
 const recuperer = (url, ms = 30000, opts = {}) => naviguer(url, { ms, ...opts });
 
-const adresses = (xml) => [...String(xml).matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/g)].map((m) => m[1]);
+/* Le `max` n'est pas une commodité : sans lui, matchAll matérialise d'un
+   coup le tableau de TOUTES les correspondances d'un sitemap qui pèse
+   plusieurs dizaines de mégaoctets. C'est ce qui a fait tuer la sonde par
+   l'hébergeur, trois fois, exactement au même marchand. */
+const adresses = (xml, max = Infinity) => {
+  const trouvees = [];
+  const motif = /<loc>\s*([^<\s]+)\s*<\/loc>/g;
+  let m;
+  while (trouvees.length < max && (m = motif.exec(String(xml))) !== null) trouvees.push(m[1]);
+  return trouvees;
+};
 
 /* Un sitemap de fiches se reconnaît à son nom. On écarte explicitement les
    catalogues d'avis, de marques et de produits retirés : ils portent les
@@ -142,9 +152,12 @@ async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
   const fiches = new Set();
   for (const sm of (candidats.length ? candidats : feuilles).slice(0, 8)) {
     const s = await recuperer(sm, 60000);
-    for (const u of adresses(s.texte)) {
+    // Quatre fois le plafond : de quoi absorber les .xml et les chemins
+    // interdits qu'on écarte ensuite, sans lire le fichier entier.
+    for (const u of adresses(s.texte, plafond * 4)) {
       if (u.endsWith(".xml") || u.endsWith(".gz")) continue;
       if (autorise(u, interdits)) fiches.add(u);
+      if (fiches.size >= plafond) break;
     }
     /* Le plafond n'est pas un confort, c'est une condition de survie du
        processus. Boulanger en liste quatre-vingt mille, E.Leclerc et Rue du
