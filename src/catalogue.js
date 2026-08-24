@@ -253,9 +253,21 @@ function etatCatalogue(cibleId) {
  * @param {number} [opts.fiches] fiches lues par marchand pour juger
  * @param {(r:object)=>void} [opts.surChaque] appelé après chaque marchand,
  *   pour que l'appelant journalise au fil de l'eau plutôt qu'à la fin —
- *   cent vingt-deux marchands prennent de longues minutes.
+ *   quatre-vingt-quatre marchands prennent de longues minutes.
+ * @param {number} [opts.budgetMs] temps maximal accordé à un marchand.
+ *   Sans lui, `decouvrirFiches` peut en retenir un quart d'heure : dix
+ *   sitemaps à quarante secondes puis huit à soixante. La première sonde a
+ *   calé huit minutes sur Recommerce et n'a jamais vu les cinquante-sept
+ *   marchands suivants. Une mesure qui ne finit pas ne mesure rien.
  */
-async function sonderMarchands({ fiches = 3, surChaque = null } = {}) {
+async function sonderMarchands({ fiches = 3, surChaque = null, budgetMs = 90000 } = {}) {
+  const avecBudget = (promesse, ms) =>
+    Promise.race([
+      promesse,
+      new Promise((_, rejeter) =>
+        setTimeout(() => rejeter(new Error(`abandon après ${Math.round(ms / 1000)} s`)), ms)
+      ),
+    ]);
   const { MARCHANDS } = require("./marchands");
   const { produitDepuisHtml } = require("./extraction");
   const resultats = [];
@@ -267,7 +279,7 @@ async function sonderMarchands({ fiches = 3, surChaque = null } = {}) {
     const ligne = { nom: m.nom, domaine: m.domaine, fiches: 0, lues: 0, essais: 0, erreur: null };
 
     try {
-      const urls = await decouvrirFiches(racine);
+      const urls = await avecBudget(decouvrirFiches(racine), budgetMs);
       ligne.fiches = urls.length;
       // Un pas régulier plutôt que la tête de liste : le début d'un sitemap
       // est souvent une poignée de pages éditoriales sans prix.
