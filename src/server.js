@@ -107,6 +107,7 @@ const {
   deleteTarget,
   semerCibles,
   desactiverCiblesMortes,
+  desactiverCataloguesAbandonnes,
   reparerLiensAgregateur,
   retirerOffresMalNommees,
   retirerRemisesFabriquees,
@@ -1421,6 +1422,16 @@ if (require.main === module) {
     if (m.arretees > 0) console.log(`[cibles] ${m.arretees} cible(s) marchande(s) mise(s) en pause — aucune ne rendait de produit.`);
   } catch (e) {
     console.error(`[cibles] mise en pause impossible : ${e.message}`);
+  }
+
+  /* Le semis ne crée plus Vinted ni Aldi, mais il ne défait pas ce qui
+     existe : les deux cibles tournaient encore et échouaient à chaque scan.
+     Vinted ne publie que des catégories, Aldi n'affiche aucun prix. */
+  try {
+    const n = desactiverCataloguesAbandonnes();
+    if (n > 0) console.log(`[cibles] ${n} catalogue(s) abandonné(s) mis en pause.`);
+  } catch (e) {
+    console.error(`[cibles] abandon impossible : ${e.message}`);
   }
 
   try {

@@ -187,8 +187,16 @@ async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
     else feuilles.push(sm);
   }
 
-  const candidats = [...new Set([...declares, ...feuilles])]
+  let candidats = [...new Set([...declares, ...feuilles])]
     .filter((u) => NOM_FICHES.test(u) && !NOM_INUTILE.test(u));
+
+  /* Quand des sitemaps se réclament de la France, on ne lit que ceux-là.
+     Ikea publie un index mondial : nos huit lectures partaient dans les
+     catalogues étrangers — Bahreïn en tête, par ordre alphabétique — et il
+     ne restait plus de budget pour le catalogue français. On ne relevait pas
+     un seul produit d'un marchand parfaitement lisible. */
+  const francais = candidats.filter((u) => /(?:^|[/_.-])fr(?:[/_.-]|$)|france/i.test(u));
+  if (francais.length) candidats = francais;
 
   const fiches = new Set();
   let ecartes = 0;

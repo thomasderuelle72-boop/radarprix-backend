@@ -1125,6 +1125,22 @@ async function collecterAwin(cible) {
  *
  * Reconnaissables à leur `promo_url`, qui pointe sur un domaine du registre.
  */
+/* Retirées du semis après mesure, mais toujours actives en base — le semis
+   ne crée plus, il ne défait pas. Vinted ne publie que des catégories dans
+   son sitemap ; Aldi n'affiche aucun prix, c'est un discounter physique.
+   Chacune faisait échouer une cible à chaque scan pour rien. */
+const CATALOGUES_ABANDONNES = ["Vinted", "Aldi"];
+
+function desactiverCataloguesAbandonnes() {
+  const info = db
+    .prepare(
+      `UPDATE watch_targets SET active = 0
+       WHERE active = 1 AND catalogue_url IS NOT NULL AND merchant IN (${CATALOGUES_ABANDONNES.map(() => "?").join(",")})`
+    )
+    .run(...CATALOGUES_ABANDONNES);
+  return info.changes;
+}
+
 function desactiverCiblesMortes() {
   const domaines = new Set(MARCHANDS.map((m) => m.domaine.toLowerCase()));
   const actives = db
@@ -1934,6 +1950,7 @@ function etatCollecte() {
 }
 
 module.exports = {
+  desactiverCataloguesAbandonnes,
   listTargets,
   getTarget,
   addTarget,
