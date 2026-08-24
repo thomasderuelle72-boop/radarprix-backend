@@ -1368,6 +1368,40 @@ const CATALOGUES_MARCHANDS = [
 ];
 
 /**
+ * Les catalogues Awin téléchargeables sur le marché français.
+ *
+ * Relevé en production le 24 août 2026 sur la liste des flux : 583
+ * catalogues sont accessibles à notre compte, dont **dix-huit** portent une
+ * région ou une langue française. Tous sont en « Not Joined » — un catalogue
+ * se télécharge donc sans avoir rejoint le programme, ce qui change tout :
+ * on n'attend plus l'accord d'un marchand pour commencer à mesurer.
+ *
+ * Aucun n'est une enseigne du registre. Ce sont des marchands de niche —
+ * parfumerie, luminaire, claviers, soin capillaire — et c'est précisément
+ * ce qu'ils apportent : un lien qui mène VRAIMENT sur la fiche produit, un
+ * prix conseillé publié par le vendeur, et un catalogue assez petit pour
+ * qu'on repasse souvent sur chaque référence. Sur 6 871 références un
+ * passage de soixante fiches revient sur chacune tous les quinze jours ;
+ * sur 209, toutes les trois heures.
+ *
+ * Deux flux d'un même annonceur sont réunis sur une seule cible quand ils
+ * découpent le même catalogue : `urlCatalogue` sait en demander plusieurs
+ * d'un coup, et un seul historique vaut mieux que deux moitiés.
+ */
+const CATALOGUES_AWIN = [
+  { nom: "Perfumeria Comas", feeds: "97867", categorie: "beaute" },
+  { nom: "Éclairage Déco", feeds: "116485,116353", categorie: "maison" },
+  { nom: "AKKO", feeds: "94349", categorie: "hightech" },
+  { nom: "Deluxe Home Art Shop", feeds: "110456", categorie: "maison" },
+  { nom: "Woodstore24", feeds: "87242", categorie: "maison" },
+  { nom: "Bouclème", feeds: "102042", categorie: "beaute" },
+  { nom: "Al Jazeera Perfumes", feeds: "115328", categorie: "beaute" },
+  { nom: "ANITA & ZAHA", feeds: "117451", categorie: "mode" },
+  { nom: "Bodycross", feeds: "115451", categorie: "sport" },
+  { nom: "BlazeVideo", feeds: "89534", categorie: "hightech" },
+];
+
+/**
  * Crée les cibles à partir du registre des enseignes.
  *
  * Le site doit se remplir à l'installation, sans que personne saisisse
@@ -1412,6 +1446,26 @@ function semerCibles({ limite = Infinity } = {}) {
       category: m.categorie,
       merchant: m.nom,
       catalogueUrl: m.racine,
+    });
+    if (r.ok) creees++;
+  }
+
+  /* Les catalogues d'affiliation : même mécanique que les catalogues
+     marchands, sans dépendre du bon vouloir d'un sitemap. La cible est
+     reconnue à ses identifiants de flux, si bien qu'ajouter un flux à un
+     marchand déjà suivi crée une cible distincte plutôt que d'écraser son
+     historique. */
+  const fluxSuivis = new Set(
+    db.prepare("SELECT awin_feeds FROM watch_targets WHERE awin_feeds IS NOT NULL").all().map((r) => r.awin_feeds)
+  );
+  for (const m of CATALOGUES_AWIN) {
+    if (creees >= limite) break;
+    if (fluxSuivis.has(m.feeds)) continue;
+    const r = addTarget({
+      query: `Catalogue ${m.nom}`,
+      category: m.categorie,
+      merchant: m.nom,
+      awinFeeds: m.feeds,
     });
     if (r.ok) creees++;
   }

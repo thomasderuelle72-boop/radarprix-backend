@@ -547,6 +547,9 @@ describe("semis des cibles", () => {
     // Les pages « promotions » des enseignes ne sont plus semées : mesurées
     // une à une, aucune ne rend de produit.
     expect(cibles.filter((c) => c.promoUrl && c.promoUrl.includes("fnac"))).toHaveLength(0);
+    // Les catalogues d'affiliation français, relevés sur la liste des flux.
+    expect(cibles.map((c) => c.awinFeeds)).toContain("97867");
+    expect(cibles.find((c) => c.awinFeeds === "97867").merchant).toBe("Perfumeria Comas");
   });
 
   it("ne recrée rien au second passage — il tourne à chaque démarrage", () => {
