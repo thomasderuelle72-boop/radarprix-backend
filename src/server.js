@@ -1361,6 +1361,20 @@ if (require.main === module) {
     console.error(`[cibles] semis impossible : ${e.message}`);
   }
 
+  /* Configuration Telegram, journalisée au démarrage.
+     Sans cette ligne, une variable qui n'atteint pas le conteneur reste
+     invisible jusqu'à ce qu'elle fasse des dégâts : un plafond posé à 1 mais
+     jamais appliqué a laissé partir trente-deux messages sur le canal public
+     au lieu d'un. Une configuration qu'on ne peut pas lire n'en est pas une. */
+  {
+    const t = telegram.etat();
+    console.log(
+      `[telegram] ${t.mode} — canal ${t.canal}, plafond ${t.capJournalier}/jour, ` +
+        `remise min ${t.reglages.remiseMin} %, prix min ${t.reglages.prixMin} €, ` +
+        `délai ${t.reglages.delaiMinutes} min, jeton ${t.reglages.token}`
+    );
+  }
+
   // Awin est la voie vers l'indépendance : les marchands refusent un robot
   // anonyme mais publient leur catalogue à leurs partenaires affiliés. Le
   // diagnostic dit tout de suite si le compte répond, plutôt que de laisser
