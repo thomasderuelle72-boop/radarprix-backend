@@ -1424,6 +1424,20 @@ if (require.main === module) {
     );
   }
 
+  /* Même raison pour la lecture assistée : sans cette ligne, une clé absente
+     ne se manifeste que par onze marchands qui n'entrent jamais dans le
+     site, sans qu'aucune erreur ne le dise. On journalise ce qui est
+     configuré — jamais la clé elle-même, évidemment. */
+  {
+    const lecture = require("./lecture");
+    console.log(
+      lecture.configure()
+        ? `[lecture] active — modèle ${process.env.LECTURE_MODELE || "claude-opus-5"}, ` +
+            `plafond ${lecture.budgetRestant()} fiche(s) par scan`
+        : "[lecture] inactive — ANTHROPIC_API_KEY absente, le repli du balisage se taira."
+    );
+  }
+
   // Awin est la voie vers l'indépendance : les marchands refusent un robot
   // anonyme mais publient leur catalogue à leurs partenaires affiliés. Le
   // diagnostic dit tout de suite si le compte répond, plutôt que de laisser
