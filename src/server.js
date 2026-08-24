@@ -1281,7 +1281,8 @@ app.post("/api/admin/catalogues/inspecte", autoriserScan, async (req, res) => {
     return res.status(400).json({ error: "Il faut une adresse http(s)." });
   }
   try {
-    res.json(marchand ? await inspecterMarchand(marchand) : await inspecterPage(url));
+    const extrait = Math.min(4000, parseInt(req.body?.extrait, 10) || 240);
+    res.json(marchand ? await inspecterMarchand(marchand) : await inspecterPage(url, { extrait }));
   } catch (e) {
     res.status(502).json({ error: e.message });
   }

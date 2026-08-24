@@ -460,7 +460,7 @@ async function sonderMarchands({ fiches = 3, surChaque = null, budgetMs = 90000 
  * si le caractère « € » apparaît seulement quelque part. Avec ça on saura
  * quoi écrire, au lieu de le deviner.
  */
-async function inspecterPage(url) {
+async function inspecterPage(url, { extrait = 240 } = {}) {
   const page = await recuperer(url, 20000);
   const html = page.texte || "";
   const visible = html
@@ -484,7 +484,10 @@ async function inspecterPage(url) {
     // HTML ne la sauvera.
     euroVisible: visible.includes("€"),
     prixVus: euros,
-    debutTexte: visible.slice(0, 240),
+    debutTexte: visible.slice(0, extrait),
+    // Les sitemaps déclarés : c'est par eux que passe toute la découverte,
+    // et les voir évite de deviner ce qu'un marchand publie.
+    sitemaps: [...String(html).matchAll(/^sitemap:\s*(\S+)/gim)].map((m) => m[1]).slice(0, 40),
     // Les types de <script> présents, dédupliqués : c'est là que se rangent
     // les états applicatifs.
     typesScript: [
