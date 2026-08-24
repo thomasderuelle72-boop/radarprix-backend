@@ -115,7 +115,7 @@ function autorise(url, interdits) {
  * des index pointant vers les vrais fichiers. Au-delà, on s'égare dans des
  * arborescences qui ne mènent nulle part.
  */
-async function decouvrirFiches(racine) {
+async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
   const rob = await recuperer(`${racine}/robots.txt`, 15000);
   if (!rob.texte) throw new Error(`robots.txt indisponible (HTTP ${rob.code})`);
 
@@ -146,7 +146,12 @@ async function decouvrirFiches(racine) {
       if (u.endsWith(".xml") || u.endsWith(".gz")) continue;
       if (autorise(u, interdits)) fiches.add(u);
     }
-    if (fiches.size > 60000) break; // au-delà, la mémoire ne sert à rien
+    /* Le plafond n'est pas un confort, c'est une condition de survie du
+       processus. Boulanger en liste quatre-vingt mille, E.Leclerc et Rue du
+       Commerce cent mille : la sonde qui les enchaînait s'est fait tuer par
+       l'hébergeur au vingt-sixième marchand — « Killed », sans un mot de
+       plus. Et de toute façon on n'en suit que huit cents. */
+    if (fiches.size >= plafond) break;
   }
   if (!fiches.size) throw new Error("aucune fiche trouvée dans les sitemaps");
   return [...fiches];
@@ -279,7 +284,11 @@ async function sonderMarchands({ fiches = 3, surChaque = null, budgetMs = 90000 
     const ligne = { nom: m.nom, domaine: m.domaine, fiches: 0, lues: 0, essais: 0, erreur: null };
 
     try {
-      const urls = await avecBudget(decouvrirFiches(racine), budgetMs);
+      /* La sonde répond à « sait-on lire ce marchand ? », pas à « combien
+         a-t-il de fiches ». Deux cents suffisent à en tirer trois, et ne
+         pas en garder cent mille est ce qui lui permet d'aller au bout des
+         quatre-vingt-quatre. */
+      const urls = await avecBudget(decouvrirFiches(racine, { plafond: 200 }), budgetMs);
       ligne.fiches = urls.length;
       // Un pas régulier plutôt que la tête de liste : le début d'un sitemap
       // est souvent une poignée de pages éditoriales sans prix.
