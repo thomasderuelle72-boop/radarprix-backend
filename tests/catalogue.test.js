@@ -101,3 +101,30 @@ describe("rotation", () => {
     expect(e.abandonnees).toBe(0);
   });
 });
+
+describe("robots.txt", () => {
+  it("ne retient que le bloc écrit pour tout le monde", () => {
+    // Se glisser dans les règles rédigées pour Googlebot, ce serait
+    // précisément se faire passer pour un autre.
+    const robots = `
+User-agent: Googlebot
+Disallow: /
+
+User-agent: *
+Disallow: /panier
+Disallow: /compte   # espace client
+Allow: /produit
+`;
+    expect(cat.cheminsInterdits(robots)).toEqual(["/panier", "/compte"]);
+  });
+
+  it("écarte une fiche placée sous un chemin interdit", () => {
+    const interdits = ["/panier", "/recherche"];
+    expect(cat.autorise("https://m.fr/produit/123", interdits)).toBe(true);
+    expect(cat.autorise("https://m.fr/recherche?q=tv", interdits)).toBe(false);
+  });
+
+  it("laisse tout passer quand rien n'est interdit", () => {
+    expect(cat.autorise("https://m.fr/produit/1", [])).toBe(true);
+  });
+});

@@ -82,6 +82,7 @@ const {
   listDeals: listDealsUnifies,   TYPES_DEAL,
 } = require("./dealsStore");
 const { domainePourLogo } = require("./marchands");
+const { sonderMarchands } = require("./catalogue");
 const telegram = require("./telegram");
 
 /* Les enseignes dont RadarPrix parcourt déjà le catalogue par sitemap. Si
@@ -1217,6 +1218,49 @@ app.post("/api/admin/scan", autoriserScan, (req, res) => {
     demarre: true,
     message: "Scan lancé — suis son avancement sur GET /api/admin/scan/status.",
   });
+});
+
+/* POST /api/admin/catalogues/sonde — qui, dans le registre, se laisse lire ?
+
+   Répond aussitôt et travaille en fond, comme le scan : cent vingt-deux
+   marchands à sonder prennent de longues minutes. Le résultat part dans le
+   journal au fil de l'eau — c'est une mesure qu'on lit, pas une donnée
+   qu'on sert.
+
+   Même jeton que le scan : c'est de l'administration, et ça sort du réseau
+   en notre nom. */
+let sondeEnCours = false;
+app.post("/api/admin/catalogues/sonde", autoriserScan, (req, res) => {
+  if (sondeEnCours) return res.status(409).json({ error: "Une sonde est déjà en cours." });
+  sondeEnCours = true;
+
+  const debut = Date.now();
+  let lisibles = 0;
+  let sondes = 0;
+  sonderMarchands({
+    fiches: 3,
+    surChaque: (r) => {
+      sondes++;
+      if (r.lues > 0) lisibles++;
+      console.log(
+        r.erreur
+          ? `[sonde] ${r.nom} : ${r.erreur}`
+          : `[sonde] ${r.nom} : ${r.fiches} fiche(s) listée(s), ${r.lues}/${r.essais} lue(s)`
+      );
+    },
+  })
+    .then(() =>
+      console.log(
+        `[sonde] terminée — ${lisibles} marchand(s) lisible(s) sur ${sondes}, ` +
+          `en ${Math.round((Date.now() - debut) / 1000)} s.`
+      )
+    )
+    .catch((e) => console.error(`[sonde] échec : ${e.message}`))
+    .finally(() => {
+      sondeEnCours = false;
+    });
+
+  res.status(202).json({ demarre: true, message: "Sonde lancée — le résultat part dans le journal." });
 });
 
 // GET /api/admin/scan/status — exécutions récentes + santé des canaux de collecte.

@@ -52,6 +52,11 @@ const zlib = require("node:zlib");
    robots.txt autorise « / » et n'interdit ni /hot ni /rss — le filtre est
    grossier, pas une consigne. Les consignes, elles, se lisent dans
    robots.txt, et on les respecte. */
+/* Les pages HTML passent par navigateur.js — jeu d'en-têtes complet, pot à
+   cookies, pause par hôte. AGENT ne sert plus qu'aux flux XML, qui n'ont
+   jamais été protégés et qu'un en-tête honnête suffit à obtenir. */
+const { recuperer: naviguer } = require("./navigateur");
+
 const AGENT = "Mozilla/5.0 (compatible; RadarPrix/1.0; +https://radarprix.fr)";
 const Parser = require("rss-parser");
 const { XMLParser } = require("fast-xml-parser");
@@ -855,13 +860,10 @@ async function collecterPepper(cible) {
   const origine = new URL(cible.promoUrl).origin;
   const hote = new URL(cible.promoUrl).hostname;
 
-  const page = await fetch(cible.promoUrl, {
-    headers: { "User-Agent": AGENT },
-    signal: AbortSignal.timeout(25000),
-  });
-  if (!page.ok) throw new Error(`page indisponible (HTTP ${page.status})`);
+  const page = await naviguer(cible.promoUrl, { ms: 25000 });
+  if (!page.texte) throw new Error(`page indisponible (HTTP ${page.code})`);
 
-  const fils = extraireFils(await page.text());
+  const fils = extraireFils(page.texte);
   if (fils.length === 0) throw new Error("aucun bon plan lisible sur la page");
 
   const offres = fils
@@ -935,12 +937,9 @@ async function collecterPagePromo(cible) {
     });
     html = donnees.rawHtml || null;
   } else {
-    const rep = await fetch(cible.promoUrl, {
-      headers: { "User-Agent": AGENT },
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!rep.ok) throw new Error(`page promotions indisponible (HTTP ${rep.status})`);
-    html = await rep.text();
+    const rep = await naviguer(cible.promoUrl, { ms: 20000 });
+    if (!rep.texte) throw new Error(`page promotions indisponible (HTTP ${rep.code})`);
+    html = rep.texte;
   }
 
   const fiches = html ? produitsDepuisHtml(html) : [];

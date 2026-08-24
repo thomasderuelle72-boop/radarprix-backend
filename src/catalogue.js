@@ -37,6 +37,8 @@
 
 const { db } = require("./db");
 
+const { recuperer: naviguer } = require("./navigateur");
+
 const AGENT = "Mozilla/5.0 (compatible; RadarPrix/1.0; +https://radarprix.fr)";
 
 db.exec(`
@@ -55,14 +57,11 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_fiches_rotation ON catalogue_fiches(cible, dernier_releve);
 `);
 
-const recuperer = async (url, ms = 30000) => {
-  const r = await fetch(url, {
-    headers: { "User-Agent": AGENT, Accept: "text/html,application/xml,*/*;q=0.8" },
-    redirect: "follow",
-    signal: AbortSignal.timeout(ms),
-  });
-  return { code: r.status, texte: r.ok ? await r.text() : "" };
-};
+/* La récupération passe désormais par navigateur.js : jeu d'en-têtes
+   complet, pot à cookies, pause par hôte, patience sur 429/503. L'ancien
+   `fetch` nu portait un seul en-tête, ce qui est en soi un signal. La
+   signature reste la même — collect.js l'importe d'ici. */
+const recuperer = (url, ms = 30000, opts = {}) => naviguer(url, { ms, ...opts });
 
 const adresses = (xml) => [...String(xml).matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/g)].map((m) => m[1]);
 
@@ -71,6 +70,43 @@ const adresses = (xml) => [...String(xml).matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/
    mêmes mots mais ne mènent à aucun prix. */
 const NOM_FICHES = /produit|product|fiche|catalog/i;
 const NOM_INUTILE = /inactive|review|avis|brand|marque|categor|store|edito|conseil/i;
+
+/**
+ * Les chemins que robots.txt interdit à tout le monde.
+ *
+ * On ne lit que le bloc « User-agent: * » : un marchand qui nous nommerait
+ * expressément n'existe pas, et se glisser dans les règles écrites pour
+ * Googlebot serait précisément se faire passer pour un autre.
+ */
+function cheminsInterdits(robots) {
+  const interdits = [];
+  let concerne = false;
+  for (const ligne of String(robots).split(/\r?\n/)) {
+    const propre = ligne.replace(/#.*$/, "").trim();
+    if (!propre) continue;
+    const [cle, ...reste] = propre.split(":");
+    const valeur = reste.join(":").trim();
+    const nom = cle.trim().toLowerCase();
+    if (nom === "user-agent") concerne = valeur === "*";
+    else if (concerne && nom === "disallow" && valeur) interdits.push(valeur);
+  }
+  return interdits;
+}
+
+/** Une adresse est-elle hors des chemins interdits ? */
+function autorise(url, interdits) {
+  if (!interdits.length) return true;
+  let chemin;
+  try {
+    chemin = new URL(url).pathname;
+  } catch {
+    return false;
+  }
+  // Le préfixe fait foi, comme le veut la norme ; « * » et « $ » restent
+  // ignorés — les gérer demanderait un vrai analyseur, et aucun marchand du
+  // registre ne s'en sert pour interdire ses fiches produits.
+  return !interdits.some((i) => chemin.startsWith(i));
+}
 
 /**
  * Découvre les fiches d'un marchand à partir de son robots.txt.
@@ -85,6 +121,11 @@ async function decouvrirFiches(racine) {
 
   const declares = [...rob.texte.matchAll(/^sitemap:\s*(\S+)/gim)].map((m) => m[1]);
   if (!declares.length) throw new Error("aucun sitemap déclaré dans robots.txt");
+
+  /* On lisait la liste des sitemaps dans robots.txt sans jamais lire ses
+     interdictions — prendre ce qu'un fichier offre en ignorant ce qu'il
+     refuse. Les chemins interdits sont désormais écartés. */
+  const interdits = cheminsInterdits(rob.texte);
 
   const feuilles = [];
   for (const sm of declares.slice(0, 10)) {
@@ -102,7 +143,8 @@ async function decouvrirFiches(racine) {
   for (const sm of (candidats.length ? candidats : feuilles).slice(0, 8)) {
     const s = await recuperer(sm, 60000);
     for (const u of adresses(s.texte)) {
-      if (!u.endsWith(".xml") && !u.endsWith(".gz")) fiches.add(u);
+      if (u.endsWith(".xml") || u.endsWith(".gz")) continue;
+      if (autorise(u, interdits)) fiches.add(u);
     }
     if (fiches.size > 60000) break; // au-delà, la mémoire ne sert à rien
   }
@@ -191,7 +233,68 @@ function etatCatalogue(cibleId) {
   return { total: l.total, jamais: l.jamais || 0, abandonnees: l.abandonnees || 0, plusAncien: l.plus_ancien };
 }
 
+/**
+ * Qui, dans le registre, se laisse encore lire ?
+ *
+ * Le relevé qui fonde toute la stratégie d'acquisition — « cinq marchands
+ * sur quatre-vingt-quatre » — date du 22 août et le registre en compte
+ * maintenant cent vingt-deux. Surtout, il a été fait depuis un
+ * environnement dont on ne sait plus s'il avait la même sortie réseau que
+ * la production : mesuré depuis un bac à sable, LDLC, JouéClub et Electro
+ * Dépôt rendent tous 403 alors qu'ils alimentent le site tous les jours.
+ * Une mesure d'accès ne vaut donc que faite depuis l'IP qui collecte.
+ *
+ * La sonde refait le chemin complet, marchand par marchand : robots.txt →
+ * sitemaps → quelques fiches → un prix. Elle ne publie rien et n'écrit rien
+ * en base ; elle répond à une question, et cette question reviendra chaque
+ * fois qu'un marchand changera son site.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.fiches] fiches lues par marchand pour juger
+ * @param {(r:object)=>void} [opts.surChaque] appelé après chaque marchand,
+ *   pour que l'appelant journalise au fil de l'eau plutôt qu'à la fin —
+ *   cent vingt-deux marchands prennent de longues minutes.
+ */
+async function sonderMarchands({ fiches = 3, surChaque = null } = {}) {
+  const { MARCHANDS } = require("./marchands");
+  const { produitDepuisHtml } = require("./extraction");
+  const resultats = [];
+
+  for (const m of MARCHANDS) {
+    // Une marque n'est pas une enseigne : elle n'a pas de catalogue à suivre.
+    if (m.marque) continue;
+    const racine = `https://www.${m.domaine}`;
+    const ligne = { nom: m.nom, domaine: m.domaine, fiches: 0, lues: 0, essais: 0, erreur: null };
+
+    try {
+      const urls = await decouvrirFiches(racine);
+      ligne.fiches = urls.length;
+      // Un pas régulier plutôt que la tête de liste : le début d'un sitemap
+      // est souvent une poignée de pages éditoriales sans prix.
+      for (const u of echantillon(urls, fiches)) {
+        ligne.essais++;
+        try {
+          const page = await recuperer(u, 15000);
+          const p = page.texte ? produitDepuisHtml(page.texte) : null;
+          if (p && Number.isFinite(p.prix)) ligne.lues++;
+        } catch {
+          /* une fiche muette ne condamne pas le marchand */
+        }
+      }
+    } catch (e) {
+      ligne.erreur = e.message;
+    }
+
+    resultats.push(ligne);
+    if (surChaque) surChaque(ligne);
+  }
+  return resultats;
+}
+
 module.exports = {
+  sonderMarchands,
+  cheminsInterdits,
+  autorise,
   FICHES_SUIVIES,
   echantillon,
   decouvrirFiches,
