@@ -99,6 +99,11 @@ describe("urlCatalogue", () => {
   it("assemble l'adresse avec les colonnes demandées", () => {
     process.env.AWIN_FEED_KEY = "CLE";
     const u = awin.urlCatalogue([111, 222]);
+    // `download` télécharge le catalogue ; `list` énumère les catalogues et
+    // rend le même en-tête quels que soient les identifiants passés. La
+    // confusion a fait échouer les dix premières cibles semées.
+    expect(u).toContain("/datafeed/download/");
+    expect(u).not.toContain("/datafeed/list/");
     expect(u).toContain("/apikey/CLE/");
     expect(u).toContain("/fid/111,222/");
     expect(u).toContain("search_price");

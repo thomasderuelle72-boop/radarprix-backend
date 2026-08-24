@@ -81,7 +81,12 @@ const COLONNES = [
 function urlCatalogue(feedIds) {
   const cle = process.env.AWIN_FEED_KEY;
   const ids = [].concat(feedIds).join(",");
-  return `${CATALOGUES}/list/apikey/${cle}/language/fr/fid/${ids}/columns/${COLONNES.join(",")}/format/csv/delimiter/%7C/compression/gzip/`;
+  /* `download` et non `list` : `list` énumère les catalogues accessibles et
+     rend toujours le même en-tête (« Advertiser ID, Advertiser Name… »),
+     quels que soient les identifiants passés. Les dix cibles semées ont
+     toutes échoué là-dessus — le téléchargement réussissait, le fichier
+     n'était simplement pas celui qu'on croyait. */
+  return `${CATALOGUES}/download/apikey/${cle}/language/fr/fid/${ids}/columns/${COLONNES.join(",")}/format/csv/delimiter/%7C/compression/gzip/`;
 }
 
 /**
