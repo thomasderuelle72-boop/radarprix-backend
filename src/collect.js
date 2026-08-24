@@ -1045,7 +1045,15 @@ async function collecterAwin(cible) {
   }
 
   const offres = offresDuCatalogue(echantillon.join("\n"));
-  if (!offres.length) throw new Error("catalogue Awin illisible — aucune offre extraite");
+  if (!offres.length) {
+    /* « Illisible » ne dit pas pourquoi, et les dix cibles semées ont toutes
+       échoué sur ce message. Le début du fichier tranche entre les deux
+       explications possibles : un CSV dont l'en-tête a changé, ou un refus
+       d'Awin servi en HTTP 200 avec un corps en clair. On ne montre que
+       l'en-tête — l'adresse, elle, porte la clé et n'a rien à faire dans un
+       journal. */
+    throw new Error(`catalogue Awin illisible — début du fichier : « ${lignes[0].slice(0, 180)} »`);
+  }
 
   // Une référence en rupture n'est pas une affaire. On ne l'écarte qu'ici :
   // la disponibilité n'est lisible qu'une fois la ligne convertie.
