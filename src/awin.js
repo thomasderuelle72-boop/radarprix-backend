@@ -172,6 +172,56 @@ function offresDuCatalogue(csv, sep = "|") {
   return offres;
 }
 
+/**
+ * Tous les programmes du réseau, rejoints ou non.
+ *
+ * Sert à répondre à une question qu'on ne peut pas deviner : les enseignes
+ * dont on parcourt déjà le catalogue — LDLC, JouéClub, Electro Dépôt,
+ * Nature & Découvertes — sont-elles sur Awin, et publient-elles un flux
+ * produits ? Sans flux, un programme ne peut rien apporter à un comparateur
+ * d'autre que des codes promo occasionnels. LiTime l'a montré : accepté,
+ * bons indicateurs, mais « Flux produits : Non ».
+ */
+async function tousLesProgrammes() {
+  const id = process.env.AWIN_PUBLISHER_ID;
+  const lots = await Promise.all(
+    ["joined", "notjoined"].map((r) =>
+      appel(`/publishers/${id}/programmes?relationship=${r}`)
+        .then((l) => (Array.isArray(l) ? l : []).map((p) => ({ ...p, rejoint: r === "joined" })))
+        .catch(() => [])
+    )
+  );
+  return lots.flat();
+}
+
+/**
+ * Parmi les programmes du réseau, ceux qui portent l'un de ces noms.
+ *
+ * La comparaison se fait sur le nom réduit à ses lettres et chiffres :
+ * « Nature & Découvertes » côté registre, « Nature et Decouvertes FR » côté
+ * Awin, c'est le même marchand et un test d'égalité stricte le raterait.
+ */
+function chercherProgrammes(programmes, noms) {
+  const nu = (t) => String(t || "").toLowerCase().normalize("NFD").replace(/[^a-z0-9]/g, "");
+  return noms.map((nom) => {
+    const cle = nu(nom);
+    const trouve = programmes.filter((p) => {
+      const c = nu(p.name);
+      return c.includes(cle) || cle.includes(c);
+    });
+    return {
+      cherche: nom,
+      trouves: trouve.map((p) => ({
+        id: p.id,
+        nom: p.name,
+        rejoint: Boolean(p.rejoint),
+        // Le nom du champ varie selon les comptes ; on accepte les deux.
+        flux: p.productFeeds ?? p.hasProductFeed ?? null,
+      })),
+    };
+  });
+}
+
 /* ── Codes promo et promotions du réseau ─────────────────────────────
    Le service qui manquait au site : le type « code » existe en base depuis
    l'origine et n'avait jamais été alimenté.
@@ -402,4 +452,4 @@ async function diagnostic() {
   }
 }
 
-module.exports = { configure, programmesRejoints, promotions, enOffrePromo, offresDuCatalogue, urlCatalogue, diagnostic, COLONNES };
+module.exports = { configure, programmesRejoints, tousLesProgrammes, chercherProgrammes, promotions, enOffrePromo, offresDuCatalogue, urlCatalogue, diagnostic, COLONNES };

@@ -83,6 +83,11 @@ const {
 } = require("./dealsStore");
 const { domainePourLogo } = require("./marchands");
 const telegram = require("./telegram");
+
+/* Les enseignes dont RadarPrix parcourt déjà le catalogue par sitemap. Si
+   l'une d'elles est sur Awin AVEC un flux produits, elle devient bien plus
+   intéressante par ce canal : lien profond, EAN, prix conseillé. */
+const CATALOGUES_MAISON = ["LDLC", "JouéClub", "Electro Dépôt", "Nature & Découvertes", "Ikea"];
 const { reinitialiser, apercu } = require("./reinitialisation");
 const { etatRadar } = require("./radarEtat");
 const { compterNonLues, listerNotifications, marquerLues } = require("./notifications");
@@ -1401,6 +1406,31 @@ if (require.main === module) {
           `[awin] promotions : ${d.promosRejoints} sur les programmes rejoints, ` +
             `${d.promosReseau} sur l'ensemble du réseau (première page).`
         );
+
+        /* Nos catalogues maison sont-ils sur Awin, et avec un flux produits ?
+           Question décisive et qu'on ne peut pas deviner : un programme sans
+           flux ne peut rien apporter à un comparateur, comme LiTime vient de
+           le montrer — accepté, bons indicateurs, « Flux produits : Non ». */
+        try {
+          const { tousLesProgrammes, chercherProgrammes } = require("./awin");
+          const tous = await tousLesProgrammes();
+          console.log(`[awin] ${tous.length} programme(s) visibles sur le réseau.`);
+          for (const r of chercherProgrammes(tous, CATALOGUES_MAISON)) {
+            if (!r.trouves.length) {
+              console.log(`[awin]   ${r.cherche} : absent du réseau`);
+              continue;
+            }
+            for (const t of r.trouves.slice(0, 3)) {
+              console.log(
+                `[awin]   ${r.cherche} → « ${t.nom} » (id ${t.id})` +
+                  `${t.rejoint ? ", rejoint" : ", non rejoint"}` +
+                  `${t.flux === null ? "" : t.flux ? ", AVEC flux produits" : ", sans flux produits"}`
+              );
+            }
+          }
+        } catch (e) {
+          console.error(`[awin] recherche des catalogues impossible : ${e.message}`);
+        }
         if (d.programmes === 0) {
           console.log(
             "[awin] aucun programme rejoint — un catalogue n'est accessible " +
