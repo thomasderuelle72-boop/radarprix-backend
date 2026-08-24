@@ -400,7 +400,33 @@ async function inspecterPage(url) {
   };
 }
 
+/**
+ * Inspecte une fiche RÉELLE d'un marchand déjà suivi.
+ *
+ * Les pages d'accueil ont menti par omission : celle d'Ikea porte du
+ * JSON-LD et des prix, celle d'Aldi n'affiche aucun euro. Ni l'une ni
+ * l'autre ne dit ce que fait une FICHE PRODUIT, qui est la seule chose
+ * qu'on relève. On tire donc une adresse de celles que la rotation suit
+ * déjà.
+ */
+async function inspecterMarchand(nom) {
+  const cible = db
+    .prepare("SELECT id, merchant FROM watch_targets WHERE merchant = ? AND catalogue_url IS NOT NULL")
+    .get(nom);
+  if (!cible) return { erreur: `aucune cible catalogue pour « ${nom} »` };
+
+  const fiches = db
+    .prepare("SELECT url FROM catalogue_fiches WHERE cible = ? ORDER BY id LIMIT 3")
+    .all(cible.id);
+  if (!fiches.length) return { erreur: `« ${nom} » n'a encore aucune fiche listée` };
+
+  const releves = [];
+  for (const f of fiches) releves.push(await inspecterPage(f.url));
+  return { marchand: nom, fiches: releves };
+}
+
 module.exports = {
+  inspecterMarchand,
   inspecterPage,
   sonderMarchands,
   cheminsInterdits,

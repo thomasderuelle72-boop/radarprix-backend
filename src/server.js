@@ -82,7 +82,7 @@ const {
   listDeals: listDealsUnifies,   TYPES_DEAL,
 } = require("./dealsStore");
 const { domainePourLogo } = require("./marchands");
-const { sonderMarchands, inspecterPage } = require("./catalogue");
+const { sonderMarchands, inspecterPage, inspecterMarchand } = require("./catalogue");
 const telegram = require("./telegram");
 
 /* Les enseignes dont RadarPrix parcourt déjà le catalogue par sitemap. Si
@@ -1270,11 +1270,15 @@ app.post("/api/admin/catalogues/sonde", autoriserScan, (req, res) => {
    dont on tire une fiche déjà suivie. */
 app.post("/api/admin/catalogues/inspecte", autoriserScan, async (req, res) => {
   const url = String(req.body?.url || "").trim();
-  if (!/^https?:\/\//i.test(url)) {
+  const marchand = String(req.body?.marchand || "").trim();
+  if (!url && !marchand) {
+    return res.status(400).json({ error: "Il faut une adresse http(s) ou un marchand." });
+  }
+  if (url && !/^https?:\/\//i.test(url)) {
     return res.status(400).json({ error: "Il faut une adresse http(s)." });
   }
   try {
-    res.json(await inspecterPage(url));
+    res.json(marchand ? await inspecterMarchand(marchand) : await inspecterPage(url));
   } catch (e) {
     res.status(502).json({ error: e.message });
   }
