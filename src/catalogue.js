@@ -63,17 +63,6 @@ db.exec(`
    signature reste la même — collect.js l'importe d'ici. */
 const recuperer = (url, ms = 30000, opts = {}) => naviguer(url, { ms, ...opts });
 
-/* Le `max` n'est pas une commodité : sans lui, matchAll matérialise d'un
-   coup le tableau de TOUTES les correspondances d'un sitemap qui pèse
-   plusieurs dizaines de mégaoctets. C'est ce qui a fait tuer la sonde par
-   l'hébergeur, trois fois, exactement au même marchand. */
-const adresses = (xml, max = Infinity) => {
-  const trouvees = [];
-  const motif = /<loc>\s*([^<\s]+)\s*<\/loc>/g;
-  let m;
-  while (trouvees.length < max && (m = motif.exec(String(xml))) !== null) trouvees.push(m[1]);
-  return trouvees;
-};
 
 /* Un sitemap de fiches se reconnaît à son nom. On écarte explicitement les
    catalogues d'avis, de marques et de produits retirés : ils portent les
@@ -178,48 +167,65 @@ async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
      refuse. Les chemins interdits sont désormais écartés. */
   const interdits = cheminsInterdits(rob.texte);
 
-  const feuilles = [];
-  for (const sm of declares.slice(0, 10)) {
-    const s = await recuperer(sm, 40000);
-    const l = adresses(s.texte);
-    if (!l.length) continue;
-    if (l[0].endsWith(".xml")) feuilles.push(...l);
-    else feuilles.push(sm);
-  }
-
-  let candidats = [...new Set([...declares, ...feuilles])]
-    .filter((u) => NOM_FICHES.test(u) && !NOM_INUTILE.test(u));
-
-  /* Quand des sitemaps se réclament de la France, on ne lit que ceux-là.
-     Ikea publie un index mondial : nos huit lectures partaient dans les
-     catalogues étrangers — Bahreïn en tête, par ordre alphabétique — et il
-     ne restait plus de budget pour le catalogue français. On ne relevait pas
-     un seul produit d'un marchand parfaitement lisible. */
-  const francais = candidats.filter((u) => /(?:^|[/_.-])fr(?:[/_.-]|$)|france/i.test(u));
-  if (francais.length) candidats = francais;
-
   const fiches = new Set();
+  const vus = new Set();
+  let lus = 0;
   let ecartes = 0;
-  const retenir = (u) =>
-    !u.endsWith(".xml") && !u.endsWith(".gz") && ficheProbable(u) && autorise(u, interdits);
 
-  for (const sm of (candidats.length ? candidats : feuilles).slice(0, 8)) {
+  /* Une file, et non deux passes. L'ancienne version descendait exactement
+     deux niveaux : robots.txt, puis les sitemaps qu'il déclare. Ikea en a
+     trois — un index mondial, un index par pays, puis les fichiers — et à la
+     deuxième descente on ne trouvait que des « .xml » qu'on écartait. Le
+     marchand ressortait « aucune fiche trouvée » alors qu'il publie tout.
+
+     La file s'arrête sur trois bornes : la profondeur, le nombre de fichiers
+     lus, et le plafond de fiches. Sans elles, un index mal formé peut
+     tourner longtemps et coûter cher aux deux bouts. */
+  const file = declares.slice(0, 10).map((u) => ({ url: u, profondeur: 0 }));
+  while (file.length && fiches.size < plafond && lus < 24) {
+    const { url, profondeur } = file.shift();
+    if (vus.has(url)) continue;
+    vus.add(url);
+    lus++;
+
+    const sousIndex = [];
     try {
-      /* Lu au fil de l'eau. Sept sitemaps d'Ikea dépassaient la borne de
+      /* Lu au fil de l'eau : sept sitemaps d'Ikea dépassent la borne de
          vingt mégaoctets, et les refuser revenait à écarter un marchand
          entier pour une limite qui est la nôtre, pas la sienne.
 
          Le plafond, lui, reste une condition de survie du processus :
          Boulanger liste quatre-vingt mille adresses, E.Leclerc et Rue du
          Commerce cent mille, et la sonde qui les enchaînait s'est fait tuer
-         par l'hébergeur — « Killed », sans un mot de plus. On s'arrête donc
-         dès qu'il y a de quoi remplir la rotation. */
-      for (const u of await adressesEnFlux(sm, plafond, retenir)) fiches.add(u);
+         par l'hébergeur — « Killed », sans un mot de plus. */
+      for (const u of await adressesEnFlux(url, plafond, () => true)) {
+        if (/\.xml(?:\.gz)?$|\.gz$/i.test(u)) {
+          if (profondeur < 2 && !NOM_INUTILE.test(u)) sousIndex.push(u);
+        } else if (ficheProbable(u) && autorise(u, interdits)) {
+          fiches.add(u);
+          if (fiches.size >= plafond) break;
+        }
+      }
     } catch {
       ecartes++;
+      continue;
     }
-    if (fiches.size >= plafond) break;
+
+    /* Quand des sitemaps se réclament de la France, on ne descend que dans
+       ceux-là. Ikea publie un index mondial : la descente partait dans les
+       catalogues étrangers — Bahreïn en tête, par ordre alphabétique — et le
+       budget de lectures était épuisé avant d'atteindre le français. */
+    const francais = sousIndex.filter((u) => /(?:^|[/_.-])fr(?:[/_.-]|$)|france/i.test(u));
+    const suite = francais.length ? francais : sousIndex;
+    // Les fichiers qui s'annoncent « produits » d'abord : ils portent ce
+    // qu'on cherche, et le budget de lectures est court.
+    const ordonnes = [
+      ...suite.filter((u) => NOM_FICHES.test(u)),
+      ...suite.filter((u) => !NOM_FICHES.test(u)),
+    ];
+    for (const u of ordonnes.slice(0, 12)) file.push({ url: u, profondeur: profondeur + 1 });
   }
+
   /* Quand une partie des adresses porte une marque de fiche, on ne garde
      QUE celles-là. Règle qui se règle toute seule : un marchand qui mélange
      « /p/xxx » et « /conseils/xxx » se voit ramené à ses produits sans
@@ -229,9 +235,7 @@ async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
 
   if (!fiches.size) {
     throw new Error(
-      ecartes
-        ? `${ecartes} sitemap(s) illisibles`
-        : "aucune fiche trouvée dans les sitemaps"
+      ecartes ? `${ecartes} sitemap(s) illisibles` : "aucune fiche trouvée dans les sitemaps"
     );
   }
   return [...fiches];
