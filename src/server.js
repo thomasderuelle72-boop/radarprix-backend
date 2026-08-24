@@ -1449,6 +1449,21 @@ if (require.main === module) {
               `[awin] ${f.flux.length} catalogue(s) accessible(s), dont ${fr.length} sur le marché français` +
                 ` — colonnes : ${f.colonnes.join(", ")}`
             );
+            /* La répartition par région dit si le filtre est juste ou trop
+               strict : dix-huit flux français sur 583 est un chiffre qu'on ne
+               croit qu'après avoir vu les valeurs réellement servies dans la
+               colonne. */
+            const parRegion = new Map();
+            for (const c of f.flux) {
+              const r = (c.region || "?").trim() || "?";
+              parRegion.set(r, (parRegion.get(r) || 0) + 1);
+            }
+            console.log(
+              `[awin] régions : ${[...parRegion.entries()]
+                .sort((a, b) => b[1] - a[1])
+                .map(([r, n]) => `${r} ${n}`)
+                .join(", ")}`
+            );
             /* Les plus fournis d'abord : c'est le nombre de références qui
                décide s'il y a matière à un échantillon tournant. On signale
                ceux que le registre reconnaît déjà (★) — ceux-là s'intègrent
