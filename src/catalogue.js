@@ -89,6 +89,28 @@ const CHEMIN_INUTILE =
    se tromper par défaut coûte le marchand entier. */
 const CHEMIN_FICHE = /\/(?:p|v|produit|produits|product|products|fiche|dp|item)\/|-\d{6,}\.html?$|\/pd\//i;
 
+/** Le domaine enregistrable d'une adresse — « www.momox-shop.fr » → « momox-shop.fr ». */
+function domaineDe(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").split(".").slice(-2).join(".");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ces deux adresses sont-elles chez le même marchand ?
+ *
+ * Momox déclare un sitemap qui mène à magazine.momox-shop.fr — son blog — et
+ * on relevait consciencieusement des articles de magazine en cherchant des
+ * prix. Un sous-domaine éditorial n'est pas une boutique.
+ */
+function memeDomaine(a, b) {
+  const da = domaineDe(a);
+  const db = domaineDe(b);
+  return Boolean(da && db && da === db);
+}
+
 /**
  * Cette adresse peut-elle être une fiche produit française ?
  *
@@ -167,6 +189,17 @@ async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
      refuse. Les chemins interdits sont désormais écartés. */
   const interdits = cheminsInterdits(rob.texte);
 
+  /* On reste chez le marchand. Momox déclare un sitemap qui mène à
+     magazine.momox-shop.fr — son blog — et on relevait consciencieusement
+     des articles de magazine en cherchant des prix. Un sous-domaine
+     éditorial n'est pas une boutique.
+
+     Le domaine enregistrable suffit : « www.momox-shop.fr » et
+     « boutique.momox-shop.fr » sont le même marchand, « magazine. » aussi
+     — mais celui-là tombe sur le filtre des chemins, et surtout ses pages
+     ne portent aucun prix. */
+  const memeMaison = (u) => memeDomaine(u, racine);
+
   const fiches = new Set();
   const vus = new Set();
   let lus = 0;
@@ -200,8 +233,8 @@ async function decouvrirFiches(racine, { plafond = 60000 } = {}) {
          par l'hébergeur — « Killed », sans un mot de plus. */
       for (const u of await adressesEnFlux(url, plafond, () => true)) {
         if (/\.xml(?:\.gz)?$|\.gz$/i.test(u)) {
-          if (profondeur < 2 && !NOM_INUTILE.test(u)) sousIndex.push(u);
-        } else if (ficheProbable(u) && autorise(u, interdits)) {
+          if (profondeur < 2 && !NOM_INUTILE.test(u) && memeMaison(u)) sousIndex.push(u);
+        } else if (memeMaison(u) && ficheProbable(u) && autorise(u, interdits)) {
           fiches.add(u);
           if (fiches.size >= plafond) break;
         }
@@ -366,8 +399,18 @@ async function adressesEnFlux(url, plafond, garder) {
  * reconstitue toute seule au prochain scan.
  */
 function purgerFichesNonProduits() {
-  const lignes = db.prepare("SELECT id, url FROM catalogue_fiches").all();
-  const aRetirer = lignes.filter((l) => !ficheProbable(l.url)).map((l) => l.id);
+  const lignes = db
+    .prepare(
+      `SELECT f.id, f.url, t.catalogue_url AS racine
+         FROM catalogue_fiches f
+         LEFT JOIN watch_targets t ON t.id = f.cible`
+    )
+    .all();
+  // Deux motifs de retrait : ce qui n'est pas une fiche, et ce qui a quitté
+  // le domaine du marchand — le blog de Momox était relevé comme un rayon.
+  const aRetirer = lignes
+    .filter((l) => !ficheProbable(l.url) || (l.racine && !memeDomaine(l.url, l.racine)))
+    .map((l) => l.id);
   if (!aRetirer.length) return { retirees: 0, restantes: lignes.length };
 
   const suppression = db.prepare("DELETE FROM catalogue_fiches WHERE id = ?");
@@ -540,6 +583,7 @@ async function inspecterMarchand(nom) {
 
 module.exports = {
   ficheProbable,
+  memeDomaine,
   purgerFichesNonProduits,
   inspecterMarchand,
   inspecterPage,

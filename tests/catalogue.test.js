@@ -163,3 +163,21 @@ describe("ficheProbable — on ne relevait pas des fiches produits", () => {
     expect(cat.ficheProbable("pas une adresse")).toBe(false);
   });
 });
+
+describe("on reste chez le marchand", () => {
+  it("reconnaît la boutique malgré le sous-domaine", () => {
+    expect(cat.memeDomaine("https://boutique.momox-shop.fr/p/1", "https://www.momox-shop.fr")).toBe(true);
+    expect(cat.memeDomaine("https://www.momox-shop.fr/p/1", "https://www.momox-shop.fr")).toBe(true);
+  });
+
+  it("écarte un autre domaine", () => {
+    // Le filtre de chemin ne suffit pas : « /livres » ressemble à un rayon
+    // légitime. C'est le domaine qui doit trancher.
+    expect(cat.ficheProbable("https://magazine.momox-shop.fr/livres")).toBe(true);
+    expect(cat.memeDomaine("https://magazine.autre-site.fr/livres", "https://www.momox-shop.fr")).toBe(false);
+  });
+
+  it("refuse plutôt que de supposer quand une adresse est illisible", () => {
+    expect(cat.memeDomaine("pas une adresse", "https://www.momox-shop.fr")).toBe(false);
+  });
+});
