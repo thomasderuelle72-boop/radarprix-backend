@@ -82,7 +82,7 @@ const {
   listDeals: listDealsUnifies,   TYPES_DEAL,
 } = require("./dealsStore");
 const { domainePourLogo } = require("./marchands");
-const { sonderMarchands } = require("./catalogue");
+const { sonderMarchands, inspecterPage } = require("./catalogue");
 const telegram = require("./telegram");
 
 /* Les enseignes dont RadarPrix parcourt déjà le catalogue par sitemap. Si
@@ -1261,6 +1261,23 @@ app.post("/api/admin/catalogues/sonde", autoriserScan, (req, res) => {
     });
 
   res.status(202).json({ demarre: true, message: "Sonde lancée — le résultat part dans le journal." });
+});
+
+/* POST /api/admin/catalogues/inspecte — que contient vraiment cette page ?
+
+   Répond directement, sans passer par le journal : c'est une mesure qu'on
+   lit une fois pour décider quoi écrire. Prend une adresse, ou un marchand
+   dont on tire une fiche déjà suivie. */
+app.post("/api/admin/catalogues/inspecte", autoriserScan, async (req, res) => {
+  const url = String(req.body?.url || "").trim();
+  if (!/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ error: "Il faut une adresse http(s)." });
+  }
+  try {
+    res.json(await inspecterPage(url));
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
 });
 
 // GET /api/admin/scan/status — exécutions récentes + santé des canaux de collecte.

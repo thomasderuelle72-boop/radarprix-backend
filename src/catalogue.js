@@ -339,7 +339,69 @@ async function sonderMarchands({ fiches = 3, surChaque = null, budgetMs = 90000 
   return resultats;
 }
 
+/**
+ * Que contient vraiment cette page ?
+ *
+ * Écrit après avoir deviné deux fois de suite. Onze marchands listent leurs
+ * fiches et servent leurs pages, et trois stratégies d'extraction — balisage
+ * schema.org, microdata, OpenGraph — n'y trouvent rien. J'ai supposé que
+ * leur produit dormait dans un `<script type="application/json">` : mesuré,
+ * non. Supposer une quatrième fois coûterait un déploiement de plus pour
+ * rien.
+ *
+ * L'inspecteur ne cherche pas un prix : il dit ce qu'il y a. Taille, codes,
+ * types de scripts présents, marqueurs des cadres applicatifs connus, et
+ * si le caractère « € » apparaît seulement quelque part. Avec ça on saura
+ * quoi écrire, au lieu de le deviner.
+ */
+async function inspecterPage(url) {
+  const page = await recuperer(url, 20000);
+  const html = page.texte || "";
+  const visible = html
+    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const marqueur = (motif) => motif.test(html);
+  const euros = [...visible.matchAll(/(\d[\d\s\u00a0.]*,\d{2})\s*€/g)].map((m) => m[1]).slice(0, 6);
+
+  return {
+    url,
+    code: page.code,
+    octets: html.length,
+    tropGros: Boolean(page.tropGros),
+    // Ce que le visiteur voit — s'il n'y a aucun « € », la page est une
+    // coquille remplie après coup par le navigateur, et aucune lecture du
+    // HTML ne la sauvera.
+    euroVisible: visible.includes("€"),
+    prixVus: euros,
+    debutTexte: visible.slice(0, 240),
+    // Les types de <script> présents, dédupliqués : c'est là que se rangent
+    // les états applicatifs.
+    typesScript: [
+      ...new Set(
+        [...html.matchAll(/<script[^>]*type=["']([^"']+)["']/gi)].map((m) => m[1].toLowerCase())
+      ),
+    ].slice(0, 12),
+    cadres: {
+      nextData: marqueur(/__NEXT_DATA__/),
+      nextFlux: marqueur(/self\.__next_f/),
+      nuxt: marqueur(/window\.__NUXT__/),
+      etatInitial: marqueur(/__INITIAL_STATE__|__PRELOADED_STATE__|__APOLLO_STATE__/),
+      jsonLd: marqueur(/application\/ld\+json/i),
+      microdata: marqueur(/itemprop=["']price["']/i),
+      ogPrice: marqueur(/og:price:amount|product:price:amount/i),
+      dataPrix: marqueur(/data-(?:price|prix|product-price)=/i),
+      angular: marqueur(/ng-version=/i),
+    },
+  };
+}
+
 module.exports = {
+  inspecterPage,
   sonderMarchands,
   cheminsInterdits,
   autorise,
