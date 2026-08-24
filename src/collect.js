@@ -851,7 +851,17 @@ async function collecterCatalogue(cible) {
     );
   }
 
-  if (!offres.length) throw new Error(`aucune fiche lisible sur ${tranche.length} relevée(s)`);
+  if (!offres.length) {
+    // Nommer la panne quand il y en a une : « aucune fiche lisible » a fait
+    // croire onze marchands muets alors que c'était le compte API qui
+    // n'avait pas de crédit.
+    const p = lecture.etatPanne();
+    throw new Error(
+      p
+        ? `aucune fiche lisible sur ${tranche.length} relevée(s) — lecture coupée : ${p}`
+        : `aucune fiche lisible sur ${tranche.length} relevée(s)`
+    );
+  }
 
   // Filet de sécurité, appris cher. Quand un marchand balise mal ses pages,
   // toutes ses fiches ressortent sous le même nom — « Accueil » pour Electro

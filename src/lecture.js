@@ -157,18 +157,32 @@ async function lireFiche(html) {
   const texte = texteUtile(html);
   if (texte.length < 200) return null;
 
-  const reponse = await clientAnthropic().messages.create({
-    model: MODELE(),
-    max_tokens: 1000,
-    // Une extraction n'a pas besoin de longues délibérations, et l'effort
-    // est ce qui pèse le plus sur la facture d'un appel répété soixante fois.
-    output_config: {
-      effort: "low",
-      format: { type: "json_schema", schema: SCHEMA },
-    },
-    system: CONSIGNE,
-    messages: [{ role: "user", content: texte }],
-  });
+  let reponse;
+  try {
+    reponse = await clientAnthropic().messages.create({
+      model: MODELE(),
+      max_tokens: 1000,
+      // Une extraction n'a pas besoin de longues délibérations, et l'effort
+      // est ce qui pèse le plus sur la facture d'un appel répété soixante fois.
+      output_config: {
+        effort: "low",
+        format: { type: "json_schema", schema: SCHEMA },
+      },
+      system: CONSIGNE,
+      messages: [{ role: "user", content: texte }],
+    });
+  } catch (e) {
+    /* Une panne d'API n'est PAS une page illisible, et les confondre coûte
+       cher dans les deux sens : on croit le marchand muet alors qu'il est
+       lisible, et on relance quarante appels par scan qui échoueront tous
+       de la même façon.
+
+       Le premier essai en production l'a montré : la clé était valide, le
+       compte sans crédit, et rien dans le journal ne le disait — onze
+       marchands « aucune fiche lisible », pas un mot sur la cause. */
+    signalerPanne(e);
+    return null;
+  }
 
   /* La mise en cache du préfixe n'est pas branchée ici, et c'est délibéré :
      elle demande au moins mille tokens stables en tête de requête, or notre
@@ -204,17 +218,38 @@ async function lireFiche(html) {
   };
 }
 
+/* Une panne coupe le repli pour le reste du scan.
+
+   Sans ce disjoncteur, une clé sans crédit ou révoquée fait partir un appel
+   par fiche — quarante allers-retours par scan, huit fois par jour, pour
+   quarante fois la même erreur. La panne se dit une fois, puis on se tait
+   jusqu'au scan suivant, qui réessaiera. */
+let panne = null;
+
+function signalerPanne(e) {
+  const message = e && e.error && e.error.error ? e.error.error.message : e.message;
+  if (!panne) console.error(`[lecture] coupée pour ce scan — ${message}`);
+  panne = message || "erreur inconnue";
+}
+
+/** Ce qui a coupé la lecture, ou null si tout va bien. */
+const etatPanne = () => panne;
+
 /* Le compteur du scan en cours. Remis à zéro par `ouvrirBudget`, appelé au
    début de chaque scan : un plafond qui ne se réarme jamais finirait par
    tout bloquer. */
 let lues = 0;
 const ouvrirBudget = () => {
   lues = 0;
+  // Le disjoncteur se réarme aussi : un crédit rechargé entre deux scans
+  // doit reprendre tout seul, sans redéploiement.
+  panne = null;
 };
 const budgetRestant = () => Math.max(0, PLAFOND_PAR_SCAN() - lues);
 
 /** Comme `lireFiche`, mais rend null dès que le plafond du scan est atteint. */
 async function lireSousBudget(html) {
+  if (panne) return null;
   if (budgetRestant() <= 0) return null;
   lues++;
   return lireFiche(html);
@@ -222,6 +257,7 @@ async function lireSousBudget(html) {
 
 module.exports = {
   configure,
+  etatPanne,
   lireFiche,
   lireSousBudget,
   ouvrirBudget,

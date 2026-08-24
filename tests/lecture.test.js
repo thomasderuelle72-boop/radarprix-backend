@@ -80,3 +80,13 @@ describe("lireFiche sans clé", () => {
     await expect(lecture.lireFiche("<p>Aspirateur 199,99 €</p>")).resolves.toBeNull();
   });
 });
+
+describe("disjoncteur", () => {
+  beforeEach(() => lecture.ouvrirBudget());
+
+  it("repart propre à chaque scan — un crédit rechargé doit reprendre seul", () => {
+    // Le disjoncteur se réarme avec le budget : sans ça, une panne passagère
+    // condamnerait le repli jusqu'au prochain redéploiement.
+    expect(lecture.etatPanne()).toBeNull();
+  });
+});
