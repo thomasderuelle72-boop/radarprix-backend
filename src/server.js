@@ -1438,14 +1438,27 @@ if (require.main === module) {
            valeur de cette clé : elle ne sert pas qu'à télécharger, elle sert
            à SAVOIR à quels programmes il vaut la peine de candidater. */
         try {
-          const { fluxDisponibles } = require("./awin");
+          const { fluxDisponibles, fluxFrancais } = require("./awin");
+          const { marchandDepuisTexte } = require("./marchands");
           const f = await fluxDisponibles();
           if (!f.actif) {
             console.log(`[awin] liste des flux indisponible — ${f.raison}.`);
           } else {
-            console.log(`[awin] ${f.flux.length} catalogue(s) accessible(s) — colonnes : ${f.colonnes.join(", ")}`);
-            for (const c of f.flux.slice(0, 15)) {
-              console.log(`[awin]   flux ${c.feedId} — ${c.nom} (annonceur ${c.annonceurId}, ${c.adhesion})`);
+            const fr = fluxFrancais(f.flux);
+            console.log(
+              `[awin] ${f.flux.length} catalogue(s) accessible(s), dont ${fr.length} sur le marché français` +
+                ` — colonnes : ${f.colonnes.join(", ")}`
+            );
+            /* Les plus fournis d'abord : c'est le nombre de références qui
+               décide s'il y a matière à un échantillon tournant. On signale
+               ceux que le registre reconnaît déjà (★) — ceux-là s'intègrent
+               au site sans rien ajouter au registre. */
+            for (const c of fr.slice(0, 40)) {
+              const connu = marchandDepuisTexte(c.nom || "") ? "★ " : "  ";
+              console.log(
+                `[awin] ${connu}flux ${c.feedId} — ${c.nom} (annonceur ${c.annonceurId}, ${c.adhesion})` +
+                  ` — ${c.produits ?? "?"} réf., ${c.rayon || "rayon inconnu"}`
+              );
             }
           }
         } catch (e) {

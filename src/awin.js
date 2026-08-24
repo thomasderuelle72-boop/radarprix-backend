@@ -272,23 +272,51 @@ async function fluxDisponibles() {
     }
     return -1;
   };
+  /* Colonnes réellement servies, relevées en production :
+     Advertiser ID, Advertiser Name, Primary Region, Membership Status,
+     Feed ID, Feed Name, Language, Vertical, Last Imported, Last Checked,
+     No of products, URL */
   const iFeed = col("Feed ID", "feedId", "FeedID");
   const iNom = col("Advertiser Name", "advertiserName", "Merchant Name");
   const iAnnonceur = col("Advertiser ID", "advertiserId", "Merchant ID");
   const iAdhesion = col("Membership Status", "membershipStatus");
+  const iRegion = col("Primary Region", "primaryRegion");
+  const iLangue = col("Language", "language");
+  const iCombien = col("No of products", "noOfProducts");
+  const iRayon = col("Vertical", "vertical");
 
   const flux = lignes.slice(1).map((l) => {
     const c = decouper(l, ",").map((v) => v.trim().replace(/^"|"$/g, ""));
+    const nb = iCombien === -1 ? null : parseInt(c[iCombien], 10);
     return {
       feedId: iFeed === -1 ? null : c[iFeed],
       annonceurId: iAnnonceur === -1 ? null : c[iAnnonceur],
       nom: iNom === -1 ? null : c[iNom],
       adhesion: iAdhesion === -1 ? null : c[iAdhesion],
+      region: iRegion === -1 ? null : c[iRegion],
+      langue: iLangue === -1 ? null : c[iLangue],
+      rayon: iRayon === -1 ? null : c[iRayon],
+      produits: Number.isFinite(nb) ? nb : null,
     };
   });
   // Les noms de colonnes remontent aussi : si Awin les change, le journal le
   // dira au lieu de rendre une liste de nulls sans explication.
   return { actif: true, colonnes: entete, flux };
+}
+
+/**
+ * Les catalogues qui s'adressent au marché français, les plus fournis d'abord.
+ *
+ * Sur 583 flux accessibles, la très grande majorité est britannique : les
+ * lire dans l'ordre du fichier ne montre que des marchands anglais. Le
+ * marché se lit dans « Primary Region » ou dans « Language » selon les
+ * lignes — on accepte l'un ou l'autre plutôt que d'exiger les deux.
+ */
+function fluxFrancais(flux) {
+  const fr = (v) => /^(fr|france)$/i.test(String(v || "").trim());
+  return flux
+    .filter((f) => fr(f.region) || fr(f.langue))
+    .sort((a, b) => (b.produits || 0) - (a.produits || 0));
 }
 
 /* ── Codes promo et promotions du réseau ─────────────────────────────
@@ -521,4 +549,4 @@ async function diagnostic() {
   }
 }
 
-module.exports = { configure, programmesRejoints, tousLesProgrammes, fluxDisponibles, chercherProgrammes, promotions, enOffrePromo, offresDuCatalogue, urlCatalogue, diagnostic, COLONNES };
+module.exports = { configure, programmesRejoints, tousLesProgrammes, fluxDisponibles, fluxFrancais, chercherProgrammes, promotions, enOffrePromo, offresDuCatalogue, urlCatalogue, diagnostic, COLONNES };
