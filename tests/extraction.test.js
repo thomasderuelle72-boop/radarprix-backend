@@ -11,6 +11,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const { produitDepuisHtml, extraireJsonLd } = require("../src/extraction.js");
+const extraction = require("../src/extraction.js");
 
 const PAGE_JSONLD = `<!doctype html><html><head>
 <script type="application/ld+json">
@@ -228,5 +229,54 @@ describe("un nom de navigation n'est pas un nom de produit", () => {
   it("décode les entités des balises meta", () => {
     expect(decoderEntites("R&#xE9;frig&#xE9;rateur 13&#x2C;5&quot;")).toBe('Réfrigérateur 13,5"');
     expect(decoderEntites("Caf&eacute; &amp; th&#233;")).toBe("Caf&eacute; & thé");
+  });
+});
+
+describe("état applicatif embarqué", () => {
+  // Onze enseignes du registre ne balisent rien pour les robots mais
+  // embarquent l'état complet de leur page pour leur propre navigateur.
+  // C'est la donnée dont le site se sert lui-même pour afficher le prix.
+  const page = (etat, visible) => `<html><body>
+    <h1>Perceuse 18V</h1><div>${visible}</div>
+    <script type="application/json" id="__NEXT_DATA__">${JSON.stringify(etat)}</script>
+    </body></html>`;
+
+  it("lit le prix là où le cadre applicatif le range", () => {
+    const html = page(
+      { props: { pageProps: { product: { name: "Perceuse-visseuse 18V", price: 89.99, listPrice: 129 } } } },
+      "89,99 € au lieu de 129,00 €"
+    );
+    const p = extraction.produitDepuisEtat(html);
+    expect(p.prix).toBe(89.99);
+    expect(p.prixReference).toBe(129);
+    expect(p.nom).toBe("Perceuse-visseuse 18V");
+    expect(p.source).toBe("etat");
+  });
+
+  it("refuse un prix que la page n'affiche pas", () => {
+    // Le garde-fou central : un état embarque aussi des prix d'achat, des
+    // tarifs d'autres pays et d'anciennes promotions. Publier l'un d'eux,
+    // ce serait afficher un prix que personne ne voit sur le site.
+    const html = page(
+      { product: { name: "Perceuse-visseuse 18V", price: 42.5 } },
+      "89,99 €"
+    );
+    expect(extraction.produitDepuisEtat(html)).toBeNull();
+  });
+
+  it("ne rend rien quand la page n'embarque aucun état", () => {
+    expect(extraction.produitDepuisEtat("<html><body>89,99 €</body></html>")).toBeNull();
+  });
+
+  it("survit à un état illisible sans faire tomber la lecture", () => {
+    const html = `<html><body>89,99 €<script type="application/json">{ pas du json </script></body></html>`;
+    expect(extraction.produitDepuisEtat(html)).toBeNull();
+  });
+
+  it("sert de repli à produitDepuisHtml quand rien n'est balisé", () => {
+    const html = page({ item: { title: "Perceuse-visseuse 18V", currentPrice: 89.99 } }, "89,99 €");
+    const p = extraction.produitDepuisHtml(html);
+    expect(p.prix).toBe(89.99);
+    expect(p.source).toBe("etat");
   });
 });

@@ -122,27 +122,10 @@ function texteUtile(html) {
     .slice(0, MAX_CARACTERES);
 }
 
-/**
- * Ce prix figure-t-il vraiment sur la page ?
- *
- * C'est le garde-fou central du module. Un modèle rend volontiers un nombre
- * plausible quand la page n'en porte aucun, et un prix plausible mais faux
- * est pire qu'une absence de prix : il devient une référence, puis une
- * remise, puis une carte qui ment. On cherche donc la valeur telle qu'elle
- * s'écrit — virgule ou point, avec ou sans séparateur de milliers.
- */
-function prixPresent(prix, texte) {
-  if (!Number.isFinite(prix) || prix <= 0) return false;
-  const entier = Math.floor(prix);
-  const centimes = Math.round((prix - entier) * 100);
-  // « 1299,99 », « 1299.99 », « 1 299,99 », et la forme sans centimes.
-  const mille = String(entier).replace(/\B(?=(\d{3})+(?!\d))/g, "[\\s\\u00a0.]?");
-  const cts = String(centimes).padStart(2, "0");
-  const motif = centimes
-    ? new RegExp(`${mille}\\s*[.,]\\s*${cts}`)
-    : new RegExp(`${mille}(?![\\d.,]*[1-9])`);
-  return motif.test(texte);
-}
+/* Le garde-fou vit dans extraction.js : c'est la même question — « ce prix
+   s'affiche-t-il vraiment ? » — posée par l'état applicatif embarqué et par
+   le modèle. Une seule implémentation, un seul jeu de tests. */
+const { prixPresent } = require("./extraction");
 
 /**
  * Lit une fiche produit avec le modèle.

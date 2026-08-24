@@ -383,6 +383,153 @@ function nomFiable(nom, html) {
  * publier qu'une carte creuse. `source` dit d'où vient l'information, ce
  * qui permet de mesurer la qualité du balisage marchand par marchand.
  */
+/**
+ * Le texte visible d'une page, sans le code qui l'entoure.
+ *
+ * Sert à vérifier qu'un prix trouvé ailleurs — dans l'état embarqué, ou par
+ * un modèle — s'affiche VRAIMENT à l'acheteur. Un catalogue interne contient
+ * des prix d'achat, des prix barrés d'anciennes promotions et des tarifs
+ * d'autres pays : les prendre pour argent comptant reviendrait à publier un
+ * prix que personne ne voit sur le site.
+ */
+function texteVisible(html) {
+  return String(html || "")
+    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ");
+}
+
+/**
+ * Ce prix s'écrit-il quelque part dans ce texte ?
+ *
+ * Garde-fou partagé par l'état embarqué et par la lecture assistée. On
+ * cherche la valeur telle qu'elle s'écrit — virgule ou point, milliers
+ * espacés ou non — parce qu'un prix plausible mais absent de la page est
+ * pire qu'une absence de prix : il devient une référence, puis une remise,
+ * puis une carte qui ment.
+ */
+function prixPresent(prix, texte) {
+  if (!Number.isFinite(prix) || prix <= 0) return false;
+  const entier = Math.floor(prix);
+  const centimes = Math.round((prix - entier) * 100);
+  const mille = String(entier).replace(/\B(?=(\d{3})+(?!\d))/g, "[\\s\\u00a0.]?");
+  const cts = String(centimes).padStart(2, "0");
+  const motif = centimes
+    ? new RegExp(`${mille}\\s*[.,]\\s*${cts}`)
+    : new RegExp(`${mille}(?![\\d.,]*[1-9])`);
+  return motif.test(texte);
+}
+
+/* Les clés sous lesquelles un prix se cache dans un état applicatif. Elles
+   varient d'un site à l'autre, mais pas tant que ça. */
+const CLES_PRIX = /^(?:price|prix|currentprice|saleprice|finalprice|sellingprice|pricevalue|amount|value)$/i;
+const CLES_NOM = /^(?:name|nom|title|titre|productname|displayname|label)$/i;
+const CLES_REF = /^(?:listprice|regularprice|oldprice|wasprice|strikeprice|rrp|priceold|originalprice|prixbarre)$/i;
+
+/**
+ * Le produit tel que l'application de la page le connaît.
+ *
+ * QUATRIÈME STRATÉGIE, ET LA PLUS PAYANTE AUJOURD'HUI.
+ *
+ * Les trois premières — JSON-LD, microdata, OpenGraph — supposent que le
+ * marchand décrit son produit POUR LES ROBOTS. Onze enseignes du registre ne
+ * le font pas : Aldi, Free, Ikea, Leroy Merlin, Kiabi, Vinted, Marionnaud,
+ * Nocibé, Momox, Feu Vert, Midas listent leurs fiches, servent leurs pages,
+ * et n'y balisent rien.
+ *
+ * Mais elles sont bâties en React ou en Nuxt, et ces cadres embarquent l'état
+ * complet de la page dans un `<script type="application/json">` pour que le
+ * navigateur reprenne la main sans re-télécharger. Le produit y est en
+ * entier — c'est la donnée dont le site se sert lui-même pour afficher le
+ * prix, donc la plus fiable qui soit.
+ *
+ * Et c'est gratuit. On a failli payer un modèle pour lire ce que la page
+ * donnait déjà.
+ */
+function produitDepuisEtat(html) {
+  const visible = texteVisible(html);
+  const blocs = [
+    ...String(html).matchAll(
+      /<script[^>]*type=["']application\/json["'][^>]*>([\s\S]*?)<\/script>/gi
+    ),
+  ].map((m) => m[1]);
+  if (!blocs.length) return null;
+
+  let meilleur = null;
+  for (const brut of blocs) {
+    // Un état applicatif pèse couramment plusieurs mégaoctets ; au-delà on
+    // renonce plutôt que de bloquer le thread qui sert le site.
+    if (brut.length > 4 * 1024 * 1024) continue;
+    let racine;
+    try {
+      racine = JSON.parse(brut);
+    } catch {
+      continue;
+    }
+    const trouve = chercherProduit(racine, visible);
+    // Le prix le plus élevé qui soit VISIBLE l'emporte : les états
+    // embarquent souvent le prix unitaire d'une déclinaison à côté du prix
+    // affiché, et c'est celui de la fiche qui nous intéresse.
+    if (trouve && (!meilleur || trouve.prix > meilleur.prix)) meilleur = trouve;
+  }
+  return meilleur;
+}
+
+/** Parcourt un état applicatif à la recherche d'un nœud « produit ». */
+function chercherProduit(racine, visible) {
+  const pile = [racine];
+  let vus = 0;
+  let trouve = null;
+  while (pile.length && vus < 200000) {
+    const noeud = pile.pop();
+    vus++;
+    if (!noeud || typeof noeud !== "object") continue;
+    if (Array.isArray(noeud)) {
+      for (const v of noeud) pile.push(v);
+      continue;
+    }
+
+    let prix = null;
+    let nom = null;
+    let ref = null;
+    for (const [cle, valeur] of Object.entries(noeud)) {
+      if (valeur && typeof valeur === "object") pile.push(valeur);
+      else if (CLES_PRIX.test(cle)) {
+        const n = nombre(valeur);
+        // Le garde-fou : un prix qui ne s'affiche pas n'est pas le prix.
+        if (n && prixPresent(n, visible) && (!prix || n > prix)) prix = n;
+      } else if (CLES_NOM.test(cle) && typeof valeur === "string" && valeur.length > 3) {
+        if (!nom) nom = valeur;
+      } else if (CLES_REF.test(cle)) {
+        const n = nombre(valeur);
+        if (n && (!ref || n > ref)) ref = n;
+      }
+    }
+
+    if (prix && nom && (!trouve || prix > trouve.prix)) {
+      trouve = {
+        nom: String(nom).slice(0, 200),
+        description: null,
+        image: null,
+        marque: null,
+        prix,
+        prixReference: ref && ref > prix && prixPresent(ref, visible) ? ref : null,
+        devise: "EUR",
+        disponible: null,
+        finOffre: null,
+        debutOffre: null,
+        caracteristiques: [],
+        etat: "neuf",
+        sku: null,
+        source: "etat",
+      };
+    }
+  }
+  return trouve;
+}
+
 function produitDepuisHtml(html) {
   const produit = trouverProduit(extraireJsonLd(html));
   const offre = produit ? trouverOffre(produit) : null;
@@ -409,13 +556,19 @@ function produitDepuisHtml(html) {
     };
   }
 
-  const repli = produitDepuisMicrodata(html) || produitDepuisOpenGraph(html);
+  /* L'état embarqué passe AVANT OpenGraph : og:price est souvent absent ou
+     périmé sur ces sites, alors que l'état est ce que la page affiche. */
+  const repli =
+    produitDepuisMicrodata(html) || produitDepuisEtat(html) || produitDepuisOpenGraph(html);
   if (repli) repli.nom = nomFiable(repli.nom, html);
   return repli;
 }
 
 module.exports = {
   extraireJsonLd,
+  produitDepuisEtat,
+  texteVisible,
+  prixPresent,
   decoderEntites,
   nomFiable,
   produitsDepuisHtml,
