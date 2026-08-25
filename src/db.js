@@ -36,7 +36,6 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_snapshots_query ON snapshots(query);
   CREATE INDEX IF NOT EXISTS idx_snapshots_name ON snapshots(name);
   CREATE INDEX IF NOT EXISTS idx_snapshots_product_key ON snapshots(product_key);
-  CREATE INDEX IF NOT EXISTS idx_snapshots_ean ON snapshots(ean);
 
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -315,6 +314,13 @@ for (const stmt of [
      identité. Deux enseignes qui vendent les mêmes jumelles Pentax portent le
      même code-barres, et aucun modèle n'a besoin de le deviner. */
   "ALTER TABLE snapshots ADD COLUMN ean TEXT",
+  /* L'index vient APRÈS l'ajout de la colonne, et pas dans le bloc de
+     création du schéma. Sur une base neuve, CREATE TABLE porte déjà `ean` et
+     tout va bien ; sur une base EXISTANTE, CREATE TABLE IF NOT EXISTS ne fait
+     rien, la colonne n'apparaît qu'ici — et un index posé plus haut faisait
+     échouer le démarrage entier. La production est tombée pour ça : les tests
+     partent d'une base neuve et ne pouvaient pas le voir. */
+  "CREATE INDEX IF NOT EXISTS idx_snapshots_ean ON snapshots(ean)",
 ]) {
   try {
     db.exec(stmt);
