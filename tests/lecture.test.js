@@ -90,3 +90,27 @@ describe("disjoncteur", () => {
     expect(lecture.etatPanne()).toBeNull();
   });
 });
+
+describe("un échec passager n'est pas une panne", () => {
+  // La première version coupait la lecture du scan entier au premier ennui
+  // venu : un seul délai dépassé — le fournisseur qui met trois secondes de
+  // trop — et plus une fiche n'était lue de la journée. Éprouvé en vrai,
+  // c'est exactement ce qui est arrivé.
+  beforeEach(() => lecture.ouvrirBudget());
+
+  const definitif = (m) =>
+    /crédit|credit balance|quota|billing|API key|api_key|clé|invalid|unauthor|permission|forbidden|401|403|429/i.test(m);
+
+  it("reconnaît ce qui ne se réparera pas tout seul", () => {
+    expect(definitif("Your credit balance is too low")).toBe(true);
+    expect(definitif("API key not valid")).toBe(true);
+    expect(definitif("Quota exceeded")).toBe(true);
+    expect(definitif("403 Forbidden")).toBe(true);
+  });
+
+  it("laisse passer ce qui a des chances de marcher au prochain essai", () => {
+    expect(definitif("The operation was aborted due to timeout")).toBe(false);
+    expect(definitif("fetch failed")).toBe(false);
+    expect(definitif("HTTP 503")).toBe(false);
+  });
+});

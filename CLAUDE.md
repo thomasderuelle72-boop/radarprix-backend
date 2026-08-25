@@ -78,10 +78,12 @@ a été **retirée** puis **remplacée** par une acquisition propre :
 | `ADMIN_EMAIL` | Email promu admin à l'inscription. |
 | `CORS_ORIGINS` | Origines autorisées (remplace la liste par défaut). |
 | `FIRECRAWL_API_KEY` | Clé du scraping SaaS (sans elle, seules les cibles à flux marchent). |
-| `ANTHROPIC_API_KEY` | Lecture assistée par modèle (`lecture.js`). Sans elle, le repli se tait. |
+| `ANTHROPIC_API_KEY` | Lecture assistée par modèle (`lecture.js`). |
+| `GEMINI_API_KEY` | Idem, côté Google. **Enveloppe gratuite** suffisante pour nos 40 fiches/scan. Sans l'une ni l'autre, le repli se tait. |
+| `LECTURE_FOURNISSEUR` | `gemini` ou `anthropic`. Par défaut : Gemini si sa clé existe, sinon Anthropic. |
 | `GOOGLE_CLIENT_ID` | Connexion Google. Gratuit (Google Cloud → Identifiants → ID client OAuth, type « Application Web »). Public par construction — le navigateur doit le présenter. |
 | `APPLE_SERVICES_ID` | Connexion Apple. Exige un compte Apple Developer payant (99 $/an) et un **Services ID**, pas l'App ID — c'est la confusion la plus courante. |
-| `LECTURE_MODELE` | Modèle de lecture. Défaut `claude-opus-5` ; descendre en gamme est un arbitrage de coût, donc une décision d'exploitant. |
+| `LECTURE_MODELE` | Modèle de lecture. Défaut : `gemini-flash-lite-latest` ou `claude-opus-5` selon le fournisseur. Changer de gamme est un arbitrage de coût, donc une décision d'exploitant. |
 | `LECTURE_PLAFOND` | Fiches lues par le modèle au plus, par scan (défaut 40). |
 | `SCAN_TOKEN` | Jeton cron pour `POST /api/admin/scan` (en-tête `x-scan-token`). |
 | `AWIN_PUBLISHER_ID`, `AWIN_API_TOKEN`, `AWIN_FEED_KEY` | Réseau d'affiliation. Les deux premières ouvrent l'API, la troisième les catalogues produits. |
@@ -206,6 +208,20 @@ publiée si aucun lien n'est constructible.
 - Extraction du prix depuis le markdown Firecrawl = heuristique (regex) : peut
   attraper un mauvais nombre sur une page complexe. Fiabiliser en passant par
   `data.product` structuré de Firecrawl, ou par un LLM.
+- `lecture.js` accepte **deux fournisseurs** (Anthropic, Gemini) mais un
+  seul filet de sécurité : ce qui change est l'appel, ce qui ne change
+  jamais est la vérification qui suit. Un fournisseur n'est pas cru sur
+  parole. Le schéma de Gemini s'écrit dans son propre dialecte (`nullable:
+  true`, pas `type: ["number","null"]`) — traduire à la volée serait une
+  source d'erreur silencieuse.
+- Le disjoncteur distingue le **définitif** (crédit, quota, clé refusée :
+  on coupe tout de suite, réessayer répéterait la même réponse) du
+  **passager** (délai dépassé, 5xx : trois échecs consécutifs tolérés). La
+  première version coupait au premier ennui venu, et un seul délai dépassé
+  suffisait à priver le scan entier de lecture.
+- Le budget se décompte au moment où un appel **part vraiment**, pas à
+  l'entrée : quarante pages trop courtes pour valoir un appel épuisaient le
+  plafond sans qu'un mot ait été envoyé.
 - `lecture.js` ne se déclenche **qu'en repli** de `extraction.js`, et refuse
   tout prix qui ne se retrouve pas tel quel dans le texte de la page. C'est
   le garde-fou central : un prix inventé mais plausible est pire qu'une

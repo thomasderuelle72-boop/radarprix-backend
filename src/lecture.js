@@ -35,11 +35,38 @@
 
 const Anthropic = require("@anthropic-ai/sdk");
 
-/* Le modèle par défaut est le plus capable ; la lecture d'une fiche produit
-   n'en demande pas tant, et `LECTURE_MODELE` permet de descendre en gamme
-   sans toucher au code. C'est un arbitrage de coût, donc une décision qui
-   revient à l'exploitant, pas au code. */
-const MODELE = () => process.env.LECTURE_MODELE || "claude-opus-5";
+/* DEUX FOURNISSEURS, UN SEUL FILET DE SÉCURITÉ
+ *
+ * Anthropic et Gemini savent tous deux rendre du JSON sous schéma strict.
+ * Ce qui change entre eux est l'appel ; ce qui ne change pas — et ne doit
+ * jamais changer — est la vérification qui suit : le prix rendu doit se
+ * retrouver dans le texte de la page, sans quoi il est refusé. Un fournisseur
+ * n'est jamais cru sur parole.
+ *
+ * Le choix par défaut va à celui dont la clé est posée. Quand les deux le
+ * sont, Gemini passe devant : son enveloppe gratuite couvre largement nos
+ * quarante fiches par scan, et payer pour la même tâche serait un choix, pas
+ * une évidence. `LECTURE_FOURNISSEUR` tranche explicitement si besoin. */
+const cle = (nom) => String(process.env[nom] || "").trim();
+
+function fournisseur() {
+  const choisi = String(process.env.LECTURE_FOURNISSEUR || "").trim().toLowerCase();
+  if (choisi === "gemini" || choisi === "anthropic") return choisi;
+  if (cle("GEMINI_API_KEY")) return "gemini";
+  if (cle("ANTHROPIC_API_KEY")) return "anthropic";
+  return null;
+}
+
+/* Les modèles par défaut. La lecture d'une fiche produit ne demande pas le
+   haut de gamme ; descendre ou monter reste un arbitrage de coût, donc une
+   décision d'exploitant, pas une décision du code.
+
+   « gemini-2.5-flash-lite » n'est plus servi aux nouveaux comptes — l'API
+   le dit elle-même et renvoie 404. L'alias « latest » évite de se réveiller
+   un matin avec un modèle retiré. */
+const MODELE = () =>
+  process.env.LECTURE_MODELE ||
+  (fournisseur() === "gemini" ? "gemini-flash-lite-latest" : "claude-opus-5");
 
 /* Combien de fiches au plus on accepte de faire lire par le modèle pendant
    un scan. Sans plafond, un marchand dont le balisage casse du jour au
@@ -51,7 +78,7 @@ const PLAFOND_PAR_SCAN = () => parseInt(process.env.LECTURE_PLAFOND || "40", 10)
    très largement la zone où un prix s'affiche, une fois le bruit retiré. */
 const MAX_CARACTERES = 20000;
 
-const configure = () => Boolean(String(process.env.ANTHROPIC_API_KEY || "").trim());
+const configure = () => fournisseur() !== null;
 
 let client = null;
 const clientAnthropic = () => {
@@ -135,25 +162,81 @@ const { prixPresent } = require("./extraction");
  *   null quand la clé manque, quand la page n'est pas une fiche, ou quand le
  *   prix rendu ne se retrouve pas dans la page.
  */
+/* Le même schéma, dans le dialecte de Gemini. Il n'accepte pas
+   `type: ["number","null"]` : il faut `nullable: true`. Traduire à la volée
+   serait une source d'erreur silencieuse — un champ mal déclaré et le modèle
+   rend ce qu'il veut. On l'écrit donc en toutes lettres. */
+const SCHEMA_GEMINI = {
+  type: "OBJECT",
+  properties: {
+    nom: { type: "STRING", nullable: true },
+    prix: { type: "NUMBER", nullable: true },
+    prixReference: { type: "NUMBER", nullable: true },
+    disponible: { type: "BOOLEAN", nullable: true },
+    fiche: { type: "BOOLEAN" },
+  },
+  required: ["nom", "prix", "prixReference", "disponible", "fiche"],
+};
+
+/** Appelle Anthropic. Rend le texte JSON, ou lève. */
+async function appelerAnthropic(texte) {
+  const reponse = await clientAnthropic().messages.create({
+    model: MODELE(),
+    max_tokens: 1000,
+    // Une extraction n'a pas besoin de longues délibérations, et l'effort
+    // est ce qui pèse le plus sur la facture d'un appel répété soixante fois.
+    output_config: { effort: "low", format: { type: "json_schema", schema: SCHEMA } },
+    system: CONSIGNE,
+    messages: [{ role: "user", content: texte }],
+  });
+  /* La mise en cache du préfixe n'est pas branchée, et c'est délibéré : elle
+     demande au moins mille tokens stables en tête de requête, or notre
+     consigne est bien plus courte. L'activer ne ferait rien, en silence. */
+  return reponse.content.find((b) => b.type === "text")?.text || null;
+}
+
+/** Appelle Gemini par son API REST. Rend le texte JSON, ou lève. */
+async function appelerGemini(texte) {
+  const url =
+    `https://generativelanguage.googleapis.com/v1beta/models/${MODELE()}:generateContent` +
+    `?key=${encodeURIComponent(cle("GEMINI_API_KEY"))}`;
+  const rep = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    signal: AbortSignal.timeout(45000),
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: CONSIGNE }] },
+      contents: [{ role: "user", parts: [{ text: texte }] }],
+      generationConfig: {
+        // Zéro : on relève un prix écrit sur une page, il n'y a rien à
+        // inventer et deux passages sur la même fiche doivent s'accorder.
+        temperature: 0,
+        responseMimeType: "application/json",
+        responseSchema: SCHEMA_GEMINI,
+      },
+    }),
+  });
+  const data = await rep.json().catch(() => null);
+  if (!rep.ok || data?.error) {
+    throw new Error(data?.error?.message || `Gemini : HTTP ${rep.status}`);
+  }
+  return data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
+}
+
 async function lireFiche(html) {
   if (!configure()) return null;
   const texte = texteUtile(html);
   if (texte.length < 200) return null;
 
-  let reponse;
+  let brut;
   try {
-    reponse = await clientAnthropic().messages.create({
-      model: MODELE(),
-      max_tokens: 1000,
-      // Une extraction n'a pas besoin de longues délibérations, et l'effort
-      // est ce qui pèse le plus sur la facture d'un appel répété soixante fois.
-      output_config: {
-        effort: "low",
-        format: { type: "json_schema", schema: SCHEMA },
-      },
-      system: CONSIGNE,
-      messages: [{ role: "user", content: texte }],
-    });
+    /* Le budget se décompte ICI, au moment où un appel part vraiment — et
+       non à l'entrée de `lireSousBudget`. Une page trop courte pour valoir
+       un appel consommait quand même une unité du plafond : quarante pages
+       vides suffisaient à épuiser le budget d'un scan sans qu'un seul mot
+       ait été envoyé. */
+    lues++;
+    brut = fournisseur() === "gemini" ? await appelerGemini(texte) : await appelerAnthropic(texte);
   } catch (e) {
     /* Une panne d'API n'est PAS une page illisible, et les confondre coûte
        cher dans les deux sens : on croit le marchand muet alors qu'il est
@@ -166,17 +249,12 @@ async function lireFiche(html) {
     signalerPanne(e);
     return null;
   }
-
-  /* La mise en cache du préfixe n'est pas branchée ici, et c'est délibéré :
-     elle demande au moins mille tokens stables en tête de requête, or notre
-     consigne est bien plus courte. L'activer ne ferait rien, en silence. */
-
-  const bloc = reponse.content.find((b) => b.type === "text");
-  if (!bloc) return null;
+  signalerSucces();
+  if (!brut) return null;
 
   let lu;
   try {
-    lu = JSON.parse(bloc.text);
+    lu = JSON.parse(brut);
   } catch {
     return null;
   }
@@ -208,12 +286,44 @@ async function lireFiche(html) {
    quarante fois la même erreur. La panne se dit une fois, puis on se tait
    jusqu'au scan suivant, qui réessaiera. */
 let panne = null;
+let echecsDeSuite = 0;
+
+/* Un échec passager n'est pas une panne. La première version coupait la
+   lecture du scan entier au premier ennui venu : un seul délai dépassé — le
+   fournisseur qui met trois secondes de trop — et plus une fiche n'était lue
+   de la journée. Éprouvé en vrai, c'est exactement ce qui est arrivé.
+   
+   On sépare donc ce qui ne se réparera pas tout seul de ce qui passera. */
+const DEFINITIF = /crédit|credit balance|quota|billing|API key|api_key|clé|invalid|unauthor|permission|forbidden|401|403|429/i;
+const ECHECS_TOLERES = 3;
 
 function signalerPanne(e) {
-  const message = e && e.error && e.error.error ? e.error.error.message : e.message;
-  if (!panne) console.error(`[lecture] coupée pour ce scan — ${message}`);
-  panne = message || "erreur inconnue";
+  const message =
+    (e && e.error && e.error.error ? e.error.error.message : e.message) || "erreur inconnue";
+
+  if (DEFINITIF.test(message)) {
+    // Clé refusée, crédit épuisé, quota atteint : réessayer quarante fois
+    // ne fera que répéter la même réponse. On coupe tout de suite.
+    if (!panne) console.error(`[lecture] coupée pour ce scan — ${message}`);
+    panne = message;
+    return;
+  }
+
+  echecsDeSuite++;
+  if (echecsDeSuite >= ECHECS_TOLERES) {
+    if (!panne) {
+      console.error(`[lecture] coupée après ${echecsDeSuite} échecs de suite — ${message}`);
+    }
+    panne = message;
+  } else {
+    console.warn(`[lecture] échec ${echecsDeSuite}/${ECHECS_TOLERES} — ${message}`);
+  }
 }
+
+/** Une lecture réussie efface l'ardoise : les échecs comptés doivent être CONSÉCUTIFS. */
+const signalerSucces = () => {
+  echecsDeSuite = 0;
+};
 
 /** Ce qui a coupé la lecture, ou null si tout va bien. */
 const etatPanne = () => panne;
@@ -224,6 +334,7 @@ const etatPanne = () => panne;
 let lues = 0;
 const ouvrirBudget = () => {
   lues = 0;
+  echecsDeSuite = 0;
   // Le disjoncteur se réarme aussi : un crédit rechargé entre deux scans
   // doit reprendre tout seul, sans redéploiement.
   panne = null;
@@ -234,12 +345,13 @@ const budgetRestant = () => Math.max(0, PLAFOND_PAR_SCAN() - lues);
 async function lireSousBudget(html) {
   if (panne) return null;
   if (budgetRestant() <= 0) return null;
-  lues++;
   return lireFiche(html);
 }
 
 module.exports = {
   configure,
+  fournisseur,
+  MODELE,
   etatPanne,
   lireFiche,
   lireSousBudget,
