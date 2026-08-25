@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm test)",
+      "Bash(npm test --silent)",
+      "Bash(npm run lint)",
+      "Bash(npm run lint --silent)",
+      "Bash(curl -s https://radarprix-backend-production.up.railway.app/api/*)",
+      "Bash(curl -sS https://radarprix-backend-production.up.railway.app/api/*)",
+      "mcp__Railway__get-logs",
+      "mcp__Railway__list-deployments",
+      "mcp__Railway__list-services",
+      "mcp__Railway__list-projects",
+      "mcp__Railway__list-variables",
+      "mcp__Railway__list-domains",
+      "mcp__Railway__get-service-config",
+      "mcp__Railway__get-status",
+      "mcp__Vercel__list_deployments",
+      "mcp__Vercel__list_projects",
+      "mcp__Vercel__list_teams",
+      "mcp__github__get_file_contents",
+      "mcp__github__search_code"
+    ]
+  }
+}
