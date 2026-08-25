@@ -1594,8 +1594,12 @@ if (require.main === module) {
   {
     const lecture = require("./lecture");
     console.log(
+      /* On demande au module ce qu'il fait, on ne le devine pas. Cette ligne
+         recopiait la valeur par défaut et annonçait « claude-opus-5 » alors
+         que Gemini était choisi — un journal qui ment est pire qu'un journal
+         absent, parce qu'on le croit. */
       lecture.configure()
-        ? `[lecture] active — modèle ${process.env.LECTURE_MODELE || "claude-opus-5"}, ` +
+        ? `[lecture] active — ${lecture.fournisseur()} / ${lecture.MODELE()}, ` +
             `plafond ${lecture.budgetRestant()} fiche(s) par scan`
         : "[lecture] inactive — ANTHROPIC_API_KEY absente, le repli du balisage se taira."
     );
