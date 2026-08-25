@@ -85,6 +85,7 @@ const { domainePourLogo } = require("./marchands");
 const {
   sonderMarchands, inspecterPage, inspecterMarchand, purgerFichesNonProduits,
 } = require("./catalogue");
+const identites = require("./identites");
 const telegram = require("./telegram");
 
 /* Les enseignes dont RadarPrix parcourt déjà le catalogue par sitemap. Si
@@ -520,6 +521,106 @@ app.post("/api/auth/login", freinerAuth("login", 10, 900000), async (req, res) =
     res.json({ token, user: fullUser });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+/* GET /api/auth/fournisseurs — quels boutons le site doit-il afficher ?
+
+   Le frontend ne devine pas : il demande. Un bouton « Continuer avec Apple »
+   affiché alors que rien n'est configuré mène à une erreur incompréhensible
+   pour le visiteur, et l'identifiant client n'a rien à faire en dur dans le
+   code du navigateur. */
+app.get("/api/auth/fournisseurs", (req, res) => {
+  res.json({
+    fournisseurs: identites.fournisseursActifs().map((f) => ({
+      id: f,
+      nom: identites.FOURNISSEURS[f].nom,
+      // L'identifiant client est PUBLIC par construction — le navigateur doit
+      // le présenter au fournisseur. Ce n'est pas un secret, contrairement au
+      // « client secret » qu'on n'utilise pas et qui, lui, ne sortira jamais
+      // d'ici.
+      clientId: identites.FOURNISSEURS[f].clientId(),
+    })),
+  });
+});
+
+/* POST /api/auth/oidc  { fournisseur, jeton }
+
+   Une seule route pour Google et Apple : ils parlent le même langage, et
+   deux routes jumelles se seraient désynchronisées à la première correction.
+
+   LA RÈGLE DE RATTACHEMENT, qui est la partie délicate.
+
+   Trois cas, dans cet ordre :
+
+   1. On connaît déjà cette identité (même fournisseur, même sujet) → on
+      ouvre la session de son compte. Le « sujet » est l'identifiant stable
+      du fournisseur ; il ne change pas si la personne change d'email.
+
+   2. Aucune identité connue, mais le fournisseur affirme une adresse email
+      VÉRIFIÉE qui correspond à un compte existant → on rattache. C'est ce
+      qui évite les comptes en double, et c'est légitime : Google et Apple
+      ont prouvé que la personne contrôle cette adresse.
+
+   3. Sinon → nouveau compte.
+
+   Le point 2 exige `email_verified`. Sans ce contrôle, un fournisseur
+   complaisant — ou un compte dont l'email n'a jamais été prouvé — permettrait
+   de réclamer le compte de quelqu'un d'autre en déclarant son adresse. C'est
+   la faille classique de ce mécanisme, et elle tient en une ligne. */
+app.post("/api/auth/oidc", freinerAuth("oidc", 20, 900000), async (req, res) => {
+  const fournisseur = String(req.body?.fournisseur || "").trim().toLowerCase();
+  const jeton = String(req.body?.jeton || "").trim();
+  if (!identites.FOURNISSEURS[fournisseur]) {
+    return res.status(400).json({ error: "Fournisseur inconnu." });
+  }
+  if (!identites.configure(fournisseur)) {
+    return res.status(503).json({ error: `La connexion ${identites.FOURNISSEURS[fournisseur].nom} n'est pas activée.` });
+  }
+  if (!jeton) return res.status(400).json({ error: "Jeton manquant." });
+
+  let atteste;
+  try {
+    atteste = await identites.verifierJeton(fournisseur, jeton);
+  } catch (e) {
+    // On ne renvoie pas le détail : il ne renseignerait que celui qui essaie
+    // de forger un jeton. Le journal, lui, garde tout.
+    console.warn(`[auth] jeton ${fournisseur} refusé : ${e.message}`);
+    return res.status(401).json({ error: "Connexion refusée par le fournisseur." });
+  }
+
+  try {
+    let userId = identites.identiteDe(fournisseur, atteste.sujet)?.user_id || null;
+
+    if (!userId && atteste.email && atteste.emailVerifie) {
+      const existant = findUserByEmail(atteste.email);
+      if (existant) userId = existant.id;
+    }
+
+    if (!userId) {
+      /* Un compte sans mot de passe utilisable. On hache une valeur aléatoire
+         plutôt que de laisser le champ vide : la colonne est NOT NULL, et
+         surtout une empreinte bcrypt d'un secret que personne ne connaît ne
+         peut jamais être devinée. Le membre pourra se donner un mot de passe
+         plus tard s'il le souhaite. */
+      const email = atteste.email || `${fournisseur}-${atteste.sujet}@identite.radarprix.fr`;
+      if (findUserByEmail(email)) {
+        return res.status(409).json({ error: "Un compte existe déjà avec cet email." });
+      }
+      const secret = require("node:crypto").randomBytes(32).toString("hex");
+      const cree = createUser(email, await hashPassword(secret));
+      userId = cree.id;
+    }
+
+    identites.lier(fournisseur, atteste.sujet, userId, atteste.email);
+
+    const complet = findUserById(userId);
+    if (isDesignatedAdminEmail(complet.email)) promoteToAdmin(complet.id);
+    const token = generateToken(findUserById(userId));
+    res.json({ token, user: findUserById(userId) });
+  } catch (e) {
+    console.error(`[auth] connexion ${fournisseur} impossible : ${e.message}`);
+    res.status(500).json({ error: "Connexion impossible." });
   }
 });
 

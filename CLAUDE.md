@@ -38,6 +38,7 @@ Point d'entrée : `npm start` → `src/server.js` (port `PORT` ou 3001).
 | `pepper.js` | Lecture des sites de bons plans bâtis sur Pepper (Dealabs, Mydealz…) |
 | `catalogue.js` | Suivi du catalogue d'un marchand par son propre sitemap : découverte, échantillon stable, rotation des relevés |
 | `awin.js` | Catalogues produits des marchands via le réseau d'affiliation — la voie vers l'indépendance |
+| `identites.js` | Connexion Google et Apple : vérification du jeton d'identité (signature, émetteur, destinataire, expiration) et table `identites_externes` |
 | `auth.js`, `moderation.js`, `messagerie.js`, `forum.js`, `notifications.js`, `badges.js`, `ranking.js`, `reputation.js`, `persistance.js`, `radarEtat.js`, `reinitialisation.js`, `env.js` | Comptes/sécurité, validation/anti-spam, salon + MP, forum, notifications, badges, score hot, fiabilité marchands, sauvegarde/restauration de la base, état public du radar, reset admin, chargement env |
 
 ## Moteur de détection (ce qui a été construit récemment)
@@ -78,6 +79,8 @@ a été **retirée** puis **remplacée** par une acquisition propre :
 | `CORS_ORIGINS` | Origines autorisées (remplace la liste par défaut). |
 | `FIRECRAWL_API_KEY` | Clé du scraping SaaS (sans elle, seules les cibles à flux marchent). |
 | `ANTHROPIC_API_KEY` | Lecture assistée par modèle (`lecture.js`). Sans elle, le repli se tait. |
+| `GOOGLE_CLIENT_ID` | Connexion Google. Gratuit (Google Cloud → Identifiants → ID client OAuth, type « Application Web »). Public par construction — le navigateur doit le présenter. |
+| `APPLE_SERVICES_ID` | Connexion Apple. Exige un compte Apple Developer payant (99 $/an) et un **Services ID**, pas l'App ID — c'est la confusion la plus courante. |
 | `LECTURE_MODELE` | Modèle de lecture. Défaut `claude-opus-5` ; descendre en gamme est un arbitrage de coût, donc une décision d'exploitant. |
 | `LECTURE_PLAFOND` | Fiches lues par le modèle au plus, par scan (défaut 40). |
 | `SCAN_TOKEN` | Jeton cron pour `POST /api/admin/scan` (en-tête `x-scan-token`). |
@@ -213,5 +216,13 @@ publiée si aucun lien n'est constructible.
 - `better-sqlite3` bloque le thread principal : plafond de charge du site.
 - Rate limiting en mémoire : ok mono-processus (Railway), à revoir si scale-out.
 - Pas de réinitialisation de mot de passe ni de vérification d'email.
+- Connexion externe : on n'accepte le **rattachement par email** que si le
+  fournisseur déclare l'adresse vérifiée (`email_verified`). Sans ce
+  contrôle, déclarer l'adresse de quelqu'un d'autre suffirait à réclamer son
+  compte — c'est la faille classique de ce mécanisme. Le rattachement
+  primaire se fait toujours sur le `sub` du fournisseur, stable même si la
+  personne change d'adresse. Aucun « client secret » n'est utilisé : le flux
+  repose sur le seul jeton d'identité, vérifié contre les clés publiques du
+  fournisseur.
 - Les alertes watchlist (`watchersFor`, `recordAlertSent`, `email_log`) sont
   en place mais aucun envoi d'email n'est branché actuellement.
