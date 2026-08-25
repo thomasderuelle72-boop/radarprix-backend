@@ -636,7 +636,17 @@ async function collecterFlux(cible) {
     const connu = reconnaitreMarchand({ url: o.url, texte: `${o.name} ${o.description || ""}` });
     const hoteDuLien = hote(o.url);
     const deduit = hoteDuLien && hoteDuLien !== hoteDuFlux ? nomDeMarchand(hoteDuLien) : null;
-    return { ...o, seller: o.seller || (connu && connu.nom) || cible.merchant || deduit || null };
+    return {
+      ...o,
+      seller: o.seller || (connu && connu.nom) || cible.merchant || deduit || null,
+      /* Le lien d'un article de flux MARCHAND ouvre la fiche : c'est à ça que
+         sert un flux produits. Celui d'un agrégateur ouvre son propre fil de
+         discussion, et sera réécrit plus loin vers le marchand — on ne le
+         décore donc pas d'une étiquette qu'il ne mérite pas. Cette étiquette
+         manquait entièrement : aucune des offres publiées ne portait
+         « produit », alors que beaucoup ouvraient bel et bien la fiche. */
+      lienType: o.url && !estPepper(o.url) ? "produit" : o.lienType || null,
+    };
   });
 }
 
@@ -728,6 +738,9 @@ async function collecterFirecrawl(cible) {
         price: prix,
         refPriceAnnonce: fiche?.prixReference ?? null,
         url: r.url,
+        // La recherche est bornée aux domaines marchands de la cible et la
+        // page vient d'être lue comme une fiche : le lien ouvre le produit.
+        lienType: "produit",
         seller: cible.merchant || (marchand && marchand.nom) || fiche?.marque || null,
         img: fiche?.image || donnees.metadata?.ogImage || null,
         description: fiche?.description || null,
@@ -1002,6 +1015,10 @@ async function collecterPagePromo(cible) {
     price: f.prix,
     refPriceAnnonce: f.prixReference,
     url: lienAbsolu(f.url, base) || base,
+    /* Le balisage donne le lien de la fiche ; quand il manque, on retombe sur
+       la page de rayon, qui n'ouvre aucun produit précis. L'étiquette dit
+       laquelle des deux on sert — c'est elle qui décide de la publication. */
+    lienType: lienAbsolu(f.url, base) ? "produit" : "marchand",
     seller: cible.merchant || f.marque || null,
     img: lienAbsolu(f.image, base),
     description: f.description || null,
@@ -1729,7 +1746,15 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         /* Actionnable : on sait qui vend et où cliquer. En dessous, ce n'est
            pas une offre mais une frustration — quel que soit l'intérêt du
            prix. */
-        const actionnable = (a) => Boolean(a.seller) && Boolean(a.url);
+        const actionnable = (a) => {
+          if (!a.seller || !a.url) return false;
+          /* Et le lien doit ouvrir LA FICHE. Une carte qui annonce « −40 % sur
+             un aspirateur » et qui envoie sur la page d'accueil du marchand
+             est pire qu'une carte absente : le visiteur clique, cherche, ne
+             trouve pas, et conclut que le site raconte n'importe quoi. */
+          if (R_PUBLICATION().lienProduitExige && a.lienType !== "produit") return false;
+          return true;
+        };
 
         /* Une anomalie que NOUS avons mesurée est la raison d'être du site :
            elle passe sans avoir à être jolie. Une promotion simplement

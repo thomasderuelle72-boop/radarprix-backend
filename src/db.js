@@ -1440,6 +1440,20 @@ const REGLAGES_DEFAUT = {
   minPairs: { valeur: 2, min: 2, max: 10, libelle: "Nombre d'offres comparables requis dans un scan" },
   remiseMinPromo: { valeur: 15, min: 0, max: 90, libelle: "Remise minimum pour publier une promotion annoncée par un marchand (%)" },
   confianceMin: { valeur: 0, min: 0, max: 100, libelle: "Confiance minimale pour publier une anomalie (0 = tout publier)" },
+  /* Une offre dont le lien ne mène pas à la fiche du produit n'est pas une
+     offre : c'est une frustration. Le visiteur clique, cherche, ne trouve
+     pas, et conclut que le site raconte n'importe quoi.
+
+     Mesuré le 25 août : sur 135 offres en ligne, ZÉRO portait un lien
+     produit — 82 menaient à une recherche, 28 à une page d'accueil, 25 nulle
+     part. Les agrégateurs n'exposent pas l'adresse de la fiche : c'est leur
+     fonds de commerce, et leur sortie passe par une redirection d'affiliation
+     qu'on ne va pas détourner.
+
+     Réglable, parce que c'est un arbitrage entre remplir le site et le rendre
+     utile — et que cet arbitrage appartient à l'exploitant. Mais le défaut
+     est l'exigence. */
+  lienProduitExige: { valeur: 1, min: 0, max: 1, libelle: "N'afficher que les offres dont le lien ouvre la fiche produit (0 = tout publier)" },
 };
 
 // Cache mémoire : analyzeOffers lit ces réglages pour chaque offre de chaque

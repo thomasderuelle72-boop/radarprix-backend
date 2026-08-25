@@ -376,6 +376,38 @@ describe("scan complet", () => {
     expect(flux0.dernierBilan).toContain("1 écartée(s) faute de vendeur ou de visuel");
   });
 
+  it("n'étiquette « produit » que les liens qui ouvrent vraiment une fiche", async () => {
+    /* Mesuré en production le 25 août 2026 : sur 135 offres publiées, ZÉRO
+       ne portait l'étiquette « produit », alors qu'une bonne part ouvrait
+       bel et bien la fiche du marchand. L'étiquette n'était simplement
+       jamais posée par les collecteurs, et le réglage qui s'appuie dessus
+       aurait tout effacé. Elle se pose ici, et seulement quand elle est
+       vraie : un flux marchand mène au produit, un fil d'agrégateur non. */
+    const flux = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Flux</title>
+  <item>
+    <title>Casque Sony WH-1000XM5 à 279 € chez Boulanger</title>
+    <link>https://www.boulanger.com/ref/1148733</link><guid>g1</guid>
+    <description><![CDATA[<del>419,00 €</del> 279,99 €]]></description>
+  </item>
+</channel></rss>`;
+    vi.stubGlobal("fetch", vi.fn(async () => reponse({ texte: flux })));
+    const [o] = await collect.collecterFlux({
+      feedUrl: "https://www.boulanger.com/flux.rss",
+      merchant: "Boulanger",
+    });
+    expect(o.lienType).toBe("produit");
+
+    // Le même article servi par Dealabs : le lien reste chez l'agrégateur.
+    const filPepper = flux.replace(
+      "https://www.boulanger.com/ref/1148733",
+      "https://www.dealabs.com/bons-plans/casque-sony-3399799"
+    );
+    vi.stubGlobal("fetch", vi.fn(async () => reponse({ texte: filPepper })));
+    const [p] = await collect.collecterFlux({ feedUrl: "https://www.dealabs.com/rss" });
+    expect(p.lienType).toBeNull();
+  });
+
   it("nomme le vendeur cité dans le titre, même chez un agrégateur", async () => {
     // Le lien ne sort pas de l'agrégateur, donc le domaine ne dit rien —
     // mais le titre nomme l'enseigne, et le registre la reconnaît.

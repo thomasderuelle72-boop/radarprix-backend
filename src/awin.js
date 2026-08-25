@@ -175,6 +175,12 @@ function offresDuCatalogue(csv, sep = "|") {
       refPriceAnnonce: conseille && conseille > prix ? conseille : null,
       // Le lien d'affiliation mène chez le marchand : c'est tout l'intérêt.
       url: lire(cases, "aw_deep_link"),
+      /* Et il mène à la FICHE, pas à un rayon. Ce champ manquait : les cartes
+         issues des catalogues affichaient « à chercher sur le site » sur un
+         lien qui ouvrait directement le produit. Mesuré le 25 août — zéro
+         offre sur 135 portait l'étiquette « produit », alors que dix-huit
+         d'entre elles avaient un vrai lien profond. */
+      lienType: "produit",
       /* Mais son hôte est celui du réseau (awin1.com), pas celui du
          vendeur. Sans ce champ, la carte afficherait le logo d'Awin à la
          place de celui du marchand — le réseau d'affiliation n'a rien à

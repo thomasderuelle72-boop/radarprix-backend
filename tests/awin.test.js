@@ -34,6 +34,9 @@ https://www.awin1.com/pclick.php?p=123|Casque Sony WH-1000XM5|SKU1|Boulanger|htt
     expect(o.disponible).toBe(true);
     // Le lien d'affiliation mène chez le marchand : c'est tout l'intérêt.
     expect(o.url).toContain("awin1.com");
+    // Et il ouvre la FICHE. Sans cette étiquette, la carte annonçait
+    // « à chercher sur le site » sur un lien qui menait droit au produit.
+    expect(o.lienType).toBe("produit");
   });
 
   it("retient le domaine du marchand, pas celui du réseau d'affiliation", () => {

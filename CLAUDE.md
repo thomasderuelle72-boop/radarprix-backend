@@ -203,6 +203,29 @@ que soit le canal. Le lien est reconstruit vers le marchand (recherche
 maison pour 37 enseignes, page d'accueil sinon) et l'offre n'est pas
 publiée si aucun lien n'est constructible.
 
+Chaque offre porte désormais un **`lienType`** qui dit où son lien mène —
+`produit` (la fiche), `recherche` (une recherche chez le marchand),
+`marchand` (sa page d'accueil), ou rien. Il est posé par le collecteur, qui
+est le seul à savoir :
+
+| Canal | `lienType` | Pourquoi |
+|---|---|---|
+| `awin.js` (catalogue) | `produit` | `aw_deep_link` ouvre la fiche |
+| `collecterCatalogue` | `produit` | on vient de lire cette fiche |
+| `collecterFirecrawl` | `produit` | recherche bornée aux domaines marchands |
+| `collecterFlux` | `produit` **sauf** si l'hôte est un agrégateur | un flux marchand mène au produit, un fil Pepper à lui-même |
+| `collecterPagePromo` | `produit` si le balisage donne le lien, sinon `marchand` | à défaut on retombe sur le rayon |
+| Pepper / Awin non rejoint | `recherche` ou `marchand` | le lien est reconstruit, pas connu |
+
+Mesuré le 25 août 2026 : **zéro** des 105 offres en ligne portait
+`produit`, alors que les catalogues Awin en fournissaient de vrais. L'étiquette
+n'était simplement jamais posée. Le réglage **`lienProduitExige`** (défaut
+**1**) refuse de publier ce qui n'ouvre pas la fiche : c'est un arbitrage
+entre remplir le site et le rendre utile, et il coûte aujourd'hui toutes les
+offres venues de Dealabs — qui n'expose jamais l'adresse du marchand
+(`link` vide, seulement `linkHost` et une redirection d'affiliation
+`/visit/thread/<id>` qu'on ne détourne pas).
+
 ## Limites connues / pistes
 
 - Extraction du prix depuis le markdown Firecrawl = heuristique (regex) : peut
