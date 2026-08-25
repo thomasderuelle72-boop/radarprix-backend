@@ -709,3 +709,36 @@ describe("catalogue d'affiliation (Awin)", () => {
     await expect(collect.collecterAwin({ awinFeeds: "123" })).rejects.toThrow(/HTTP 403/);
   });
 });
+
+describe("eanValide — un code-barres, ou rien", () => {
+  const { eanValide } = require("../src/db.js");
+
+  it("accepte les formats de code-barres du commerce", () => {
+    expect(eanValide("4548736134560")).toBe("4548736134560"); // EAN-13
+    expect(eanValide("12345670")).toBe("12345670"); // EAN-8
+    expect(eanValide("012345678905")).toBe("012345678905"); // UPC-A
+    expect(eanValide("  3760 - 123456789  ")).toBe("3760123456789"); // espaces et tirets
+  });
+
+  it("refuse les références maison des marchands", () => {
+    // Le champ `sku` est un fourre-tout. Rapprocher deux marchands sur la
+    // coïncidence de leurs références internes serait pire que de ne rien
+    // rapprocher : on y croirait.
+    expect(eanValide("LDLC-4T2-9B")).toBeNull();
+    expect(eanValide("ref-99871")).toBeNull();
+    expect(eanValide("Casque Sony WH-1000XM5")).toBeNull();
+    expect(eanValide("123456")).toBeNull(); // trop court
+    expect(eanValide("123456789012345")).toBeNull(); // trop long
+  });
+
+  it("refuse les remplissages", () => {
+    expect(eanValide("0000000000000")).toBeNull();
+    expect(eanValide("11111111")).toBeNull();
+  });
+
+  it("refuse l'absence sans se plaindre", () => {
+    expect(eanValide(null)).toBeNull();
+    expect(eanValide(undefined)).toBeNull();
+    expect(eanValide("")).toBeNull();
+  });
+});

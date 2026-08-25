@@ -819,6 +819,10 @@ async function collecterCatalogue(cible) {
       marquerRelevee(fiche.id);
       offres.push({
         externalId: p.sku || fiche.url,
+        // Le code-barres, quand le marchand le balise. C'est le seul
+        // identifiant qui vaille entre deux enseignes ; on l'extrayait déjà
+        // et on le perdait ici, faute de le transmettre.
+        ean: p.sku || null,
         name: String(p.nom || "").slice(0, 200),
         price: p.prix,
         refPriceAnnonce: p.prixReference,

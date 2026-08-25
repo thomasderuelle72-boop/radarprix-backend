@@ -23,6 +23,10 @@ db.exec(`
     category TEXT DEFAULT 'tout',
     name TEXT NOT NULL,
     product_key TEXT,
+    -- Déclaré ici POUR LES BASES NEUVES, et par ALTER TABLE plus bas pour
+    -- celles qui existent déjà. L'index qui suit référence cette colonne :
+    -- l'oublier ici faisait échouer la création du schéma entier.
+    ean TEXT,
     seller TEXT,
     price REAL NOT NULL,
     url TEXT,
@@ -32,6 +36,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_snapshots_query ON snapshots(query);
   CREATE INDEX IF NOT EXISTS idx_snapshots_name ON snapshots(name);
   CREATE INDEX IF NOT EXISTS idx_snapshots_product_key ON snapshots(product_key);
+  CREATE INDEX IF NOT EXISTS idx_snapshots_ean ON snapshots(ean);
 
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -299,6 +304,17 @@ for (const stmt of [
   // reconditionnée intitulée « iPhone 15 128 Go Bleu » le traversait sans
   // encombre et se faisait scorer comme une bonne affaire sur du neuf.
   "ALTER TABLE snapshots ADD COLUMN item_condition TEXT",
+  /* Le code-barres. On l'extrayait déjà — `extraction.js` lit le `gtin13` du
+     balisage schema.org, `awin.js` lit l'`ean` du catalogue — et on le jetait
+     à chaque relevé.
+
+     C'est pourtant le seul pont EXACT entre deux marchands. Mesuré le 25 août
+     2026 : sur 8 590 produits distincts en base, CINQ étaient vus chez deux
+     vendeurs. Pas parce que les titres se ressemblent mal, mais parce qu'on
+     n'avait aucun identifiant commun — un titre est une description, pas une
+     identité. Deux enseignes qui vendent les mêmes jumelles Pentax portent le
+     même code-barres, et aucun modèle n'a besoin de le deviner. */
+  "ALTER TABLE snapshots ADD COLUMN ean TEXT",
 ]) {
   try {
     db.exec(stmt);
@@ -360,10 +376,31 @@ function etatPersistance() {
 }
 
 /** Enregistre une liste d'offres observées lors d'un scan. */
+/**
+ * Un code-barres, ou rien.
+ *
+ * Le champ `sku` des marchands est un fourre-tout : on y trouve aussi bien un
+ * EAN à treize chiffres qu'une référence interne (« LDLC-4T2-9B »), un
+ * identifiant de variante, ou le titre du produit recopié. Enregistrer ce
+ * fourre-tout reviendrait à rapprocher deux marchands sur la coïncidence de
+ * leurs références maison — pire que de ne rien rapprocher du tout, parce
+ * qu'on y croirait.
+ *
+ * On n'accepte donc que ce qui a la FORME d'un code-barres : 8, 12, 13 ou 14
+ * chiffres (EAN-8, UPC-A, EAN-13, GTIN-14). Et on refuse les suites d'un seul
+ * chiffre répété : ce sont des remplissages, jamais des produits.
+ */
+function eanValide(brut) {
+  const chiffres = String(brut ?? "").replace(/[\s-]/g, "");
+  if (!/^\d{8}$|^\d{12,14}$/.test(chiffres)) return null;
+  if (/^(\d)\1+$/.test(chiffres)) return null;
+  return chiffres;
+}
+
 function insertSnapshots(query, category, offers) {
   const stmt = db.prepare(`
-    INSERT INTO snapshots (query, category, name, product_key, seller, price, url, img, delivery, item_condition)
-    VALUES (@query, @category, @name, @product_key, @seller, @price, @url, @img, @delivery, @item_condition)
+    INSERT INTO snapshots (query, category, name, product_key, ean, seller, price, url, img, delivery, item_condition)
+    VALUES (@query, @category, @name, @product_key, @ean, @seller, @price, @url, @img, @delivery, @item_condition)
   `);
   const insertMany = db.transaction((rows) => {
     for (const row of rows) stmt.run(row);
@@ -374,6 +411,7 @@ function insertSnapshots(query, category, offers) {
       category,
       name: o.name,
       product_key: productKey(o.name),
+      ean: eanValide(o.ean ?? o.sku),
       seller: o.seller || null,
       price: o.price,
       url: o.url || null,
@@ -620,6 +658,7 @@ function promoteToAdmin(userId) {
 function produitsMultiMarchands(limite = 20) {
   const propre =
     "product_key IS NOT NULL AND trim(product_key) != '' AND seller IS NOT NULL AND trim(seller) != ''";
+  const avecEan = `${propre} AND ean IS NOT NULL AND trim(ean) != ''`;
 
   const total = db
     .prepare(`SELECT COUNT(DISTINCT product_key) AS n FROM snapshots WHERE ${propre}`)
@@ -658,7 +697,28 @@ function produitsMultiMarchands(limite = 20) {
     )
     .all();
 
-  return { produitsDistincts: total, partagesEntreMarchands: partages, exemples, marchands };
+  /* Le pont exact. Un titre est une description ; un code-barres est une
+     identité. On mesure les deux côte à côte pour savoir lequel travaille. */
+  const relevesAvecEan = db.prepare(`SELECT COUNT(*) AS n FROM snapshots WHERE ${avecEan}`).get().n;
+  const relevesTotal = db.prepare(`SELECT COUNT(*) AS n FROM snapshots WHERE ${propre}`).get().n;
+  const eansPartages = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM (
+         SELECT ean FROM snapshots WHERE ${avecEan}
+         GROUP BY ean HAVING COUNT(DISTINCT lower(trim(seller))) >= 2
+       )`
+    )
+    .get().n;
+
+  return {
+    produitsDistincts: total,
+    partagesEntreMarchands: partages,
+    relevesTotal,
+    relevesAvecEan,
+    eansPartages,
+    exemples,
+    marchands,
+  };
 }
 
 function countUsers() {
@@ -1591,6 +1651,7 @@ function fermerBase() {
 }
 
 module.exports = {
+  eanValide,
   produitsMultiMarchands,
   db,
   fermerBase,
