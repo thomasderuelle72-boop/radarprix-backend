@@ -38,6 +38,7 @@
 const { db } = require("./db");
 
 const { recuperer: naviguer, parcourir: naviguerEnFlux } = require("./navigateur");
+const { estPepper, extraireFils } = require("./pepper");
 
 const AGENT = "Mozilla/5.0 (compatible; RadarPrix/1.0; +https://radarprix.fr)";
 
@@ -521,7 +522,39 @@ async function inspecterPage(url, { extrait = 240 } = {}) {
   const marqueur = (motif) => motif.test(html);
   const euros = [...visible.matchAll(/(\d[\d\s\u00a0.]*,\d{2})\s*€/g)].map((m) => m[1]).slice(0, 6);
 
+  /* Quand la page est un agrégateur Pepper, on dit AUSSI ce que porte un
+     bon plan. `pepper.js` affirme depuis toujours que « l'agrégateur ne
+     publie pas l'URL du produit » — c'est peut-être vrai, mais personne ne
+     l'a vérifié, et c'est ce qui fait afficher « à chercher sur le site » sur
+     toutes ces cartes. On regarde les champs plutôt que de les supposer.
+
+     Les noms de champs, pas les valeurs : une description de trois cents
+     caractères dans un journal ne renseigne personne. Seules les valeurs qui
+     ressemblent à un lien sont montrées, parce que c'est ce qu'on cherche. */
+  let pepper = null;
+  if (estPepper(url) && html) {
+    try {
+      const fils = extraireFils(html);
+      const f = fils.find((x) => !x.isExpired) || fils[0];
+      if (f) {
+        pepper = {
+          fils: fils.length,
+          champs: Object.keys(f).sort(),
+          liens: Object.entries(f)
+            .filter(([cle, v]) => {
+              const t = typeof v === "string" ? v : "";
+              return /link|url|href|deep|out|visit/i.test(cle) || /^https?:\/\//.test(t);
+            })
+            .map(([cle, v]) => `${cle} = ${String(typeof v === "object" ? JSON.stringify(v) : v).slice(0, 160)}`),
+        };
+      }
+    } catch (e) {
+      pepper = { erreur: e.message };
+    }
+  }
+
   return {
+    pepper,
     url,
     code: page.code,
     octets: html.length,
