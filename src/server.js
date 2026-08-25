@@ -1574,6 +1574,19 @@ if (require.main === module) {
     );
   }
 
+  /* Et pour les connexions externes. La leçon est la même que le plafond
+     Telegram posé à 1 et jamais appliqué : une configuration qu'on ne peut
+     pas lire n'en est pas une. Une variable déclarée mais vide se comporte
+     exactement comme une variable absente, et rien ne le disait. */
+  {
+    const actifs = identites.fournisseursActifs();
+    console.log(
+      actifs.length
+        ? `[identites] connexion externe : ${actifs.join(", ")}`
+        : "[identites] aucune connexion externe — GOOGLE_CLIENT_ID et APPLE_SERVICES_ID absentes ou vides."
+    );
+  }
+
   /* Même raison pour la lecture assistée : sans cette ligne, une clé absente
      ne se manifeste que par onze marchands qui n'entrent jamais dans le
      site, sans qu'aucune erreur ne le dise. On journalise ce qui est
