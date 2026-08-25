@@ -603,6 +603,64 @@ function promoteToAdmin(userId) {
   db.prepare("UPDATE users SET role = 'admin' WHERE id = ? AND role != 'admin'").run(userId);
 }
 
+/**
+ * Combien de produits sont vus chez PLUSIEURS marchands ?
+ *
+ * Question décisive, et jamais posée. `algorithm.js` a été écrit pour
+ * comparer un prix à celui de ses pairs — les mêmes articles chez d'autres
+ * vendeurs. Or `analyzeOffers` est appelé à l'intérieur de la boucle par
+ * cible, et une cible est le catalogue d'UN marchand : deux vendeurs ne se
+ * rencontrent jamais dans le même lot. Le seul pont possible est
+ * `product_key` dans l'historique.
+ *
+ * Si ce chiffre est nul, la comparaison entre pairs n'a jamais eu lieu et
+ * ne peut pas avoir lieu — et améliorer le rapprochement des titres serait
+ * peaufiner une serrure sur une porte qui n'existe pas.
+ */
+function produitsMultiMarchands(limite = 20) {
+  const propre =
+    "product_key IS NOT NULL AND trim(product_key) != '' AND seller IS NOT NULL AND trim(seller) != ''";
+
+  const total = db
+    .prepare(`SELECT COUNT(DISTINCT product_key) AS n FROM snapshots WHERE ${propre}`)
+    .get().n;
+
+  const partages = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM (
+         SELECT product_key FROM snapshots WHERE ${propre}
+         GROUP BY product_key
+         HAVING COUNT(DISTINCT lower(trim(seller))) >= 2
+       )`
+    )
+    .get().n;
+
+  const exemples = db
+    .prepare(
+      `SELECT product_key,
+              COUNT(DISTINCT lower(trim(seller))) AS marchands,
+              COUNT(*) AS releves,
+              GROUP_CONCAT(DISTINCT seller) AS vendeurs,
+              MIN(price) AS mini, MAX(price) AS maxi
+         FROM snapshots WHERE ${propre}
+         GROUP BY product_key
+         HAVING marchands >= 2
+         ORDER BY marchands DESC, releves DESC
+         LIMIT ?`
+    )
+    .all(limite);
+
+  const marchands = db
+    .prepare(
+      `SELECT seller, COUNT(*) AS releves, COUNT(DISTINCT product_key) AS produits
+         FROM snapshots WHERE ${propre}
+         GROUP BY lower(trim(seller)) ORDER BY releves DESC LIMIT 20`
+    )
+    .all();
+
+  return { produitsDistincts: total, partagesEntreMarchands: partages, exemples, marchands };
+}
+
 function countUsers() {
   return db.prepare("SELECT COUNT(*) AS n FROM users").get().n;
 }
@@ -1533,6 +1591,7 @@ function fermerBase() {
 }
 
 module.exports = {
+  produitsMultiMarchands,
   db,
   fermerBase,
   listUsersAdmin,

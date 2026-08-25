@@ -11,6 +11,7 @@ const helmet = require("helmet");
 const { analyzeOffers } = require("./algorithm");
 const {
   latestSnapshots,
+  produitsMultiMarchands,
   priceHistoryByDay,
   createUser,
   findUserByEmail,
@@ -1386,6 +1387,19 @@ app.post("/api/admin/catalogues/inspecte", autoriserScan, async (req, res) => {
     res.json(marchand ? await inspecterMarchand(marchand) : await inspecterPage(url, { extrait }));
   } catch (e) {
     res.status(502).json({ error: e.message });
+  }
+});
+
+/* GET /api/admin/diagnostic/pairs — la comparaison entre pairs a-t-elle lieu ?
+
+   Répond avant qu'on investisse dans le rapprochement des titres : si aucun
+   produit n'est vu chez deux marchands, améliorer la reconnaissance des
+   titres reviendrait à peaufiner une serrure sur une porte qui n'existe pas. */
+app.get("/api/admin/diagnostic/pairs", autoriserScan, (req, res) => {
+  try {
+    res.json(produitsMultiMarchands(20));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
