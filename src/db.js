@@ -24,6 +24,9 @@ db.exec(`
     category TEXT DEFAULT 'tout',
     name TEXT NOT NULL,
     product_key TEXT,
+    -- L'identité résolue du produit (voir produits.js). Déclarée ici pour les
+    -- bases neuves, ajoutée par ALTER TABLE plus bas pour celles qui existent.
+    produit_id INTEGER,
     -- Déclaré ici POUR LES BASES NEUVES, et par ALTER TABLE plus bas pour
     -- celles qui existent déjà. L'index qui suit référence cette colonne :
     -- l'oublier ici faisait échouer la création du schéma entier.
@@ -314,6 +317,10 @@ for (const stmt of [
      n'avait aucun identifiant commun — un titre est une description, pas une
      identité. Deux enseignes qui vendent les mêmes jumelles Pentax portent le
      même code-barres, et aucun modèle n'a besoin de le deviner. */
+  "ALTER TABLE snapshots ADD COLUMN produit_id INTEGER",
+  /* Même règle que pour `ean` : l'index suit la colonne, dans la liste des
+     migrations et jamais dans le bloc CREATE TABLE. */
+  "CREATE INDEX IF NOT EXISTS idx_snapshots_produit ON snapshots(produit_id)",
   "ALTER TABLE snapshots ADD COLUMN ean TEXT",
   /* L'index vient APRÈS l'ajout de la colonne, et pas dans le bloc de
      création du schéma. Sur une base neuve, CREATE TABLE porte déjà `ean` et
@@ -406,8 +413,8 @@ function eanValide(brut) {
 
 function insertSnapshots(query, category, offers) {
   const stmt = db.prepare(`
-    INSERT INTO snapshots (query, category, name, product_key, ean, seller, price, url, img, delivery, item_condition)
-    VALUES (@query, @category, @name, @product_key, @ean, @seller, @price, @url, @img, @delivery, @item_condition)
+    INSERT INTO snapshots (query, category, name, product_key, produit_id, ean, seller, price, url, img, delivery, item_condition)
+    VALUES (@query, @category, @name, @product_key, @produit_id, @ean, @seller, @price, @url, @img, @delivery, @item_condition)
   `);
   const insertMany = db.transaction((rows) => {
     for (const row of rows) stmt.run(row);
@@ -435,7 +442,15 @@ function insertSnapshots(query, category, offers) {
       category,
       name: o.name,
       product_key: productKey(o.name),
-      ean: eanValide(o.ean ?? o.sku),
+      /* L'identité est résolue EN AMONT, par produits.js, et transportée ici.
+         db.js ne dépend pas de produits.js : c'est produits.js qui dépend de
+         db.js, et l'inverse ferait un cycle. La couche d'identité est
+         au-dessus du stockage, pas dedans. */
+      produit_id: Number.isInteger(o.produitId) ? o.produitId : null,
+      /* `o.sku` n'est plus un repli : le SKU est la référence INTERNE d'une
+         enseigne, et le ranger dans la colonne EAN revenait à remplir de
+         faux codes-barres un champ dont toute la valeur est d'être universel. */
+      ean: eanValide(o.ean),
       seller: o.seller || null,
       price: o.price,
       url: o.url || null,
@@ -494,6 +509,34 @@ function priceHistoryBatch(namesOrKeys, { jours = 60 } = {}) {
 
   for (const r of rows) parCle.get(r.product_key)?.push(r);
   return parCle;
+}
+
+/**
+ * Historique des prix par identité produit, pour tout un lot.
+ *
+ * Le pendant de priceHistoryBatch, mais indexé sur `produit_id` plutôt que
+ * sur la clé de titre. C'est ce qui permet à l'historique d'un article de
+ * traverser les marchands : deux enseignes qui le vendent alimentent la même
+ * série, et la référence devient un prix de MARCHÉ au lieu du passé d'une
+ * seule boutique.
+ */
+function priceHistoryParProduit(ids, { jours = 60 } = {}) {
+  const uniques = [...new Set(ids)].filter((n) => Number.isInteger(n));
+  const parId = new Map(uniques.map((i) => [i, []]));
+  if (uniques.length === 0) return parId;
+
+  const rows = db
+    .prepare(
+      `SELECT produit_id, price, seller, scraped_at FROM snapshots
+       WHERE produit_id IN (${uniques.map(() => "?").join(",")})
+         AND price > 0
+         AND scraped_at > datetime('now', ?)
+       ORDER BY scraped_at DESC`
+    )
+    .all(...uniques, `-${jours} days`);
+
+  for (const r of rows) parId.get(r.produit_id)?.push(r);
+  return parId;
 }
 
 /** Dernier scan (les offres les plus récentes) pour une requête donnée. */
@@ -1738,6 +1781,7 @@ module.exports = {
   insertSnapshots,
   priceHistoryFor,
   priceHistoryBatch,
+  priceHistoryParProduit,
   priceHistoryByDay,
   latestSnapshots,
   createUser,

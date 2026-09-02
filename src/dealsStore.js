@@ -16,6 +16,7 @@
 // Elle vit dans son propre module plutôt que dans db.js, déjà à 2 000 lignes :
 // la connexion SQLite est partagée, le schéma est local.
 const { db } = require("./db");
+const cache = require("./cache");
 const { productKey, VARIANT_MARKERS } = require("./productKey");
 const { domainePourLogo } = require("./marchands");
 
@@ -295,6 +296,7 @@ const upsertDeals = db.transaction((deals) => {
  * quota) ne doit pas faire disparaître tout le contenu déjà collecté.
  */
 function markMissingAsRemoved(source, externalIdsVus) {
+  cache.invalider();
   if (!externalIdsVus || externalIdsVus.length === 0) return 0;
   const placeholders = externalIdsVus.map(() => "?").join(",");
   const res = db
@@ -330,6 +332,7 @@ function listDeals({
   category = "tout",
   itemCondition = null,
   detector = null,
+  detectors = null,
   q = null,
   page = 1,
   pageSize = 20,
@@ -380,6 +383,12 @@ function listDeals({
   if (detector) {
     where.push("d.detector = ?");
     params.push(detector);
+  } else if (detectors && detectors.length > 0) {
+    /* Le flux public en réunit deux : D3, les anomalies mesurées cible par
+       cible, et D4, celles mesurées entre marchands une fois le scan fini.
+       Ce sont deux façons de trouver la même chose, pas deux rubriques. */
+    where.push(`d.detector IN (${detectors.map(() => "?").join(",")})`);
+    params.push(...detectors);
   }
   if (q && q.trim()) {
     // Filtre par mot-clé sur des offres DÉJÀ qualifiées individuellement :
@@ -676,6 +685,7 @@ function décoderPayload(brut) {
  * après que la collecte a été corrigée.
  */
 function purgerPrixInvalides() {
+  cache.invalider();
   const deals = db
     .prepare(
       `UPDATE deals SET removed_at = datetime('now')
@@ -690,8 +700,15 @@ function purgerPrixInvalides() {
   return { deals, releves };
 }
 
+/* Toute écriture invalide le cache de lecture. La règle vit ICI, au point
+   d'écriture, et non dans chaque route : une route qu'on oublie d'invalider
+   sert du périmé sans que rien ne le signale. */
 function publierDeal(id) {
-  db.prepare("UPDATE deals SET published_at = datetime('now') WHERE id = ? AND published_at IS NULL").run(id);
+  const r = db
+    .prepare("UPDATE deals SET published_at = datetime('now') WHERE id = ? AND published_at IS NULL")
+    .run(id);
+  if (r.changes > 0) cache.invalider();
+  return r.changes;
 }
 
 

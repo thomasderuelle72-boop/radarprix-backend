@@ -4,7 +4,7 @@
 //     produit sont comparées à leur médiane (dispo dès le 1er scan).
 //  2) Comparaison "historique" : le prix est comparé à la moyenne des
 //     prix déjà vus pour ce produit exact (s'améliore avec le temps).
-const { priceHistoryBatch, reglages } = require("./db");
+const { priceHistoryBatch, priceHistoryParProduit, reglages } = require("./db");
 const { significantWords, estMarqueurVariante, productKey } = require("./productKey.js");
 const { prixValide } = require("./extraction");
 
@@ -112,6 +112,30 @@ function clusterByProduct(offers) {
     else clusters.push([offer]);
   }
   return clusters;
+}
+
+/**
+ * Les groupes d'offres à comparer entre elles.
+ *
+ * Quand l'identité produit est résolue (produits.js), c'est ELLE qui fait le
+ * groupe. Le rapprochement par titre reste, mais en repli — et c'est
+ * exactement le bon ordre : `sameProduct` compare des mots, or deux enseignes
+ * ne décrivent jamais un article de la même façon. C'est ce qui expliquait
+ * 5 produits vus chez deux marchands sur 8 591. Un code-barres, lui, ne se
+ * discute pas.
+ */
+function grouperOffres(offers) {
+  const parIdentite = new Map();
+  const sansIdentite = [];
+  for (const o of offers) {
+    if (Number.isInteger(o.produitId)) {
+      if (!parIdentite.has(o.produitId)) parIdentite.set(o.produitId, []);
+      parIdentite.get(o.produitId).push(o);
+    } else {
+      sansIdentite.push(o);
+    }
+  }
+  return [...parIdentite.values(), ...clusterByProduct(sansIdentite)];
 }
 
 function median(nums) {
@@ -359,7 +383,7 @@ function analyzeOffers(offers) {
   // compare ce qui est affiché plutôt que ce qui est payé.
   const peerRefByOffer = new Map();
   const peerStatsByOffer = new Map();
-  for (const cluster of clusterByProduct(offers)) {
+  for (const cluster of grouperOffres(offers)) {
     // Les offres reconditionnées ne servent jamais à établir la référence du
     // neuf : elles sont légitimement moins chères, et les inclure abaisserait
     // la médiane au point de masquer les vraies anomalies.
@@ -380,6 +404,12 @@ function analyzeOffers(offers) {
 
   // Un seul aller-retour en base pour tout le lot, au lieu d'un par offre.
   const historiques = priceHistoryBatch(offers.map((o) => o.name));
+  /* Et par identité produit quand elle est connue : c'est le même
+     raisonnement que pour le groupement. L'historique d'un article n'est pas
+     l'historique d'un libellé. */
+  const parProduit = priceHistoryParProduit(
+    offers.filter((o) => Number.isInteger(o.produitId)).map((o) => o.produitId)
+  );
   const maintenant = new Date();
 
   return offers.map((o) => {
@@ -408,7 +438,8 @@ function analyzeOffers(offers) {
        On garde donc tout l'historique. Un produit dont le prix n'a pas bougé
        obtient une référence égale à son prix, donc 0 % : il n'est pas publié,
        ce qui est le comportement juste. */
-    const lignes = historiques.get(cleProduit(o.name)) || [];
+    const parIdentite = Number.isInteger(o.produitId) ? parProduit.get(o.produitId) : null;
+    const lignes = (parIdentite && parIdentite.length > 0 ? parIdentite : historiques.get(cleProduit(o.name))) || [];
 
     // Référence historique robuste : médiane pondérée par la récence, par
     // marchand, puis médiane de ces médianes. Voir referenceHistorique.
@@ -537,6 +568,7 @@ function analyzeOffers(offers) {
 
 module.exports = {
   analyzeOffers,
+  grouperOffres,
   filterRelevantOffers,
   median,
   mean,

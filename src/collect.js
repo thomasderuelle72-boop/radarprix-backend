@@ -24,6 +24,8 @@
 const { db, insertSnapshots, debuterScan, terminerScan, logSourceEvent, reglages } = require("./db");
 const { publierNouveautes } = require("./telegram");
 const { analyzeOffers } = require("./algorithm");
+const produits = require("./produits");
+const { analyserMarche } = require("./marche");
 
 /** Réglages de publication, relus à chaque scan (modifiables depuis l'admin). */
 const R_PUBLICATION = () => reglages();
@@ -734,6 +736,9 @@ async function collecterFirecrawl(cible) {
       const marchand = reconnaitreMarchand({ url: r.url, texte: titre });
       offres.push({
         externalId: fiche?.sku || r.url,
+        ean: fiche?.ean || null,
+        reference: fiche?.reference || null,
+        marque: fiche?.marque || null,
         name: titre.slice(0, 200),
         price: prix,
         refPriceAnnonce: fiche?.prixReference ?? null,
@@ -757,6 +762,23 @@ async function collecterFirecrawl(cible) {
     }
   }
   return offres;
+}
+
+/**
+ * Une anomalie de marché est-elle montrable ?
+ *
+ * Mêmes règles que dans la boucle par cible — on sait qui vend, où cliquer,
+ * et le lien ouvre la fiche — mais la passe de marché relit des relevés
+ * enregistrés, où le type de lien n'est pas stocké. Un relevé de catalogue
+ * ou de flux marchand pointe la fiche par construction (c'est là qu'on a lu
+ * le prix) : on l'accepte, sans jamais l'inventer pour un lien absent.
+ */
+function actionnableMarche(a) {
+  if (!a.seller || !a.url) return false;
+  if (!R_PUBLICATION().lienProduitExige) return true;
+  if (a.lienType) return a.lienType === "produit";
+  // Un lien reconstruit vers un agrégateur n'est jamais une fiche.
+  return !estPepper(a.url);
 }
 
 /* Nombre de fiches relevées à chaque passage d'un catalogue. Cinquante mille
@@ -844,11 +866,16 @@ async function collecterCatalogue(cible) {
       }
       marquerRelevee(fiche.id);
       offres.push({
+        // Le SKU identifie la FICHE chez ce marchand : c'est exactement ce
+        // qu'il faut pour l'idempotence, et rien d'autre.
         externalId: p.sku || fiche.url,
-        // Le code-barres, quand le marchand le balise. C'est le seul
-        // identifiant qui vaille entre deux enseignes ; on l'extrayait déjà
-        // et on le perdait ici, faute de le transmettre.
-        ean: p.sku || null,
+        /* Les trois identifiants, chacun dans son champ et selon sa portée.
+           Ils étaient confondus : `ean: p.sku` rangeait une référence maison
+           dans la colonne du code-barres universel, où eanValide() la
+           rejetait. D'où 50 relevés porteurs d'un EAN sur 23 152. */
+        ean: p.ean || null,
+        reference: p.reference || null,
+        marque: p.marque || null,
         name: String(p.nom || "").slice(0, 200),
         price: p.prix,
         refPriceAnnonce: p.prixReference,
@@ -1024,6 +1051,9 @@ async function collecterPagePromo(cible) {
     // Le SKU du marchand est l'identifiant le plus stable ; à défaut le
     // lien, à défaut le nom — sans quoi chaque scan republierait tout.
     externalId: String(f.sku || f.url || `${cible.id}-${f.nom}`).slice(0, 200),
+    ean: f.ean || null,
+    reference: f.reference || null,
+    marque: f.marque || null,
     name: String(f.nom).slice(0, 200),
     price: f.prix,
     refPriceAnnonce: f.prixReference,
@@ -1680,6 +1710,24 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
 
            Analyser d'abord règle les deux : l'historique ne contient que le
            passé, et rien n'a besoin d'être filtré. */
+        /* L'identité produit se résout AVANT l'enregistrement : c'est elle
+           qui permettra plus tard de rapprocher deux marchands sur le même
+           article. Une résolution qui échoue ne fait pas tomber la cible —
+           le relevé vaut toujours pour l'historique de son propre marchand. */
+        for (const o of offres) {
+          try {
+            o.produitId = produits.resoudre({
+              ean: o.ean,
+              marque: o.marque,
+              reference: o.reference,
+              nom: o.name,
+              categorie: cible.category,
+            });
+          } catch (e) {
+            console.error(`[produits] identité non résolue : ${o.name} — ${e.message}`);
+          }
+        }
+
         const analyses = analyzeOffers(offres);
 
         insertSnapshots(cible.query, cible.category, offres);
@@ -1911,6 +1959,70 @@ async function lancerScan({ userId = null, source = "manuel", targetId = null } 
         console.error(`[scan] ${cible.query} (${canalDe(cible)}) : ${e.message}`);
       }
       bilan.details.push(ligne);
+    }
+
+    /* LA PASSE DE MARCHÉ — après toutes les cibles, et c'est tout l'intérêt.
+
+       Dans la boucle ci-dessus, chaque cible est analysée seule : soixante
+       fiches d'un seul marchand, donc soixante groupes de un, donc aucune
+       référence entre pairs possible. Les marchands ne se rencontraient
+       jamais. Ici ils se rencontrent : on relit les relevés groupés par
+       IDENTITÉ produit (produits.js) au lieu de par cible, et l'écart devient
+       un écart de marché — la seule anomalie que ce site puisse revendiquer
+       comme sienne.
+
+       Hors du try de la boucle et dans le sien : une passe de marché qui
+       échoue ne doit pas effacer une collecte qui a réussi. */
+    try {
+      const { anomalies, produitsComparés } = analyserMarche();
+      let publiesMarche = 0;
+      for (const a of anomalies) {
+        if (!actionnableMarche(a)) continue;
+        const id = upsertDeal({
+          source: "d4-marche",
+          externalId: `p${a.produitId}-${a.seller}`,
+          detector: "D4",
+          type: a.verdict === "erreur" ? "erreur" : "promo",
+          title: a.produit?.titre || a.name,
+          price: a.price,
+          referencePrice: a.refPrice,
+          url: a.url,
+          imageUrl: a.img || null,
+          merchant: a.seller,
+          category: a.produit?.categorie || "tout",
+          itemCondition: a.itemCondition || "neuf",
+          score: a.score,
+          confidence: a.confidence,
+          payload: {
+            pct: a.pct,
+            priceTotal: a.priceTotal,
+            allTimeLow: Boolean(a.allTimeLow),
+            zScore: a.zScore ?? null,
+            refSource: "mesure",
+            baseReference: a.baseReference || "marche",
+            marchandsComparés: a.marchandsComparés || 0,
+            lienType: a.lienType || null,
+            marchandDomaine: domaineDeMarchand(a.seller),
+          },
+        });
+        publierDeal(id);
+        publiesMarche++;
+      }
+      bilan.publies += publiesMarche;
+      bilan.marche = { produitsComparés, anomalies: anomalies.length, publies: publiesMarche };
+      console.log(
+        `[marche] ${produitsComparés} produit(s) comparés entre marchands, ` +
+          `${anomalies.length} anomalie(s), ${publiesMarche} publiée(s).`
+      );
+      logSourceEvent(
+        "marche",
+        true,
+        `${produitsComparés} produit(s) comparés, ${publiesMarche} publiée(s)`
+      );
+    } catch (e) {
+      bilan.erreurs++;
+      logSourceEvent("marche", false, e.message);
+      console.error(`[marche] ${e.message}`);
     }
 
     /* Les codes promo du réseau d'affiliation, hors boucle : c'est un appel

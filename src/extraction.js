@@ -141,6 +141,38 @@ function prixDeReference(offre, prixPaye) {
   return null;
 }
 
+/**
+ * Les identifiants d'un produit, séparés par ce qu'ils valent.
+ *
+ * Le code lisait `sku || gtin13 || mpn` dans UN seul champ, et le SKU venait
+ * en premier. C'est l'inverse de l'ordre utile : le SKU est la référence
+ * interne d'une enseigne, il ne veut rien dire chez la voisine ; le GTIN
+ * (EAN) est universel et désigne l'article partout dans le monde. En les
+ * confondant, on rangeait des références maison dans le champ EAN, où
+ * `eanValide()` les rejetait ensuite — d'où 50 relevés porteurs d'un
+ * code-barres sur 23 152, et AUCUN partagé entre deux marchands.
+ *
+ * Trois champs, donc, par force décroissante :
+ *   · `ean`       — le GTIN, sous toutes ses longueurs. Identité absolue.
+ *   · `reference` — le MPN du fabricant. Fort une fois associé à la marque.
+ *   · `sku`       — la référence de l'enseigne. Ne sert qu'à l'idempotence.
+ */
+function identifiants(produit) {
+  const gtin =
+    premiere(produit.gtin13) ||
+    premiere(produit.gtin) ||
+    premiere(produit.gtin14) ||
+    premiere(produit.gtin12) ||
+    premiere(produit.gtin8) ||
+    premiere(produit.ean) ||
+    null;
+  return {
+    ean: gtin ? String(gtin).replace(/\D/g, "") || null : null,
+    reference: premiere(produit.mpn) ? String(premiere(produit.mpn)).trim().slice(0, 64) : null,
+    sku: premiere(produit.sku) ? String(premiere(produit.sku)).trim().slice(0, 64) : null,
+  };
+}
+
 /** L'offre exploitable d'un produit : une Offer, ou la meilleure d'une AggregateOffer. */
 function trouverOffre(produit) {
   const offres = [].concat(produit.offers || []);
@@ -234,6 +266,8 @@ function produitDepuisOpenGraph(html) {
     finOffre: null,
     caracteristiques: [],
     etat: "neuf",
+    ean: null,
+    reference: null,
     sku: null,
     source: "opengraph",
   };
@@ -295,7 +329,11 @@ function produitDepuisMicrodata(htmlComplet) {
     finOffre: itemprop(html, "priceValidUntil"),
     caracteristiques: [],
     etat: "neuf",
-    sku: itemprop(html, "sku"),
+    ...identifiants({
+      sku: itemprop(html, "sku"),
+      mpn: itemprop(html, "mpn"),
+      gtin13: itemprop(html, "gtin13") || itemprop(html, "gtin"),
+    }),
     source: "microdata",
   };
 }
@@ -322,7 +360,7 @@ function ficheDepuisProduit(produit) {
     debutOffre: date(offre.validFrom),
     caracteristiques: caracteristiques(produit),
     etat: etat(offre, produit),
-    sku: premiere(produit.sku) || premiere(produit.gtin13) || premiere(produit.mpn) || null,
+    ...identifiants(produit),
     source: "jsonld",
   };
 }
@@ -546,6 +584,8 @@ function chercherProduit(racine, visible) {
         debutOffre: null,
         caracteristiques: [],
         etat: "neuf",
+        ean: null,
+        reference: null,
         sku: null,
         source: "etat",
       };
@@ -575,7 +615,7 @@ function produitDepuisHtml(html) {
       debutOffre: date(offre.validFrom),
       caracteristiques: caracteristiques(produit),
       etat: etat(offre, produit),
-      sku: premiere(produit.sku) || premiere(produit.gtin13) || premiere(produit.mpn) || null,
+      ...identifiants(produit),
       source: "jsonld",
     };
   }
@@ -590,6 +630,7 @@ function produitDepuisHtml(html) {
 
 module.exports = {
   prixValide,
+  identifiants,
   PRIX_MAX,
   extraireJsonLd,
   produitDepuisEtat,

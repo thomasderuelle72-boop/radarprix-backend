@@ -83,6 +83,9 @@ const {
   listDeals: listDealsUnifies,   TYPES_DEAL, purgerPrixInvalides,
 } = require("./dealsStore");
 const { domainePourLogo } = require("./marchands");
+const cache = require("./cache");
+const produits = require("./produits");
+const { etatDuMarche } = require("./marche");
 const {
   sonderMarchands, inspecterPage, inspecterMarchand, purgerFichesNonProduits,
 } = require("./catalogue");
@@ -273,26 +276,48 @@ app.get("/api/deals", (req, res) => {
   const category = req.query.category || "tout";
   const page = Math.max(1, parseInt(req.query.page, 10) || 1);
   const pageSize = Math.min(50, Math.max(1, parseInt(req.query.pageSize, 10) || 15));
+  const q = req.query.q || null;
 
-  const { total, hasMore, items } = listDealsUnifies({
-    // D3 seulement : les promotions d'affiliation (D1) et les jeux offerts
-    // (D2) ont leur propre flux. Cette route reste celle des anomalies de
-    // prix mesurées par RadarPrix.
-    detector: "D3",
-    category,
-    q: req.query.q || null,
-    page,
-    pageSize,
+  /* La lecture la plus fréquente du site, et la plus répétitive : dix
+     visiteurs sur la page d'accueil posent dix fois la même question à une
+     base synchrone qui bloque le thread pendant qu'elle répond. Le cache
+     ramène la rafale à une requête ; l'ETag évite même de resérialiser pour
+     un navigateur qui a déjà la réponse. La clé porte TOUS les paramètres —
+     en oublier un servirait la page 2 à qui demande la page 1. */
+  const charge = cache.memo(`deals|${category}|${q || ""}|${page}|${pageSize}`, () => {
+    const { total, hasMore, items } = listDealsUnifies({
+      // D3 et D4 : les anomalies mesurées par cible (D3) et celles mesurées
+      // entre marchands après le scan (D4, voir marche.js). Les promotions
+      // d'affiliation (D1) et les jeux offerts (D2) ont leur propre flux.
+      detector: null,
+      detectors: ["D3", "D4"],
+      category,
+      q,
+      page,
+      pageSize,
+    });
+    return { category, page, pageSize, total, hasMore, items: items.map(enFormeHeritee) };
   });
 
-  res.json({
-    category,
-    page,
-    pageSize,
-    total,
-    hasMore,
-    items: items.map(enFormeHeritee),
-  });
+  return cache.servir(req, res, charge);
+});
+
+/**
+ * Un produit et tous les marchands qui le vendent.
+ *
+ * C'est la vue que l'identité produit rend possible et qui n'existait pas :
+ * jusqu'ici le site savait afficher une offre, pas un article. Elle sert
+ * autant le visiteur (« qui d'autre le vend, et à combien ? ») que le
+ * diagnostic (« ce rapprochement est-il crédible ? »).
+ */
+app.get("/api/produits/:id", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Identifiant invalide." });
+
+  const charge = cache.memo(`produit|${id}`, () => produits.vueProduit(id));
+
+  if (!charge) return res.status(404).json({ error: "Produit inconnu." });
+  return cache.servir(req, res, charge);
 });
 
 /**
@@ -1398,6 +1423,22 @@ app.post("/api/admin/catalogues/inspecte", autoriserScan, async (req, res) => {
 app.get("/api/admin/diagnostic/pairs", autoriserScan, (req, res) => {
   try {
     res.json(produitsMultiMarchands(20));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+/**
+ * L'état du rapprochement entre marchands : couverture des identifiants,
+ * produits vus chez plusieurs enseignes, taille du cache.
+ *
+ * C'est le tableau de bord de la seule promesse que le site ne pouvait pas
+ * tenir. Sans mesure, « on rapproche les marchands » reste une intention.
+ */
+app.get("/api/admin/diagnostic/marche", autoriserScan, (req, res) => {
+  try {
+    const heures = Math.min(720, Math.max(1, parseInt(req.query.heures, 10) || 96));
+    res.json({ ...etatDuMarche({ heures }), cache: cache.etat() });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

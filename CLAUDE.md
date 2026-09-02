@@ -38,6 +38,9 @@ Point d'entrée : `npm start` → `src/server.js` (port `PORT` ou 3001).
 | `pepper.js` | Lecture des sites de bons plans bâtis sur Pepper (Dealabs, Mydealz…) |
 | `catalogue.js` | Suivi du catalogue d'un marchand par son propre sitemap : découverte, échantillon stable, rotation des relevés |
 | `awin.js` | Catalogues produits des marchands via le réseau d'affiliation — la voie vers l'indépendance |
+| `produits.js` | **Registre d'identité produit** : cascade EAN → marque+référence → empreinte modèle → titre. C'est lui qui permet à deux marchands de parler du même article |
+| `marche.js` | **Analyse par produit**, après le scan : relit les relevés groupés par identité et non par cible, pour que les marchands se rencontrent enfin |
+| `cache.js` | Mémoire courte devant les lectures publiques : `memo()` par génération, ETag, `stale-while-revalidate` |
 | `identites.js` | Connexion Google et Apple : vérification du jeton d'identité (signature, émetteur, destinataire, expiration) et table `identites_externes` |
 | `auth.js`, `moderation.js`, `messagerie.js`, `forum.js`, `notifications.js`, `badges.js`, `ranking.js`, `reputation.js`, `persistance.js`, `radarEtat.js`, `reinitialisation.js`, `env.js` | Comptes/sécurité, validation/anti-spam, salon + MP, forum, notifications, badges, score hot, fiabilité marchands, sauvegarde/restauration de la base, état public du radar, reset admin, chargement env |
 
@@ -281,22 +284,154 @@ mises au premier plan en retirant tout le reste.
   défendable sur un catalogue marchand — une coque de téléphone est un
   produit que l'enseigne vend, et son prix cassé est un vrai deal — mais
   c'est un choix qui n'a jamais été écrit.
-- **La référence entre pairs est structurellement impossible sur le canal
-  catalogue.** `lancerScan` appelle `analyzeOffers` **par cible** : 60 fiches
-  d'un seul marchand, toutes des produits différents. `clusterByProduct`
-  rend 60 groupes de un, `comparables.length < minPairs` (2), donc
-  `peerRefByOffer` reste vide. Sur le seul canal dont les anomalies sont les
-  nôtres, la détection repose à 100 % sur le passé de la même enseigne —
-  d'où `baseReference: "marchand"` sur 31 des 51 offres mesurées.
-- **Le rapprochement entre marchands ne fonctionne pas** : 5 produits vus
-  chez ≥ 2 marchands sur 8 591 (0,06 %), et **50 relevés portant un EAN sur
-  23 152** (0,2 %), dont **aucun** partagé. `productKey` exige le même
-  ensemble exact de mots significatifs : deux enseignes ne titrent jamais
-  pareil.
+- ~~La référence entre pairs est impossible sur le canal catalogue~~ →
+  **corrigé** par `marche.js` (voir Architecture).
+- ~~Le rapprochement entre marchands ne fonctionne pas~~ → **corrigé** par
+  `produits.js`. La couverture reste à mesurer en production : les relevés
+  d'avant le correctif n'ont pas d'identité, elle se construit relevé après
+  relevé. `GET /api/admin/diagnostic/marche` la donne.
 - **`clusterByProduct` est glouton et dépendant de l'ordre** : il ne compare
   qu'au **premier** élément de chaque groupe, sur une relation non
   transitive. Deux ordres d'entrée donnent deux regroupements. O(n²) avec
   re-tokenisation à chaque comparaison.
+
+## Architecture — les cinq couches
+
+Le système s'est structuré en cinq couches parce que trois d'entre elles
+étaient jusqu'ici confondues, et que cette confusion produisait des défauts
+qu'aucun correctif local ne pouvait atteindre.
+
+```
+ACQUISITION   awin · catalogue · flux · firecrawl · pepper · page promo
+              → un contrat unique : {nom, prix, marchand, url, lienType,
+                                      ean, marque, reference}
+                    │  prixValide() · eanValide()
+IDENTITÉ      produits.js — cascade de résolution
+                 1. EAN/GTIN            absolu
+                 2. marque + référence  quasi absolu
+                 3. empreinte modèle    « sony|wh1000xm5 »
+                 4. titre               identité locale, repli
+                    │  snapshots.produit_id
+JUGEMENT      algorithm.js  — par lot, pendant le scan (immédiat)
+              marche.js     — par PRODUIT, après le scan (entre marchands)
+                    │
+PUBLICATION   dealsStore — lienProduitExige, meriteLaUne, price > 0
+                    │  cache.invalider()
+DIFFUSION     cache.js — memo(TTL 5 s) + ETag + stale-while-revalidate
+```
+
+**La règle qui tient l'ensemble : l'acquisition ÉCRIT des observations,
+l'analyse les LIT.** Elles ne se parlent plus directement. Ajouter une source
+ne touche pas au jugement ; changer le jugement ne touche pas aux sources.
+
+### Pourquoi une couche d'identité
+
+Mesuré le 2 septembre 2026 : **5 produits vus chez ≥ 2 marchands sur 8 591**
+(0,06 %), et **50 relevés porteurs d'un EAN sur 23 152** (0,2 %), dont aucun
+partagé. Un site qui promet « le même article moins cher ailleurs » ne savait
+jamais dire que deux offres parlent du même article. Deux causes :
+
+1. `extraction.js` rangeait `sku || gtin13 || mpn` dans **un seul champ**, le
+   SKU en premier. Or le SKU est la référence **interne** d'une enseigne. On
+   remplissait donc la colonne EAN de références maison, que `eanValide()`
+   rejetait ensuite. Trois identifiants, trois portées, trois champs
+   désormais (`identifiants()`).
+2. L'identité reposait sur `productKey()` — l'ensemble **exact** des mots
+   significatifs du titre. Deux enseignes ne titrent jamais pareil.
+
+L'**empreinte modèle** est conservatrice par construction, car l'enjeu est
+asymétrique : un rapprochement manqué coûte une comparaison, un rapprochement
+faux **fabrique une remise imaginaire et la publie**.
+
+| titre | empreinte |
+|---|---|
+| `Casque Sony WH-1000XM5 Bluetooth Noir` | `sony\|wh1000xm5` |
+| `Sony WH1000XM5 casque sans fil` | `sony\|wh1000xm5` ✅ même article |
+| `Apple iPhone 15 128 Go` | `apple\|128\|15` |
+| `iPhone 15 Pro 128 Go` | `apple\|128\|15\|pro` ✅ séparés |
+| `Écran 15 pouces` | `null` ✅ « 15 » seul ne prouve rien |
+| `Pelote de laine BRIO` | `null` ✅ aucun code modèle |
+
+Quand un **code fort** existe (≥ 5 caractères mêlant lettres et chiffres), il
+suffit et les autres nombres du titre sont écartés — sinon « Écran Dell
+U4025QW **40 pouces** » et « Dell U4025QW incurvé » se sépareraient sur une
+diagonale citée par un seul marchand. Sans code fort, ce sont au contraire les
+nombres qui distinguent (128 Go ≠ 256 Go) et on les garde tous.
+
+Un EAN présent **interdit** le repli sur le titre : deux manettes Xbox de
+coloris différents portent le même libellé et deux codes-barres. Les
+confondre ferait dire que l'une brade l'autre.
+
+### Pourquoi une passe de marché séparée
+
+`lancerScan` appelle `analyzeOffers` **par cible**. Une cible catalogue, c'est
+60 fiches d'**un seul marchand**, toutes des produits différents : 60 groupes
+de un, `comparables.length < minPairs`, **aucune référence entre pairs
+possible**. Les marchands ne se rencontraient jamais.
+
+`marche.js` ne collecte rien : il relit les relevés groupés par identité, ne
+garde qu'**un prix par marchand** (le plus récent — sinon le plus bavard
+pèserait le plus lourd), et confie le lot à `analyzeOffers`, qui savait déjà
+tout faire. Il lui manquait un lot où plusieurs enseignes se trouvent en même
+temps. Fenêtre 96 h (la rotation repasse toutes les 40 h : exiger la
+simultanéité ne comparerait jamais rien), plafond 500 produits par passe
+(`better-sqlite3` bloque le thread qui sert le site).
+
+`grouperOffres()` applique la même règle **partout** : l'identité fait le
+groupe quand elle est connue, le rapprochement par titre reste en repli. Et
+`priceHistoryParProduit()` fait de même pour l'historique — l'historique d'un
+article n'est pas l'historique d'un libellé.
+
+### Conception de l'API
+
+| route | rôle | cache |
+|---|---|---|
+| `GET /api/deals` | flux public, détecteurs **D3 + D4** | memo 5 s + ETag |
+| `GET /api/produits/:id` | **un article et tous ses marchands** — la vue que l'identité rend possible ; `identite` dit sur quoi repose le rapprochement (`ean`/`reference`/`empreinte`/`titre`) | memo 5 s + ETag |
+| `GET /api/admin/diagnostic/marche` | couverture des identifiants, produits multi-marchands, état du cache | non |
+
+### Schéma
+
+```sql
+produits(id, ean, marque, reference, empreinte, cle_titre, titre, categorie, …)
+  UNIQUE(ean)               WHERE ean IS NOT NULL          -- index partiel
+  UNIQUE(marque, reference) WHERE les deux NOT NULL
+  INDEX(empreinte)          WHERE empreinte IS NOT NULL
+  INDEX(cle_titre)
+
+snapshots(… , produit_id INTEGER)   INDEX(produit_id)
+```
+
+Les index **partiels** disent l'intention : la contrainte porte sur les
+produits identifiés, pas sur les milliers qui n'ont aucun identifiant.
+
+⚠️ **Rappel de la panne du 25 août** : toute colonne ajoutée va dans le bloc
+`CREATE TABLE` (bases neuves) **et** dans `MIGRATIONS` (bases existantes), et
+l'index qui la référence va **dans `MIGRATIONS`, jamais dans le schéma** —
+sinon il s'exécute avant l'`ALTER TABLE` et la production ne démarre plus.
+
+### Stratégie de cache
+
+`better-sqlite3` est **synchrone** : chaque requête bloque le thread qui sert
+tous les visiteurs. Le flux public est la lecture la plus fréquente et la plus
+répétitive — dix visiteurs posent dix fois la même question.
+
+- `memo(clé, calcul, ttl = 5 s)` — la clé porte **tous** les paramètres ;
+- invalidation **par génération**, pas par clé : `publierDeal` incrémente un
+  compteur et l'ancienne génération devient inatteignable. Invalider par motif
+  de clé est la source classique des caches qui servent du périmé ;
+- l'invalidation vit **au point d'écriture** (`dealsStore`), pas dans les
+  routes : une route qu'on oublie sert du périmé en silence ;
+- plafond 500 entrées, éviction FIFO — sans quoi une API paginée et filtrable
+  fabrique une clé par combinaison et fuit lentement ;
+- HTTP : `ETag` (FNV-1a) + `max-age=15, stale-while-revalidate=60`. Un 304
+  économise la bande passante **et** la sérialisation JSON, souvent plus
+  coûteuse que la requête SQLite elle-même.
+
+**À l'échelle :** en multi-instance ce cache devient un cache *par instance*
+— deux visiteurs peuvent voir deux états à quelques secondes d'écart. C'est
+acceptable pour un flux de bons plans, et ça ne le serait pas pour un panier.
+La bascule vers Redis se fait derrière `memo()`, sans toucher aux routes.
 
 ## Limites connues / pistes
 
