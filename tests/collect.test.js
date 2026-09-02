@@ -774,3 +774,40 @@ describe("eanValide — un code-barres, ou rien", () => {
     expect(eanValide("")).toBeNull();
   });
 });
+
+/* L'ingestion stricte, telle que la convention du dépôt la demande : lever
+   plutôt que stocker une ligne invalide. Un relevé à 0 € empoisonne trois
+   choses d'un coup — la référence historique du produit, la médiane de son
+   groupe, et le verdict de l'offre elle-même. Un collecteur qui en produit a
+   un défaut, et un défaut doit se voir. */
+describe("ingestion stricte des prix", () => {
+  it("refuse d'enregistrer un relevé à prix nul, négatif ou absurde", () => {
+    const { insertSnapshots } = require("../src/db.js");
+    for (const prix of [0, -5, NaN, null, 5e7]) {
+      expect(() =>
+        insertSnapshots("test", "high-tech", [
+          { name: "Casque Sony WH-1000XM5", price: prix, seller: "Fnac" },
+        ])
+      ).toThrow(/prix invalide/);
+    }
+    expect(() =>
+      insertSnapshots("test", "high-tech", [
+        { name: "Casque Sony WH-1000XM5", price: 279.99, seller: "Fnac" },
+      ])
+    ).not.toThrow();
+  });
+
+  it("n'enregistre rien du lot quand une seule ligne est fautive", () => {
+    // La vérification passe AVANT la transaction : un lot est accepté en
+    // entier ou refusé en entier, jamais à moitié.
+    const { insertSnapshots, db } = require("../src/db.js");
+    const avant = db.prepare("SELECT COUNT(*) AS n FROM snapshots").get().n;
+    expect(() =>
+      insertSnapshots("test", "high-tech", [
+        { name: "Écran Dell U2723QE", price: 499, seller: "LDLC" },
+        { name: "Écran Dell U2724D", price: 0, seller: "LDLC" },
+      ])
+    ).toThrow(/prix invalide/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM snapshots").get().n).toBe(avant);
+  });
+});

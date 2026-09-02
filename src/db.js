@@ -4,6 +4,7 @@ const Database = require("better-sqlite3");
 const path = require("path");
 const fs = require("fs");
 const { productKey } = require("./productKey.js");
+const { prixValide } = require("./extraction");
 const { preparerBase, sauvegarderBase, listerSauvegardes } = require("./persistance.js");
 
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "..", "data", "radarprix.sqlite");
@@ -411,6 +412,23 @@ function insertSnapshots(query, category, offers) {
   const insertMany = db.transaction((rows) => {
     for (const row of rows) stmt.run(row);
   });
+  /* Ingestion stricte : plutôt lever que stocker une ligne invalide.
+
+     Un relevé à 0 € n'est pas une donnée manquante, c'est une donnée FAUSSE,
+     et elle empoisonne trois choses d'un coup : la référence historique du
+     produit, la médiane de son groupe, et le verdict de l'offre elle-même —
+     qui ressort à −100 %, donc « erreur de prix », donc en une du site.
+     Cinquante et une cartes ont été publiées ainsi le 2 septembre 2026.
+
+     Lever plutôt que filtrer en silence : un collecteur qui produit des prix
+     nuls a un défaut qu'il faut voir. lancerScan traite déjà l'échec d'une
+     cible sans faire tomber le scan, et le consigne dans source_events. */
+  for (const o of offers) {
+    if (!prixValide(o.price)) {
+      throw new Error(`prix invalide (${o.price}) pour « ${String(o.name).slice(0, 80)} »`);
+    }
+  }
+
   insertMany(
     offers.map((o) => ({
       query,

@@ -302,3 +302,41 @@ describe("une offre revue corrige sa nature", () => {
     expect(ligne.title).toBe("Casque Bose QuietComfort Ultra");
   });
 });
+
+/* Le filtre de dernier recours. La collecte ne peut plus produire de prix
+   nul, mais la table `deals` garde ce qui y a déjà été publié : sans ce
+   filtre, il aurait fallu attendre le scan suivant pour cesser d'annoncer
+   cinquante et une pelotes de laine offertes. */
+describe("une offre à 0 € ne sort pas du flux", () => {
+  it("masque un prix nul, garde le gratuit, tolère un prix inconnu", () => {
+    const zero = store.upsertDeal(
+      dealDe({ externalId: "zero", type: "erreur", title: "Pelote de laine BRIO", price: 0 })
+    );
+    const gratuit = store.upsertDeal(
+      dealDe({ externalId: "epic", type: "gratuit", title: "Jeu offert cette semaine", price: 0 })
+    );
+    const inconnu = store.upsertDeal(
+      dealDe({ externalId: "odr", type: "odr", title: "50 € remboursés", price: null })
+    );
+    const normal = store.upsertDeal(
+      dealDe({ externalId: "ok", type: "promo", title: "Aspirateur Dyson V15", price: 349 })
+    );
+    for (const id of [zero, gratuit, inconnu, normal]) store.publierDeal(id);
+
+    const publies = store.listDeals({ pageSize: 50 }).items.map((d) => d.id);
+    expect(publies).not.toContain(zero);
+    // Zéro est le sujet même d'une offre gratuite : Epic ne s'est pas trompé.
+    expect(publies).toContain(gratuit);
+    // Un code promo ou une ODR n'annoncent pas toujours un montant.
+    expect(publies).toContain(inconnu);
+    expect(publies).toContain(normal);
+  });
+
+  it("purge ce qui a déjà été publié à un prix nul, sans toucher au gratuit", () => {
+    const bilan = store.purgerPrixInvalides();
+    expect(bilan.deals).toBeGreaterThanOrEqual(1);
+    const restants = store.listDeals({ pageSize: 50, includeUnpublished: true }).items.map((d) => d.title);
+    expect(restants).not.toContain("Pelote de laine BRIO");
+    expect(restants).toContain("Jeu offert cette semaine");
+  });
+});

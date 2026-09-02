@@ -89,6 +89,28 @@ function nombre(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Un nombre est-il un prix ?
+ *
+ * `Number.isFinite` répond « oui » à ZÉRO, et c'est ce détail qui a mis le
+ * site en défaut le 2 septembre 2026 : les cinquante et une offres publiées
+ * étaient toutes à 0,00 €, toutes verdict « erreur », toutes à −100 %. Une
+ * pelote de laine annoncée gratuite à la place de 5 €, un combo guitare à la
+ * place de 777 €. L'algorithme n'avait rien fait de faux — on lui avait donné
+ * un prix nul et il en a conclu, correctement, une remise de cent pour cent.
+ *
+ * Un marchand écrit `"price": "0"` sur une fiche épuisée, en rupture, ou
+ * réservée à un vendeur tiers absent. Ce n'est pas un prix : c'est l'absence
+ * de prix, écrite avec un chiffre. La borne haute écarte de même les lectures
+ * fautives (un code EAN pris pour un montant) : aucun article de détail
+ * français ne se vend dix millions d'euros.
+ */
+const PRIX_MAX = 1e7;
+
+function prixValide(n) {
+  return Number.isFinite(n) && n > 0 && n < PRIX_MAX;
+}
+
 /** Date ISO d'une valeur schema.org, ou null. */
 function date(v) {
   const brut = premiere(v);
@@ -125,8 +147,10 @@ function trouverOffre(produit) {
   for (const o of offres) {
     if (!o || typeof o !== "object") continue;
     if (estType(o, "AggregateOffer")) {
+      /* Une AggregateOffer dont aucun vendeur ne propose l'article annonce
+         `lowPrice: 0`. Le lire comme un prix, c'est publier « gratuit ». */
       const bas = nombre(o.lowPrice ?? o.price);
-      if (Number.isFinite(bas)) return { ...o, price: bas };
+      if (prixValide(bas)) return { ...o, price: bas };
       continue;
     }
     if (Number.isFinite(nombre(o.price))) return o;
@@ -196,7 +220,7 @@ function baliseMeta(html, propriete) {
 
 function produitDepuisOpenGraph(html) {
   const prix = nombre(baliseMeta(html, "product:price:amount") || baliseMeta(html, "og:price:amount"));
-  if (!Number.isFinite(prix)) return null;
+  if (!prixValide(prix)) return null;
   const ref = nombre(baliseMeta(html, "product:original_price:amount"));
   return {
     nom: baliseMeta(html, "og:title"),
@@ -258,7 +282,7 @@ function produitDepuisMicrodata(htmlComplet) {
   if (!html) return null;
 
   const prix = nombre(itemprop(html, "price"));
-  if (!Number.isFinite(prix)) return null;
+  if (!prixValide(prix)) return null;
   return {
     nom: itemprop(html, "name"),
     description: itemprop(html, "description"),
@@ -280,7 +304,7 @@ function produitDepuisMicrodata(htmlComplet) {
 function ficheDepuisProduit(produit) {
   const offre = trouverOffre(produit);
   const prix = offre ? nombre(offre.price) : null;
-  if (!Number.isFinite(prix)) return null;
+  if (!prixValide(prix)) return null;
 
   const dispo = String(premiere(offre.availability, true) || "");
   return {
@@ -535,7 +559,7 @@ function produitDepuisHtml(html) {
   const offre = produit ? trouverOffre(produit) : null;
   const prix = offre ? nombre(offre.price) : null;
 
-  if (produit && Number.isFinite(prix)) {
+  if (produit && prixValide(prix)) {
     const dispo = String(premiere(offre.availability, true) || "");
     return {
       nom: nomFiable(premiere(produit.name), html),
@@ -565,6 +589,8 @@ function produitDepuisHtml(html) {
 }
 
 module.exports = {
+  prixValide,
+  PRIX_MAX,
   extraireJsonLd,
   produitDepuisEtat,
   texteVisible,

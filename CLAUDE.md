@@ -226,6 +226,78 @@ offres venues de Dealabs — qui n'expose jamais l'adresse du marchand
 (`link` vide, seulement `linkHost` et une redirection d'affiliation
 `/visit/thread/<id>` qu'on ne détourne pas).
 
+## Zéro n'est pas un prix
+
+Le 2 septembre 2026, les **51 offres publiées** étaient toutes à **0,00 €**,
+toutes verdict « erreur », toutes à **−100 %** : pelotes de laine, soutien-gorge,
+combo guitare basse à la place de 777 €. La cause tient en un mot :
+
+```js
+Number.isFinite(0) === true
+```
+
+Huit gardes de prix dans `src/`, **une seule** testait aussi `> 0`. Un marchand
+écrit `"price": "0"` sur une fiche en rupture ou réservée à un vendeur tiers
+absent ; l'extraction le lisait, `insertSnapshots` l'enregistrait sans rien
+valider, et `analyzeOffers` en concluait — correctement — `pct = 100`, donc
+`>= seuilErreur`, donc la une. L'algorithme n'a jamais eu tort : on lui
+donnait zéro euro.
+
+Le correctif est un prédicat unique, `prixValide()` (`extraction.js`), appliqué
+à cinq niveaux, parce qu'un seul aurait re-cassé au prochain collecteur :
+
+1. **extraction** — les quatre stratégies (JSON-LD, microdata, OpenGraph,
+   AggregateOffer) rendent `null` plutôt qu'un prix nul ;
+2. **collecte** — flux RSS, flux XML, Firecrawl, catalogue ; et une fiche que
+   le marchand déclare épuisée (`disponible === false`) n'est plus relevée,
+   champ qui était extrait depuis toujours et que seul Awin lisait ;
+3. **ingestion** — `insertSnapshots` **lève**, comme le veut la convention du
+   dépôt. Le contrôle passe avant la transaction : un lot est accepté en
+   entier ou refusé en entier. `lancerScan` absorbe déjà l'échec d'une cible ;
+4. **algorithme** — `analyzeOffers` refuse de *juger* ce qui n'est pas un
+   prix, et écarte les relevés à zéro **déjà en base** du calcul de référence.
+   `stripGrossOutliers` ne les retirait pas : sur une fiche en rupture depuis
+   plusieurs jours ils sont **majoritaires**, et la référence tombait à zéro ;
+5. **flux public** — `listDeals` masque `price <= 0`, sauf le type
+   `gratuit` où zéro est le sujet de l'offre (un jeu Epic coûte bien 0 €),
+   et tolère `price IS NULL` (un code promo n'annonce pas toujours un montant).
+
+`purgerPrixInvalides()` tourne au démarrage : retire les offres publiées à
+prix nul et **supprime** les relevés correspondants — une référence bâtie sur
+des zéros fabrique des remises imaginaires longtemps après le correctif.
+
+Corrigé au passage : `allTimeLow` faisait `Math.min(...lignes)` sur un
+tableau que `priceHistoryBatch` ne borne pas (60 jours, aucun `LIMIT`) —
+une réduction ne dépend pas de la taille de la pile.
+
+**Ce bug était masqué.** Tant que le site publiait 105 cartes venues de
+Dealabs, les 51 offres à zéro se noyaient dedans. `lienProduitExige` les a
+mises au premier plan en retirant tout le reste.
+
+## Ce que la détection ne fait PAS (constaté le 2 septembre 2026)
+
+- **`filterRelevantOffers` n'est appelé nulle part.** Il est exporté, testé,
+  et mort. Donc `isAccessoryTitle` ne filtre rien en production. C'est
+  défendable sur un catalogue marchand — une coque de téléphone est un
+  produit que l'enseigne vend, et son prix cassé est un vrai deal — mais
+  c'est un choix qui n'a jamais été écrit.
+- **La référence entre pairs est structurellement impossible sur le canal
+  catalogue.** `lancerScan` appelle `analyzeOffers` **par cible** : 60 fiches
+  d'un seul marchand, toutes des produits différents. `clusterByProduct`
+  rend 60 groupes de un, `comparables.length < minPairs` (2), donc
+  `peerRefByOffer` reste vide. Sur le seul canal dont les anomalies sont les
+  nôtres, la détection repose à 100 % sur le passé de la même enseigne —
+  d'où `baseReference: "marchand"` sur 31 des 51 offres mesurées.
+- **Le rapprochement entre marchands ne fonctionne pas** : 5 produits vus
+  chez ≥ 2 marchands sur 8 591 (0,06 %), et **50 relevés portant un EAN sur
+  23 152** (0,2 %), dont **aucun** partagé. `productKey` exige le même
+  ensemble exact de mots significatifs : deux enseignes ne titrent jamais
+  pareil.
+- **`clusterByProduct` est glouton et dépendant de l'ordre** : il ne compare
+  qu'au **premier** élément de chaque groupe, sur une relation non
+  transitive. Deux ordres d'entrée donnent deux regroupements. O(n²) avec
+  re-tokenisation à chaque comparaison.
+
 ## Limites connues / pistes
 
 - Extraction du prix depuis le markdown Firecrawl = heuristique (regex) : peut

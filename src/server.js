@@ -80,7 +80,7 @@ const {
   getForumThread, createForumThread, listForumReplies, addForumReply,
 } = require("./forum");
 const {
-  listDeals: listDealsUnifies,   TYPES_DEAL,
+  listDeals: listDealsUnifies,   TYPES_DEAL, purgerPrixInvalides,
 } = require("./dealsStore");
 const { domainePourLogo } = require("./marchands");
 const {
@@ -1548,6 +1548,21 @@ if (require.main === module) {
     if (n > 0) console.log(`[cibles] ${n} catalogue(s) abandonné(s) mis en pause.`);
   } catch (e) {
     console.error(`[cibles] abandon impossible : ${e.message}`);
+  }
+
+  /* Les prix nuls déjà en base partent au démarrage. La collecte ne peut
+     plus en produire, mais ceux enregistrés avant le correctif restent des
+     références — et une référence à zéro fabrique des « −100 % » longtemps
+     après. Voir purgerPrixInvalides(). */
+  try {
+    const purge = purgerPrixInvalides();
+    if (purge.deals || purge.releves) {
+      console.log(
+        `[prix] ${purge.deals} offre(s) retirée(s) et ${purge.releves} relevé(s) supprimé(s) — prix nul ou négatif.`
+      );
+    }
+  } catch (e) {
+    console.error(`[prix] purge impossible : ${e.message}`);
   }
 
   try {

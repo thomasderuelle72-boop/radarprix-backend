@@ -280,3 +280,64 @@ describe("état applicatif embarqué", () => {
     expect(p.source).toBe("etat");
   });
 });
+
+/* Le 2 septembre 2026, les cinquante et une offres publiées sur radarprix.fr
+   étaient toutes à 0,00 €, toutes verdict « erreur », toutes à −100 %. Une
+   pelote de laine annoncée gratuite à la place de 5 €, un combo guitare
+   basse à la place de 777 €.
+
+   La cause tient en un mot : `Number.isFinite(0)` vaut `true`. Un marchand
+   écrit `"price": "0"` sur une fiche épuisée ou réservée à un vendeur tiers
+   absent ; l'extraction le lisait comme un prix, l'ingestion l'enregistrait,
+   et l'algorithme en concluait — correctement — une remise de cent pour cent.
+   Ces tests tiennent la porte fermée à chacun des quatre niveaux de lecture. */
+describe("zéro n'est pas un prix", () => {
+  const avecPrix = (p) => `<!doctype html><html><head>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"Product","name":"Pelote de laine BRIO - DMC",
+ "offers":{"@type":"Offer","price":${p},"priceCurrency":"EUR"}}
+</script></head><body>Pelote</body></html>`;
+
+  it("refuse un prix nul dans le JSON-LD", () => {
+    expect(produitDepuisHtml(avecPrix('"0"'))).toBeNull();
+    expect(produitDepuisHtml(avecPrix("0"))).toBeNull();
+    expect(produitDepuisHtml(avecPrix('"0,00"'))).toBeNull();
+  });
+
+  it("lit toujours un prix réel sur la même page", () => {
+    expect(produitDepuisHtml(avecPrix('"5,90"')).prix).toBe(5.9);
+  });
+
+  it("refuse une AggregateOffer sans vendeur (lowPrice à 0)", () => {
+    // Le cas d'une place de marché dont plus personne ne propose l'article.
+    const html = `<!doctype html><html><head>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"Product","name":"Combo guitare basse Peavey MAX 300",
+ "offers":{"@type":"AggregateOffer","lowPrice":0,"highPrice":0,"offerCount":0}}
+</script></head><body></body></html>`;
+    expect(produitDepuisHtml(html)).toBeNull();
+  });
+
+  it("refuse un prix nul en microdata et en OpenGraph", () => {
+    const micro = `<div itemscope itemtype="https://schema.org/Product">
+      <span itemprop="name">Fil à tricoter KNITTY 4</span>
+      <span itemprop="price">0</span></div>`;
+    expect(produitDepuisHtml(micro)).toBeNull();
+
+    const og = `<!doctype html><html><head>
+      <meta property="og:title" content="Baskets Arvee 1.5">
+      <meta property="product:price:amount" content="0"></head><body></body></html>`;
+    expect(produitDepuisHtml(og)).toBeNull();
+  });
+
+  it("écarte aussi le négatif et l'absurde", () => {
+    expect(extraction.prixValide(0)).toBe(false);
+    expect(extraction.prixValide(-1)).toBe(false);
+    expect(extraction.prixValide(NaN)).toBe(false);
+    expect(extraction.prixValide(Infinity)).toBe(false);
+    // Un code-barres pris pour un montant : aucun article de détail ne vaut ça.
+    expect(extraction.prixValide(3_600_000_000)).toBe(false);
+    expect(extraction.prixValide(0.01)).toBe(true);
+    expect(extraction.prixValide(777)).toBe(true);
+  });
+});

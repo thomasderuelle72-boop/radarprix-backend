@@ -314,3 +314,60 @@ describe("l'historique ne doit pas fabriquer de remise", () => {
     expect(affaire.pct).toBeGreaterThan(40);
   });
 });
+
+/* Le verdict qui a mis le site en défaut le 2 septembre 2026.
+
+   Une fiche relevée à 0 € sur un produit dont l'historique est sain donne
+   pct = 100, donc « erreur de prix », donc la une. L'algorithme faisait ce
+   qu'on lui demandait : à qui lui donne zéro euro, il répond −100 %. Le
+   correctif refuse de JUGER ce qui n'est pas un prix, plutôt que de raboter
+   le verdict après coup — et il tient même quand la base contient encore des
+   relevés empoisonnés d'avant la correction. */
+describe("un prix nul n'est jamais un deal", () => {
+  it("ne rend aucun verdict sur une offre à 0 €", () => {
+    const nom = "Pelote de laine a tricoter BRIO DMC 2026";
+    // Un historique sain et fourni : la référence vaut environ 6 €.
+    for (let i = 0; i < 6; i++) {
+      insertSnapshots("laine", "maison", [
+        { name: nom, price: 6, seller: "E.Leclerc", url: "https://x.fr/1" },
+      ]);
+    }
+
+    const [analyse] = algo.analyzeOffers([
+      { name: nom, price: 0, seller: "E.Leclerc", url: "https://x.fr/1" },
+    ]);
+    expect(analyse.pct).toBe(0);
+    expect(analyse.verdict).toBe("normal");
+    expect(analyse.refPrice).toBeNull();
+    expect(analyse.allTimeLow).toBe(false);
+
+    // Le même produit à un prix réellement cassé reste détecté : le
+    // correctif ferme une porte, il n'éteint pas la détection.
+    const [vrai] = algo.analyzeOffers([
+      { name: nom, price: 1.2, seller: "E.Leclerc", url: "https://x.fr/1" },
+    ]);
+    expect(vrai.verdict).toBe("erreur");
+  });
+
+  it("ignore les relevés à zéro déjà enregistrés au calcul de la référence", () => {
+    // Écrits directement en base : ce sont ceux d'avant le correctif, que
+    // insertSnapshots refuserait aujourd'hui.
+    const { db } = require("../src/db.js");
+    const { productKey: cle } = require("../src/productKey.js");
+    const nom = "Casque Sony WH-1000XM5 reference 2026";
+    const ins = db.prepare(
+      "INSERT INTO snapshots (query, category, name, product_key, seller, price) VALUES (?,?,?,?,?,?)"
+    );
+    // Majoritairement à zéro : stripGrossOutliers ne les retire pas, puisque
+    // c'est la médiane elle-même qui serait nulle.
+    for (let i = 0; i < 5; i++) ins.run("casque", "high-tech", nom, cle(nom), "Fnac", 0);
+    for (let i = 0; i < 3; i++) ins.run("casque", "high-tech", nom, cle(nom), "Fnac", 280);
+
+    const [a] = algo.analyzeOffers([
+      { name: nom, price: 279, seller: "Fnac", url: "https://x.fr/2" },
+    ]);
+    // Sans le filtre, la référence tombait à 0 et pct partait en négatif.
+    expect(a.refPrice).toBe(280);
+    expect(a.verdict).toBe("normal");
+  });
+});

@@ -29,7 +29,7 @@ const { analyzeOffers } = require("./algorithm");
 const R_PUBLICATION = () => reglages();
 const { upsertDeal, publierDeal, markMissingAsRemoved } = require("./dealsStore");
 const { MARCHANDS, reconnaitreMarchand } = require("./marchands");
-const { produitDepuisHtml, produitsDepuisHtml } = require("./extraction");
+const { produitDepuisHtml, produitsDepuisHtml, prixValide } = require("./extraction");
 const { categorieDepuisLibelle } = require("./categories");
 const { estPepper, extraireFils, offreDePepper } = require("./pepper");
 const {
@@ -512,7 +512,7 @@ function offreDeFlux(item, i, merchant) {
     // prudence est dans extrairePrix, pas ici.
     extrairePrix(item.title) ||
     null;
-  if (!Number.isFinite(prix)) return null;
+  if (!prixValide(prix)) return null;
 
   // Quand le flux sépare tarif barré et tarif payé, la référence est
   // donnée, pas déduite : c'est le cas le plus fiable.
@@ -587,7 +587,7 @@ function parseFluxXML(xml) {
       const solde = extrairePrix(item["g:sale_price"] || item.sale_price);
       const base = extrairePrix(item["g:price"] || item.price || item["s:price"]);
       const prix = Number.isFinite(solde) ? solde : base;
-      if (!Number.isFinite(prix)) return null;
+      if (!prixValide(prix)) return null;
 
       const texte = [name, item.description, item["g:description"]].filter(Boolean).join(" \n ");
       const ref = Number.isFinite(solde) && Number.isFinite(base) && base > solde
@@ -728,7 +728,7 @@ async function collecterFirecrawl(cible) {
       // Le prix déclaré par le marchand prime ; la lecture du markdown ne
       // sert plus qu'aux pages sans aucun balisage.
       const prix = fiche && Number.isFinite(fiche.prix) ? fiche.prix : prixDePage(donnees);
-      if (!Number.isFinite(prix)) continue;
+      if (!prixValide(prix)) continue;
 
       const titre = (fiche?.nom || donnees.metadata?.title || r.title || cible.query).trim();
       const marchand = reconnaitreMarchand({ url: r.url, texte: titre });
@@ -809,7 +809,7 @@ async function collecterCatalogue(cible) {
          littéralement rien à lire — onze marchands du registre sont dans ce
          cas, mesurés le 24 août. Un repli qui se déclencherait à tort
          coûterait de l'argent sur chaque fiche, huit fois par jour. */
-      if ((!p || !Number.isFinite(p.prix)) && page.texte && lecture.configure()) {
+      if ((!p || !prixValide(p.prix)) && page.texte && lecture.configure()) {
         const lu = await lecture.lireSousBudget(page.texte);
         if (lu) {
           p = {
@@ -825,8 +825,21 @@ async function collecterCatalogue(cible) {
         }
       }
 
-      if (!p || !Number.isFinite(p.prix)) {
+      /* Une fiche sans prix EXPLOITABLE est une fiche en échec — et un prix
+         nul n'est pas un prix. C'est ce qui a rempli le site de « −100 % » :
+         le balisage annonce `price: 0` sur une fiche en rupture, le relevé
+         l'acceptait, et l'algorithme concluait à une erreur de prix sur une
+         pelote de laine. Voir prixValide() dans extraction.js. */
+      if (!p || !prixValide(p.prix)) {
         marquerEchec(fiche.id);
+        continue;
+      }
+
+      /* Et une fiche que le marchand déclare épuisée n'est pas une offre :
+         son prix, quand il en reste un, est celui d'hier. Le champ était
+         extrait depuis toujours et n'était lu que par le canal Awin. */
+      if (p.disponible === false) {
+        marquerRelevee(fiche.id);
         continue;
       }
       marquerRelevee(fiche.id);

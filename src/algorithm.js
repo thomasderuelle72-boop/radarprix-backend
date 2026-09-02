@@ -6,6 +6,7 @@
 //     prix déjà vus pour ce produit exact (s'améliore avec le temps).
 const { priceHistoryBatch, reglages } = require("./db");
 const { significantWords, estMarqueurVariante, productKey } = require("./productKey.js");
+const { prixValide } = require("./extraction");
 
 // Titres à écarter d'office : ce sont presque toujours des accessoires
 // (coque, chargeur...) qui portent le nom du produit recherché mais coûtent
@@ -383,6 +384,19 @@ function analyzeOffers(offers) {
 
   return offers.map((o) => {
     const total = prixTotal(o);
+
+    /* Dernier rempart, et il a manqué. Un prix nul donne pct = 100, donc
+       verdict « erreur », donc la une du site — c'est ce qui a publié
+       cinquante et une pelotes de laine « gratuites » le 2 septembre 2026.
+       L'algorithme n'avait pas tort : à qui lui donne 0 €, il répond −100 %.
+       On refuse donc de JUGER ce qui n'est pas un prix, plutôt que de
+       raboter le verdict après coup. La collecte et l'ingestion filtrent
+       déjà (prixValide), mais la base garde des relevés d'avant le
+       correctif : ce test les neutralise sans attendre une purge. */
+    if (!prixValide(total)) {
+      return { ...o, priceTotal: total, refPrice: null, baseReference: null, marchandsComparés: 0, pct: 0, verdict: "normal", score: 0, confidence: null, allTimeLow: false };
+    }
+
     /* Ce filtre écartait autrefois toute observation ÉGALE au prix du jour.
        L'intention — ne pas se comparer à soi-même — produisait l'inverse de
        ce qu'on cherche : sur un produit stable à 15,98 € relevé quatre-vingts
@@ -404,7 +418,11 @@ function analyzeOffers(offers) {
        ils l'étaient déjà des pairs. Une lecture fautive isolée ne doit pas
        peser sur la référence — c'est exactement ce qui a fabriqué les fausses
        remises constatées en production. */
-    const prixHistoriques = stripGrossOutliers(lignes.map((r) => r.price));
+    /* Les relevés à prix nul déjà enregistrés sont écartés AVANT tout calcul.
+       stripGrossOutliers ne les retire que s'ils sont minoritaires — or sur
+       une fiche en rupture depuis plusieurs jours, ils sont la majorité, et
+       la référence tombait alors à zéro. */
+    const prixHistoriques = stripGrossOutliers(lignes.map((r) => r.price).filter(prixValide));
     const retenus = new Set(prixHistoriques);
     const lignesSaines = lignes.filter((r) => retenus.has(r.price));
 
@@ -415,8 +433,13 @@ function analyzeOffers(offers) {
 
     // "Prix le plus bas jamais vu" : vrai seulement s'il y a un historique
     // pour comparer (sinon toute première observation serait trivialement "la plus basse").
+    /* `Math.min(...tableau)` passe chaque élément en argument : sur un produit
+       relevé huit fois par jour depuis soixante jours, priceHistoryBatch rend
+       des centaines de lignes, et rien ne borne cette requête. Une réduction
+       ne dépend pas de la taille de la pile. */
     const allTimeLow =
-      lignesSaines.length >= R.minHistorique && total < Math.min(...lignesSaines.map((r) => r.price));
+      lignesSaines.length >= R.minHistorique &&
+      total < lignesSaines.reduce((min, r) => (r.price < min ? r.price : min), Infinity);
 
     const peerStats = peerStatsByOffer.get(o) || null;
     const peerRef = peerRefByOffer.get(o) || null;

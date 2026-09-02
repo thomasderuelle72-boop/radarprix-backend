@@ -338,6 +338,17 @@ function listDeals({
   const where = ["d.removed_at IS NULL"];
   const params = [];
 
+  /* Une pelote de laine à 0 € n'est pas gratuite : c'est une lecture ratée,
+     et elle ressort à −100 %, donc « erreur de prix », donc en une du site.
+     Le filtre est ici EN PLUS de ceux de la collecte, parce que la table
+     `deals` garde ce qui y a déjà été publié : sans lui il faudrait attendre
+     le prochain scan pour cesser de mentir.
+
+     Sauf pour le type « gratuit », où zéro est le sujet même de l'offre —
+     un jeu Epic de la semaine coûte bien 0 €. Et un prix NULL reste toléré :
+     un code promo ou une ODR n'annoncent pas toujours un montant. */
+  where.push("(d.price IS NULL OR d.price > 0 OR d.type = 'gratuit')");
+
   if (!includeUnpublished) where.push("d.published_at IS NOT NULL");
   // Une offre dont la date de fin est passée n'est plus une offre.
   where.push("(d.expires_at IS NULL OR d.expires_at > datetime('now'))");
@@ -653,6 +664,32 @@ function décoderPayload(brut) {
 }
 
 /** Publie un deal (le rend visible dans le flux public). */
+/**
+ * Retire ce qui a été publié à un prix qui n'en est pas un, et efface les
+ * relevés correspondants.
+ *
+ * Deux gestes distincts. Les `deals` sont marqués retirés — on garde la
+ * ligne, son historique de publication a valeur de trace — sauf ceux de type
+ * « gratuit », pour qui zéro est le sujet de l'offre. Les `snapshots`, eux,
+ * sont SUPPRIMÉS : ils ne servent qu'à calculer des références, et une
+ * référence bâtie sur des zéros fabrique des remises imaginaires longtemps
+ * après que la collecte a été corrigée.
+ */
+function purgerPrixInvalides() {
+  const deals = db
+    .prepare(
+      `UPDATE deals SET removed_at = datetime('now')
+       WHERE removed_at IS NULL AND price <= 0 AND type <> 'gratuit'`
+    )
+    .run().changes;
+  /* Les relevés, eux, n'ont aucun cas légitime à zéro : `insertSnapshots` ne
+     reçoit que des offres marchandes, et le gratuit ne passe pas par là. */
+  const releves = db
+    .prepare("DELETE FROM snapshots WHERE price IS NULL OR price <= 0")
+    .run().changes;
+  return { deals, releves };
+}
+
 function publierDeal(id) {
   db.prepare("UPDATE deals SET published_at = datetime('now') WHERE id = ? AND published_at IS NULL").run(id);
 }
@@ -666,6 +703,7 @@ function getDeal(id) {
 
 
 module.exports = {
+  purgerPrixInvalides,
   TYPES_DEAL,
   DETECTEURS,
   ETATS,
